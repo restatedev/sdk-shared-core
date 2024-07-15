@@ -1,2 +1,3 @@
-# sdk-shared-core
-Shared core to build SDKs
+# SDK Shared core
+
+Shared core to build SDKs in various languages.

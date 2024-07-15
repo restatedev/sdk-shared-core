@@ -1,0 +1,24 @@
+[package]
+name = "restate-sdk-shared-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "1.0.61"
+prost = "0.13"
+bytes = "1.6"
+bytes-utils = "0.1.4"
+ambassador = "0.4.0"
+tracing = "0.1.40"
+paste = "1.0.15"
+strum = { version = "0.26", features = ["derive"] }
+base64 = "0.22"
+sha2 = "0.11.0-pre.3"
+
+[dev-dependencies]
+googletest = "0.11.0"
+test-log = { version = "0.2.16", default-features = false, features = ["trace", "color"] }
+assert2 = "0.3.14"
+
+[build-dependencies]
+prost-build = "0.13"
