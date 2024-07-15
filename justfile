@@ -63,9 +63,6 @@ build *flags: (_target-installed target)
 print-target:
     @echo {{ _resolved_target }}
 
-run *flags: (_target-installed target)
-    cargo run {{ _target-option }} {{ flags }}
-
 test: (_target-installed target)
     cargo nextest run {{ _target-option }} --all-features
 
