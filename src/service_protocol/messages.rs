@@ -36,7 +36,7 @@ impl<M: CompletableEntryMessage> WriteableRestateMessage for M {
     }
 }
 
-include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
+include!("./generated/dev.restate.service.protocol.rs");
 
 macro_rules! impl_message_traits {
     ($name:ident: core) => {
