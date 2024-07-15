@@ -2,6 +2,9 @@
 name = "restate-sdk-shared-core"
 version = "0.0.1"
 edition = "2021"
+description = "SDK Shared core"
+license = "MIT"
+repository = "https://github.com/restatedev/sdk-shared-core"
 
 [dependencies]
 thiserror = "1.0.61"
