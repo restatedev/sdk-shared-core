@@ -7,8 +7,10 @@ use crate::service_protocol::messages::{
 use assert2::let_assert;
 use test_log::test;
 
+/// Old tests
+
 #[test]
-fn side_effect_guard() {
+fn run_guard() {
     let mut output = VMTestCase::new(Version::V1)
         .input(StartMessage {
             id: Bytes::from_static(b"123"),
@@ -202,4 +204,178 @@ fn enter_then_notify_error() {
         })
     );
     assert_eq!(output.next(), None);
+}
+
+mod consecutive_run {
+    use super::*;
+
+    use test_log::test;
+
+    fn handler(vm: &mut CoreVM) {
+        vm.sys_input().unwrap();
+
+        // First run
+        let_assert!(RunEnterResult::NotExecuted = vm.sys_run_enter("".to_owned()).unwrap());
+        let h1 = vm
+            .sys_run_exit(NonEmptyValue::Success(b"Francesco".to_vec()))
+            .unwrap();
+        vm.notify_await_point(h1);
+        let h1_result = vm.take_async_result(h1);
+        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+            return;
+        }
+        let_assert!(Some(Value::Success(h1_value)) = h1_result.unwrap());
+
+        // Second run
+        let_assert!(RunEnterResult::NotExecuted = vm.sys_run_enter("".to_owned()).unwrap());
+        let h2 = vm
+            .sys_run_exit(NonEmptyValue::Success(Vec::from(
+                String::from_utf8(h1_value).unwrap().to_uppercase(),
+            )))
+            .unwrap();
+        vm.notify_await_point(h2);
+        let h2_result = vm.take_async_result(h2);
+        if let Err(SuspendedOrVMError::Suspended(_)) = &h2_result {
+            return;
+        }
+        let_assert!(Some(Value::Success(h2_value)) = h2_result.unwrap());
+
+        // Write the result as output
+        vm.sys_write_output(NonEmptyValue::Success(
+            format!("Hello {}", String::from_utf8(h2_value).unwrap()).into_bytes(),
+        ))
+        .unwrap();
+        vm.sys_end().unwrap();
+    }
+
+    #[test]
+    fn without_acks_suspends() {
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 1,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(InputEntryMessage {
+                value: Bytes::from_static(b"Till"),
+                ..Default::default()
+            })
+            .run(handler);
+
+        assert_eq!(
+            output.next_decoded::<RunEntryMessage>().unwrap(),
+            RunEntryMessage {
+                result: Some(run_entry_message::Result::Value(Bytes::from_static(
+                    b"Francesco"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            SuspensionMessage {
+                entry_indexes: vec![1],
+            }
+        );
+
+        assert_eq!(output.next(), None);
+    }
+    #[test]
+    fn ack_on_first_side_effect_will_suspend() {
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 1,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(InputEntryMessage {
+                value: Bytes::from_static(b"Till"),
+                ..Default::default()
+            })
+            .input(EntryAckMessage { entry_index: 1 })
+            .run(handler);
+
+        assert_eq!(
+            output.next_decoded::<RunEntryMessage>().unwrap(),
+            RunEntryMessage {
+                result: Some(run_entry_message::Result::Value(Bytes::from_static(
+                    b"Francesco"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<RunEntryMessage>().unwrap(),
+            RunEntryMessage {
+                result: Some(run_entry_message::Result::Value(Bytes::from_static(
+                    b"FRANCESCO"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            SuspensionMessage {
+                entry_indexes: vec![2],
+            }
+        );
+
+        assert_eq!(output.next(), None);
+    }
+    #[test]
+    fn ack_on_first_and_second_side_effect_will_resume() {
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 1,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(InputEntryMessage {
+                value: Bytes::from_static(b"Till"),
+                ..Default::default()
+            })
+            .input(EntryAckMessage { entry_index: 1 })
+            .input(EntryAckMessage { entry_index: 2 })
+            .run(handler);
+
+        assert_eq!(
+            output.next_decoded::<RunEntryMessage>().unwrap(),
+            RunEntryMessage {
+                result: Some(run_entry_message::Result::Value(Bytes::from_static(
+                    b"Francesco"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<RunEntryMessage>().unwrap(),
+            RunEntryMessage {
+                result: Some(run_entry_message::Result::Value(Bytes::from_static(
+                    b"FRANCESCO"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<OutputEntryMessage>().unwrap(),
+            OutputEntryMessage {
+                result: Some(output_entry_message::Result::Value(Bytes::from_static(
+                    b"Hello FRANCESCO"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+
+        assert_eq!(output.next(), None);
+    }
 }

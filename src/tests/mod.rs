@@ -1,7 +1,10 @@
+mod async_result;
 mod get_state;
 mod input_output;
-mod replay;
+mod promise;
 mod run;
+mod sleep;
+mod state;
 mod suspensions;
 
 use super::*;
