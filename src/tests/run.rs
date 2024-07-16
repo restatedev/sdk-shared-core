@@ -149,19 +149,8 @@ fn enter_then_exit_then_ack() {
 #[test]
 fn replay() {
     let mut output = VMTestCase::new(Version::V1)
-        .input(StartMessage {
-            id: Bytes::from_static(b"123"),
-            debug_id: "123".to_string(),
-            known_entries: 2,
-            state_map: vec![],
-            partial_state: false,
-            key: "".to_string(),
-        })
-        .input(InputEntryMessage {
-            headers: vec![],
-            value: Bytes::from_static(b"my-data"),
-            ..InputEntryMessage::default()
-        })
+        .input(start_message(2))
+        .input(input_entry_message(b"my-data"))
         .input(RunEntryMessage {
             name: "my-side-effect".to_owned(),
             result: Some(run_entry_message::Result::Value(Bytes::from_static(b"123"))),
@@ -184,5 +173,33 @@ fn replay() {
         has_output_success(b"123")
     );
     output.next_decoded::<EndMessage>().unwrap();
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn enter_then_notify_error() {
+    let mut output = VMTestCase::new(Version::V1)
+        .input(start_message(1))
+        .input(input_entry_message(b"my-data"))
+        .run(|vm| {
+            vm.sys_input().unwrap();
+            let_assert!(
+                RunEnterResult::NotExecuted =
+                    vm.sys_run_enter("my-side-effect".to_owned()).unwrap()
+            );
+            vm.notify_error(
+                Cow::Borrowed("my-error"),
+                Cow::Borrowed("my-error-description"),
+            );
+        });
+
+    assert_that!(
+        output.next_decoded::<ErrorMessage>().unwrap(),
+        error_message_as_vm_error(VMError {
+            code: 500,
+            message: Cow::Borrowed("my-error"),
+            description: Cow::Borrowed("my-error-description"),
+        })
+    );
     assert_eq!(output.next(), None);
 }
