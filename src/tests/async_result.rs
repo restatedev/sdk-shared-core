@@ -3,12 +3,105 @@ use super::*;
 use crate::service_protocol::messages::*;
 use assert2::let_assert;
 
+use test_log::test;
+
 fn greeter_target() -> Target {
     Target {
         service: "Greeter".to_string(),
         handler: "greeter".to_string(),
         key: None,
     }
+}
+
+#[test]
+fn dont_await_call() {
+    let mut output = VMTestCase::new(Version::V1)
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 1,
+            ..Default::default()
+        })
+        .input(InputEntryMessage::default())
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            let _ = vm
+                .sys_call(greeter_target(), b"Francesco".to_vec())
+                .unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(b"Whatever".to_vec()))
+                .unwrap();
+            vm.sys_end().unwrap()
+        });
+
+    assert_eq!(
+        output.next_decoded::<CallEntryMessage>().unwrap(),
+        CallEntryMessage {
+            service_name: "Greeter".to_owned(),
+            handler_name: "greeter".to_owned(),
+            parameter: Bytes::from_static(b"Francesco"),
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        output.next_decoded::<OutputEntryMessage>().unwrap(),
+        OutputEntryMessage {
+            result: Some(output_entry_message::Result::Value(Bytes::from_static(
+                b"Whatever"
+            ))),
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn dont_await_call_dont_notify_input_closed() {
+    let mut output = VMTestCase::new(Version::V1)
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 1,
+            ..Default::default()
+        })
+        .input(InputEntryMessage::default())
+        .run_without_closing_input(|vm, _| {
+            vm.sys_input().unwrap();
+            let _ = vm
+                .sys_call(greeter_target(), b"Francesco".to_vec())
+                .unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(b"Whatever".to_vec()))
+                .unwrap();
+            vm.sys_end().unwrap()
+        });
+
+    assert_eq!(
+        output.next_decoded::<CallEntryMessage>().unwrap(),
+        CallEntryMessage {
+            service_name: "Greeter".to_owned(),
+            handler_name: "greeter".to_owned(),
+            parameter: Bytes::from_static(b"Francesco"),
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        output.next_decoded::<OutputEntryMessage>().unwrap(),
+        OutputEntryMessage {
+            result: Some(output_entry_message::Result::Value(Bytes::from_static(
+                b"Whatever"
+            ))),
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
 }
 
 mod notify_await_point {
