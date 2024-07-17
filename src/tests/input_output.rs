@@ -45,3 +45,49 @@ fn echo() {
     );
     assert_eq!(output.next(), None);
 }
+
+#[test]
+fn headers() {
+    let mut output = VMTestCase::new(Version::V1)
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 1,
+            ..Default::default()
+        })
+        .input(InputEntryMessage {
+            headers: vec![service_protocol::messages::Header {
+                key: "x-my-header".to_owned(),
+                value: "my-value".to_owned(),
+            }],
+            value: Bytes::from_static(b"other-value"),
+            ..InputEntryMessage::default()
+        })
+        .run(|vm| {
+            let_assert!(Input { headers, .. } = vm.sys_input().unwrap());
+
+            assert_that!(
+                headers,
+                elements_are![eq(Header {
+                    key: Cow::Borrowed("x-my-header"),
+                    value: Cow::Borrowed("my-value"),
+                })]
+            );
+
+            vm.sys_write_output(NonEmptyValue::Success(vec![])).unwrap();
+            vm.sys_end().unwrap();
+        });
+
+    assert_eq!(
+        output.next_decoded::<OutputEntryMessage>().unwrap(),
+        OutputEntryMessage {
+            result: Some(output_entry_message::Result::Value(Bytes::default())),
+            ..OutputEntryMessage::default()
+        }
+    );
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}

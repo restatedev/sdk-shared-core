@@ -7,8 +7,6 @@ use crate::service_protocol::messages::{
 use assert2::let_assert;
 use test_log::test;
 
-/// Old tests
-
 #[test]
 fn run_guard() {
     let mut output = VMTestCase::new(Version::V1)
@@ -38,6 +36,38 @@ fn run_guard() {
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
         error_message_as_vm_error(vm::errors::INSIDE_RUN)
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn exit_without_enter() {
+    let mut output = VMTestCase::new(Version::V1)
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 1,
+            state_map: vec![],
+            partial_state: false,
+            key: "".to_string(),
+        })
+        .input(InputEntryMessage {
+            headers: vec![],
+            value: Bytes::from_static(b"my-data"),
+            ..InputEntryMessage::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            assert_that!(
+                vm.sys_run_exit(NonEmptyValue::Success(vec![1, 2, 3])),
+                err(eq_vm_error(vm::errors::INVOKED_RUN_EXIT_WITHOUT_ENTER))
+            );
+        });
+
+    assert_that!(
+        output.next_decoded::<ErrorMessage>().unwrap(),
+        error_message_as_vm_error(vm::errors::INVOKED_RUN_EXIT_WITHOUT_ENTER)
     );
     assert_eq!(output.next(), None);
 }

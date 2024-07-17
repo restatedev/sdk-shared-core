@@ -1,5 +1,7 @@
 use crate::vm::context::Context;
-use crate::vm::errors::{AwaitingTwoAsyncResultError, UnexpectedStateError};
+use crate::vm::errors::{
+    AwaitingTwoAsyncResultError, UnexpectedStateError, INPUT_CLOSED_WHILE_WAITING_ENTRIES,
+};
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{SuspendedError, VMError, Value};
@@ -20,6 +22,9 @@ impl Transition<Context, NotifyInputClosed> for State {
                 ..
             } if !async_results.has_ready_result(await_point) => {
                 self.transition(context, HitSuspensionPoint(await_point))
+            }
+            State::WaitingStart | State::WaitingReplayEntries { .. } => {
+                Err(INPUT_CLOSED_WHILE_WAITING_ENTRIES)
             }
             _ => Ok(self),
         }

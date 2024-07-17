@@ -112,6 +112,11 @@ pub const INVOKED_RUN_EXIT_WITHOUT_ENTER: VMError = VMError::new_const(
     "Invoked sys_run_exit without invoking sys_run_enter before",
 );
 
+pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: VMError = VMError::new_const(
+    codes::PROTOCOL_VIOLATION,
+    "The input was closed while still waiting to receive all the `known_entries`",
+);
+
 // Other errors
 
 #[derive(Debug, Clone, thiserror::Error)]

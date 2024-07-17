@@ -11,6 +11,102 @@ fn greeter_target() -> Target {
     }
 }
 
+mod notify_await_point {
+    use super::*;
+
+    use test_log::test;
+
+    #[test]
+    fn await_twice_the_same_handle() {
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                state_map: vec![],
+                partial_state: false,
+                key: "".to_string(),
+            })
+            .input(InputEntryMessage {
+                headers: vec![],
+                value: Bytes::from_static(b"my-data"),
+                ..InputEntryMessage::default()
+            })
+            .run_without_closing_input(|vm, _| {
+                vm.sys_input().unwrap();
+
+                let (_, h) = vm.sys_awakeable().unwrap();
+
+                vm.notify_await_point(h);
+                vm.notify_await_point(h);
+
+                vm.notify_input_closed();
+            });
+
+        assert_eq!(
+            output.next_decoded::<AwakeableEntryMessage>().unwrap(),
+            AwakeableEntryMessage::default()
+        );
+        assert_eq!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            SuspensionMessage {
+                entry_indexes: vec![1],
+            }
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn await_two_handles_at_same_time() {
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                state_map: vec![],
+                partial_state: false,
+                key: "".to_string(),
+            })
+            .input(InputEntryMessage {
+                headers: vec![],
+                value: Bytes::from_static(b"my-data"),
+                ..InputEntryMessage::default()
+            })
+            .run_without_closing_input(|vm, _| {
+                vm.sys_input().unwrap();
+
+                let (_, h1) = vm.sys_awakeable().unwrap();
+                let (_, h2) = vm.sys_awakeable().unwrap();
+
+                vm.notify_await_point(h1);
+                // This should transition the state machine to error
+                vm.notify_await_point(h2);
+
+                vm.notify_input_closed();
+            });
+
+        assert_eq!(
+            output.next_decoded::<AwakeableEntryMessage>().unwrap(),
+            AwakeableEntryMessage::default()
+        );
+        assert_eq!(
+            output.next_decoded::<AwakeableEntryMessage>().unwrap(),
+            AwakeableEntryMessage::default()
+        );
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            error_message_as_vm_error(
+                vm::errors::AwaitingTwoAsyncResultError {
+                    previous: 1,
+                    current: 2,
+                }
+                .into()
+            )
+        );
+        assert_eq!(output.next(), None);
+    }
+}
+
 mod reverse_await_order {
     use super::*;
 

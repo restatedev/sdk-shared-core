@@ -1,4 +1,5 @@
 mod async_result;
+mod failures;
 mod get_state;
 mod input_output;
 mod promise;
@@ -16,6 +17,7 @@ use crate::service_protocol::messages::{
 use crate::service_protocol::{Decoder, Encoder, RawMessage, Version};
 use bytes::Bytes;
 use googletest::prelude::*;
+use std::result::Result;
 use test_log::test;
 
 // --- Test infra
