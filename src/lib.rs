@@ -1,9 +1,11 @@
+mod request_identity;
 mod service_protocol;
 mod vm;
 
 use std::borrow::Cow;
 use std::time::Duration;
 
+pub use request_identity::*;
 pub use vm::CoreVM;
 
 #[derive(Debug, Eq, PartialEq)]

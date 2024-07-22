@@ -16,7 +16,11 @@ tracing = "0.1.40"
 paste = "1.0.15"
 strum = { version = "0.26", features = ["derive"] }
 base64 = "0.22"
+bs58 = { version = "0.5.0" }
 sha2 = "0.11.0-pre.3"
+ring = { version = "0.17.8" }
+jsonwebtoken = { version = "9.3.0" }
+serde = { version = "1.0.204", features = ["derive"] }
 
 [dev-dependencies]
 googletest = "0.11.0"
