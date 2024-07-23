@@ -61,6 +61,9 @@ jobs:
         with:
           target: ${{ matrix.target }}
           rustflags: ""
+      - name: Install musl
+        if: ${{ endsWith( matrix.target, '-musl' ) }}
+        run: sudo apt install musl-tools
 
       - name: Install protoc
         uses: ./.github/actions/install-protoc
