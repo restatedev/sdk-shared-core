@@ -10,28 +10,14 @@
 
 use jsonwebtoken::{DecodingKey, Validation};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
+use std::collections::HashSet;
+use crate::headers::HeaderMap;
 
 const SIGNATURE_SCHEME_HEADER: &str = "x-restate-signature-scheme";
 const SIGNATURE_SCHEME_V1: &str = "v1";
 const SIGNATURE_SCHEME_UNSIGNED: &str = "unsigned";
 const SIGNATURE_JWT_V1_HEADER: &str = "x-restate-jwt-v1";
 const IDENTITY_V1_PREFIX: &str = "publickeyv1_";
-
-pub trait IdentityHeaderMap {
-    type Error;
-
-    fn extract(&self, name: &str) -> Result<Option<&str>, Self::Error>;
-}
-
-impl IdentityHeaderMap for HashMap<String, String> {
-    type Error = Infallible;
-
-    fn extract(&self, name: &str) -> Result<Option<&str>, Self::Error> {
-        Ok(self.get(name).map(|x| x.as_str()))
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
@@ -132,8 +118,8 @@ impl IdentityVerifier {
 
     pub fn verify_identity<I>(&self, hm: &I, path: &str) -> Result<(), VerifyError>
     where
-        I: IdentityHeaderMap,
-        <I as IdentityHeaderMap>::Error: std::error::Error + Send + Sync + 'static,
+        I: HeaderMap,
+        <I as HeaderMap>::Error: std::error::Error + Send + Sync + 'static,
     {
         if self.keys.is_empty() {
             return Ok(());
@@ -182,7 +168,7 @@ mod tests {
 
         let verifier = IdentityVerifier::new(&[&identity_key]).unwrap();
 
-        let headers: HashMap<String, String> = [
+        let headers: Vec<(String, String)> = [
             (
                 SIGNATURE_SCHEME_HEADER.to_owned(),
                 SIGNATURE_SCHEME_V1.to_owned(),
@@ -201,7 +187,7 @@ mod tests {
             IdentityVerifier::new(&["publickeyv1_ChjENKeMvCtRnqG2mrBK1HmPKufgFUc98K8B3ononQvp"])
                 .unwrap();
 
-        let headers: HashMap<String, String> = [
+        let headers: Vec<(String, String)> = [
             (SIGNATURE_SCHEME_HEADER.to_owned(), SIGNATURE_SCHEME_V1.to_owned()),
             (SIGNATURE_JWT_V1_HEADER.to_owned(), "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6InB1YmxpY2tleXYxX0FmUXdtd2ZnRVpocldwdnY4TjUyU0hwUnRacUdHYUZyNEFaTjZxdFlXU2lZIn0.eyJhdWQiOiIvaW52b2tlL2ZvbyIsImV4cCI6MTcyMTY2MjcwOSwiaWF0IjoxNzIxNjYyNjQ5LCJuYmYiOjE3MjE2NjI1ODl9.UBReG_9cdFQ5VcaJxAV0rM8U_zaNw9kMXJZt691SiI0SWw7Ucmz5Zz3wtmVUc1jrkNsnTDhNEvOFGEZoKXTMCQ".to_owned())
         ].into_iter().collect();

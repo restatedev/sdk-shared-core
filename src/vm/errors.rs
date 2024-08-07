@@ -56,6 +56,7 @@ impl From<InvocationErrorCode> for u32 {
 pub mod codes {
     use super::InvocationErrorCode;
 
+    pub const BAD_REQUEST: InvocationErrorCode = InvocationErrorCode(400);
     pub const INTERNAL: InvocationErrorCode = InvocationErrorCode(500);
     pub const UNSUPPORTED_MEDIA_TYPE: InvocationErrorCode = InvocationErrorCode(415);
     pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
