@@ -7,6 +7,7 @@ use std::time::Duration;
 
 pub use request_identity::*;
 pub use vm::CoreVM;
+pub use headers::HeaderMap;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Header {
@@ -126,7 +127,7 @@ pub enum TakeOutputResult {
 pub type VMResult<T> = Result<T, VMError>;
 
 pub trait VM: Sized {
-    fn new(request_headers: Vec<(String, String)>) -> VMResult<Self>;
+    fn new(request_headers: impl HeaderMap) -> VMResult<Self>;
 
     fn get_response_head(&self) -> ResponseHead;
 
@@ -245,3 +246,4 @@ pub trait VM: Sized {
 
 #[cfg(test)]
 mod tests;
+mod headers;

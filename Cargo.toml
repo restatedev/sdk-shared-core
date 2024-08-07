@@ -21,6 +21,7 @@ sha2 = "0.11.0-pre.3"
 ring = { version = "0.17.8" }
 jsonwebtoken = { version = "9.3.0" }
 serde = { version = "1.0.204", features = ["derive"] }
+http = { version = "1.1.0", optional = true }
 
 [dev-dependencies]
 googletest = "0.11.0"

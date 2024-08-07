@@ -18,12 +18,13 @@ use base64::{alphabet, Engine};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use context::{AsyncResultsState, Context, Output, RunState};
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{ VecDeque};
 use std::fmt;
 use std::mem::size_of;
 use std::time::{Duration, SystemTime};
 use strum::IntoStaticStr;
 use tracing::instrument;
+use crate::headers::HeaderMap;
 
 mod context;
 pub(crate) mod errors;
@@ -94,15 +95,10 @@ const fn is_send<T: Send>() {}
 const _: () = is_send::<CoreVM>();
 
 impl super::VM for CoreVM {
-    #[instrument(level = "debug", ret)]
-    fn new(request_headers: Vec<(String, String)>) -> Result<Self, VMError> {
-        // Check input headers for protocol-version
-        let mut input_headers: HashMap<_, _> = request_headers
-            .into_iter()
-            .map(|(k, v)| (k.to_lowercase(), v))
-            .collect();
-        let version = input_headers
-            .remove(CONTENT_TYPE)
+    #[instrument(level = "debug", skip_all, ret)]
+    fn new(request_headers: impl HeaderMap) -> Result<Self, VMError> {
+        let version = request_headers.extract(CONTENT_TYPE)
+            .map_err(|e| VMError::new(errors::codes::BAD_REQUEST, format!("cannot read '{CONTENT_TYPE}' header: {e:?}")))?
             .ok_or(errors::MISSING_CONTENT_TYPE)?
             .parse::<Version>()?;
 
