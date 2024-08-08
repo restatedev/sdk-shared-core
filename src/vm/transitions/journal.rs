@@ -184,20 +184,25 @@ impl<
         )?;
 
         let ar_handle = AsyncResultHandle(context.journal.expect_index());
-        if let Some(c) = actual.into_completion() {
-            match s {
-                State::Replaying {
-                    ref mut async_results,
-                    ..
-                }
-                | State::Processing {
-                    ref mut async_results,
-                    ..
-                } => {
-                    async_results.insert_ready_result(ar_handle.0, c);
-                }
-                s => return Err(UnexpectedStateError::new(s.into(), sys_name).into()),
+        match s {
+            State::Replaying {
+                ref mut async_results,
+                ..
             }
+            | State::Processing {
+                ref mut async_results,
+                ..
+            } => {
+                if let Some(c) = actual.into_completion()? {
+                    async_results.insert_ready_result(ar_handle.0, c);
+                } else {
+                    async_results.insert_completion_parsing_hint(
+                        ar_handle.0,
+                        M::completion_parsing_hint(),
+                    )?;
+                }
+            }
+            s => return Err(UnexpectedStateError::new(s.into(), sys_name).into()),
         }
         Ok((s, ar_handle))
     }

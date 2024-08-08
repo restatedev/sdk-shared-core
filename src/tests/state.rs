@@ -26,6 +26,7 @@ fn get_state_handler(vm: &mut CoreVM) {
             vm.sys_end().unwrap();
             return;
         }
+        Value::StateKeys(_) => panic!("Unexpected variant"),
     };
 
     vm.sys_write_output(NonEmptyValue::Success(str_result.into_bytes()))
@@ -372,6 +373,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
+            Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
         vm.sys_write_output(NonEmptyValue::Success(str_result.into_bytes()))
@@ -613,6 +615,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
+            Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
         vm.sys_set_state(
@@ -637,6 +640,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
+            Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
         vm.sys_write_output(NonEmptyValue::Success(second_get_result))
@@ -790,6 +794,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
+            Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
         vm.sys_clear_state("STATE".to_owned()).unwrap();
@@ -947,6 +952,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
+            Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
         vm.sys_clear_all_state().unwrap();
@@ -1194,6 +1200,252 @@ mod eager {
             output.next_decoded::<EndMessage>().unwrap(),
             EndMessage::default()
         );
+        assert_eq!(output.next(), None);
+    }
+}
+
+mod state_keys {
+    use super::*;
+
+    use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
+    use googletest::prelude::*;
+    use prost::Message;
+    use test_log::test;
+
+    fn get_state_keys_handler(vm: &mut CoreVM) {
+        vm.sys_input().unwrap();
+
+        let h1 = vm.sys_get_keys_state().unwrap();
+
+        vm.notify_await_point(h1);
+        let h1_result = vm.take_async_result(h1);
+        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+            return;
+        }
+
+        let output = match h1_result.unwrap().unwrap() {
+            Value::Void | Value::Success(_) => panic!("Unexpected variants"),
+            Value::Failure(f) => NonEmptyValue::Failure(f),
+            Value::StateKeys(keys) => NonEmptyValue::Success(keys.join(",").into_bytes()),
+        };
+
+        vm.sys_write_output(output).unwrap();
+        vm.sys_end().unwrap()
+    }
+
+    #[test]
+    fn entry_already_completed() {
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 2,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(InputEntryMessage {
+                value: Bytes::from_static(b"Till"),
+                ..Default::default()
+            })
+            .input(GetStateKeysEntryMessage {
+                result: Some(get_state_keys_entry_message::Result::Value(StateKeys {
+                    keys: vec![
+                        Bytes::from_static(b"MY-STATE"),
+                        Bytes::from_static(b"ANOTHER-STATE"),
+                    ],
+                })),
+                ..Default::default()
+            })
+            .run(get_state_keys_handler);
+
+        assert_eq!(
+            output.next_decoded::<OutputEntryMessage>().unwrap(),
+            OutputEntryMessage {
+                result: Some(output_entry_message::Result::Value(Bytes::from_static(
+                    b"ANOTHER-STATE,MY-STATE"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+    #[test]
+    fn new_entry() {
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 1,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(InputEntryMessage {
+                value: Bytes::from_static(b"Till"),
+                ..Default::default()
+            })
+            .run(get_state_keys_handler);
+
+        assert_eq!(
+            output.next_decoded::<GetStateKeysEntryMessage>().unwrap(),
+            GetStateKeysEntryMessage::default()
+        );
+        assert_eq!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            SuspensionMessage {
+                entry_indexes: vec![1],
+            }
+        );
+
+        assert_eq!(output.next(), None);
+    }
+    #[test]
+    fn new_entry_completed_later() {
+        let state_keys: Bytes = StateKeys {
+            keys: vec![
+                Bytes::from_static(b"MY-STATE"),
+                Bytes::from_static(b"ANOTHER-STATE"),
+            ],
+        }
+        .encode_to_vec()
+        .into();
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 1,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(InputEntryMessage {
+                value: Bytes::from_static(b"Till"),
+                ..Default::default()
+            })
+            .input(CompletionMessage {
+                entry_index: 1,
+                result: Some(completion_message::Result::Value(state_keys)),
+            })
+            .run(get_state_keys_handler);
+
+        assert_eq!(
+            output.next_decoded::<GetStateKeysEntryMessage>().unwrap(),
+            GetStateKeysEntryMessage::default()
+        );
+        assert_eq!(
+            output.next_decoded::<OutputEntryMessage>().unwrap(),
+            OutputEntryMessage {
+                result: Some(output_entry_message::Result::Value(Bytes::from_static(
+                    b"ANOTHER-STATE,MY-STATE"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+    #[test]
+    fn entry_on_replay_completed_later() {
+        let state_keys: Bytes = StateKeys {
+            keys: vec![
+                Bytes::from_static(b"MY-STATE"),
+                Bytes::from_static(b"ANOTHER-STATE"),
+            ],
+        }
+        .encode_to_vec()
+        .into();
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 2,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(InputEntryMessage {
+                value: Bytes::from_static(b"Till"),
+                ..Default::default()
+            })
+            .input(GetStateKeysEntryMessage::default())
+            .input(CompletionMessage {
+                entry_index: 1,
+                result: Some(completion_message::Result::Value(state_keys)),
+            })
+            .run(get_state_keys_handler);
+
+        assert_eq!(
+            output.next_decoded::<OutputEntryMessage>().unwrap(),
+            OutputEntryMessage {
+                result: Some(output_entry_message::Result::Value(Bytes::from_static(
+                    b"ANOTHER-STATE,MY-STATE"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+    #[test]
+    fn new_entry_completed_with_eager_state() {
+        let mut output = VMTestCase::new(Version::V1)
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 1,
+                partial_state: false,
+                state_map: vec![
+                    StateEntry {
+                        key: Bytes::from_static(b"ANOTHER-STATE"),
+                        value: Bytes::from_static(b"Till"),
+                    },
+                    StateEntry {
+                        key: Bytes::from_static(b"MY-STATE"),
+                        value: Bytes::from_static(b"Francesco"),
+                    },
+                ],
+                ..Default::default()
+            })
+            .input(InputEntryMessage {
+                value: Bytes::from_static(b"Till"),
+                ..Default::default()
+            })
+            .run(get_state_keys_handler);
+
+        assert_that!(
+            output.next_decoded::<GetStateKeysEntryMessage>().unwrap(),
+            pat!(GetStateKeysEntryMessage {
+                result: some(pat!(get_state_keys_entry_message::Result::Value(pat!(
+                    StateKeys {
+                        keys: unordered_elements_are!(
+                            eq(Bytes::from_static(b"ANOTHER-STATE")),
+                            eq(Bytes::from_static(b"MY-STATE"))
+                        )
+                    }
+                ))))
+            })
+        );
+        assert_eq!(
+            output.next_decoded::<OutputEntryMessage>().unwrap(),
+            OutputEntryMessage {
+                result: Some(output_entry_message::Result::Value(Bytes::from_static(
+                    b"ANOTHER-STATE,MY-STATE"
+                ))),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+
         assert_eq!(output.next(), None);
     }
 }

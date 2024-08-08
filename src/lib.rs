@@ -84,10 +84,12 @@ impl From<AsyncResultHandle> for u32 {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum Value {
-    // a void/None/undefined success
+    /// a void/None/undefined success
     Void,
     Success(Vec<u8>),
     Failure(Failure),
+    /// Only returned for get_state_keys
+    StateKeys(Vec<String>),
 }
 
 /// Terminal failure
@@ -165,7 +167,7 @@ pub trait VM: Sized {
 
     fn sys_get_state(&mut self, key: String) -> VMResult<AsyncResultHandle>;
 
-    // TODO sys_get_keys_state(&mut self)
+    fn sys_get_keys_state(&mut self) -> VMResult<AsyncResultHandle>;
 
     fn sys_set_state(&mut self, key: String, value: Vec<u8>) -> VMResult<()>;
 

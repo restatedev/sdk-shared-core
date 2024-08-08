@@ -23,6 +23,7 @@ mod get_promise {
             }
             Value::Success(s) => NonEmptyValue::Success(s),
             Value::Failure(f) => NonEmptyValue::Failure(f),
+            v => panic!("Unexpected value {v:?}"),
         };
 
         vm.sys_write_output(output).unwrap();
@@ -136,6 +137,7 @@ mod peek_promise {
             Value::Void => NonEmptyValue::Success("null".into()),
             Value::Success(s) => NonEmptyValue::Success(s),
             Value::Failure(f) => NonEmptyValue::Failure(f),
+            v => panic!("Unexpected value {v:?}"),
         };
 
         vm.sys_write_output(output).unwrap();
@@ -294,6 +296,7 @@ mod complete_promise {
                 Value::Void => RESOLVED,
                 Value::Success(_) => panic!("Unexpected success completion"),
                 Value::Failure(_) => REJECTED,
+                v => panic!("Unexpected value {v:?}"),
             };
 
             vm.sys_write_output(NonEmptyValue::Success(output.to_vec()))

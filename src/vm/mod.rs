@@ -1,13 +1,15 @@
 use crate::headers::HeaderMap;
+use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
 use crate::service_protocol::messages::{
     complete_awakeable_entry_message, complete_promise_entry_message, get_state_entry_message,
-    output_entry_message, AwakeableEntryMessage, CallEntryMessage, ClearAllStateEntryMessage,
-    ClearStateEntryMessage, CompleteAwakeableEntryMessage, CompletePromiseEntryMessage, Empty,
-    GetPromiseEntryMessage, GetStateEntryMessage, OneWayCallEntryMessage, OutputEntryMessage,
-    PeekPromiseEntryMessage, SetStateEntryMessage, SleepEntryMessage,
+    get_state_keys_entry_message, output_entry_message, AwakeableEntryMessage, CallEntryMessage,
+    ClearAllStateEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage,
+    CompletePromiseEntryMessage, Empty, GetPromiseEntryMessage, GetStateEntryMessage,
+    GetStateKeysEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, PeekPromiseEntryMessage,
+    SetStateEntryMessage, SleepEntryMessage,
 };
 use crate::service_protocol::{Decoder, RawMessage, Version};
-use crate::vm::context::EagerGetState;
+use crate::vm::context::{EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::*;
 use crate::{
@@ -230,6 +232,25 @@ impl super::VM for CoreVM {
             "SysGetState",
             GetStateEntryMessage {
                 key: Bytes::from(key),
+                result,
+                ..Default::default()
+            },
+        ))
+    }
+
+    #[instrument(level = "debug", ret)]
+    fn sys_get_keys_state(&mut self) -> VMResult<AsyncResultHandle> {
+        let result = match self.context.eager_state.get_keys() {
+            EagerGetStateKeys::Unknown => None,
+            EagerGetStateKeys::Keys(keys) => {
+                Some(get_state_keys_entry_message::Result::Value(StateKeys {
+                    keys: keys.into_iter().map(Bytes::from).collect(),
+                }))
+            }
+        };
+        self.do_transition(SysCompletableEntry(
+            "SysGetStateKeys",
+            GetStateKeysEntryMessage {
                 result,
                 ..Default::default()
             },
