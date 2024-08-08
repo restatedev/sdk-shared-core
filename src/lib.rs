@@ -165,15 +165,15 @@ pub trait VM: Sized {
 
     fn sys_input(&mut self) -> VMResult<Input>;
 
-    fn sys_get_state(&mut self, key: String) -> VMResult<AsyncResultHandle>;
+    fn sys_state_get(&mut self, key: String) -> VMResult<AsyncResultHandle>;
 
-    fn sys_get_keys_state(&mut self) -> VMResult<AsyncResultHandle>;
+    fn sys_state_get_keys(&mut self) -> VMResult<AsyncResultHandle>;
 
-    fn sys_set_state(&mut self, key: String, value: Vec<u8>) -> VMResult<()>;
+    fn sys_state_set(&mut self, key: String, value: Vec<u8>) -> VMResult<()>;
 
-    fn sys_clear_state(&mut self, key: String) -> VMResult<()>;
+    fn sys_state_clear(&mut self, key: String) -> VMResult<()>;
 
-    fn sys_clear_all_state(&mut self) -> VMResult<()>;
+    fn sys_state_clear_all(&mut self) -> VMResult<()>;
 
     fn sys_sleep(&mut self, duration: Duration) -> VMResult<AsyncResultHandle>;
 

@@ -52,7 +52,7 @@ fn get_state_entry_mismatch() {
             key: Bytes::from_static(b"another-key"),
             ..Default::default()
         },
-        |vm| vm.sys_get_state("another-key".to_owned()),
+        |vm| vm.sys_state_get("another-key".to_owned()),
     );
 }
 

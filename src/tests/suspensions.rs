@@ -14,7 +14,7 @@ fn suspension_should_be_triggered_in_notify_input_closed() {
         .run_without_closing_input(|vm, _| {
             let _ = vm.sys_input().unwrap();
 
-            let handle = vm.sys_get_state("Personaggio".to_owned()).unwrap();
+            let handle = vm.sys_state_get("Personaggio".to_owned()).unwrap();
 
             // Also take_async_result returns Ok(None)
             assert_that!(vm.take_async_result(handle), ok(none()));

@@ -35,7 +35,7 @@ fn just_replay() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_get_state("Personaggio".to_owned()).unwrap();
+            let handle = vm.sys_state_get("Personaggio".to_owned()).unwrap();
             let_assert!(Some(Value::Success(b)) = vm.take_async_result(handle).unwrap());
             assert_eq!(b, b"Pippo".to_vec());
 
@@ -67,7 +67,7 @@ fn suspend() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_get_state("Personaggio".to_owned()).unwrap();
+            let handle = vm.sys_state_get("Personaggio".to_owned()).unwrap();
 
             // The callback should be completed immediately
             vm.notify_await_point(handle);
@@ -107,7 +107,7 @@ fn completed() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_get_state("Personaggio".to_owned()).unwrap();
+            let handle = vm.sys_state_get("Personaggio".to_owned()).unwrap();
 
             vm.notify_await_point(handle);
             let_assert!(Some(Value::Success(b)) = vm.take_async_result(handle).unwrap());
@@ -158,7 +158,7 @@ fn completed_with_eager_state() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_get_state("Personaggio".to_owned()).unwrap();
+            let handle = vm.sys_state_get("Personaggio".to_owned()).unwrap();
 
             vm.notify_await_point(handle);
             let_assert!(Some(Value::Success(b)) = vm.take_async_result(handle).unwrap());
