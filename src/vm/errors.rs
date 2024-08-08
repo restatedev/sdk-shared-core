@@ -178,6 +178,18 @@ pub struct AwaitingTwoAsyncResultError {
 #[error("Cannot convert a eager state key into UTF-8 String: {0:?}")]
 pub struct BadEagerStateKeyError(#[from] pub(crate) std::string::FromUtf8Error);
 
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Cannot decode state keys message: {0}")]
+pub struct DecodeStateKeysProst(#[from] pub(crate) prost::DecodeError);
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Cannot decode state keys message: {0}")]
+pub struct DecodeStateKeysUtf8(#[from] pub(crate) std::string::FromUtf8Error);
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Unexpected empty value variant for state keys")]
+pub struct EmptyStateKeys;
+
 // Conversions to VMError
 
 trait WithInvocationErrorCode {
@@ -213,3 +225,6 @@ impl_error_code!(UnavailableEntryError, JOURNAL_MISMATCH);
 impl_error_code!(UnexpectedStateError, PROTOCOL_VIOLATION);
 impl_error_code!(AwaitingTwoAsyncResultError, INTERNAL);
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
+impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
+impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);
+impl_error_code!(EmptyStateKeys, PROTOCOL_VIOLATION);

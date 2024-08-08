@@ -100,10 +100,10 @@ impl Transition<Context, NewCompletionMessage> for State {
                 ref mut async_results,
                 ..
             } => {
-                async_results.insert_ready_result(
+                async_results.insert_unparsed_completion(
                     entry_index,
-                    result.ok_or(errors::EXPECTED_COMPLETION_RESULT)?.into(),
-                );
+                    result.ok_or(errors::EXPECTED_COMPLETION_RESULT)?,
+                )?;
             }
             State::Ended | State::Suspended => {
                 // Can ignore

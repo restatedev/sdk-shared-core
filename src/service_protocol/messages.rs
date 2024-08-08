@@ -1,5 +1,7 @@
+use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
 use crate::service_protocol::{MessageHeader, MessageType};
-use crate::{NonEmptyValue, Value};
+use crate::vm::errors::{DecodeStateKeysProst, DecodeStateKeysUtf8, EmptyStateKeys};
+use crate::{NonEmptyValue, VMError, Value};
 use paste::paste;
 use prost::Message;
 
@@ -23,7 +25,8 @@ pub trait EntryMessageHeaderEq {
 
 pub trait CompletableEntryMessage: RestateMessage + EntryMessage + EntryMessageHeaderEq {
     fn is_completed(&self) -> bool;
-    fn into_completion(self) -> Option<Value>;
+    fn into_completion(self) -> Result<Option<Value>, VMError>;
+    fn completion_parsing_hint() -> CompletionParsingHint;
 }
 
 impl<M: CompletableEntryMessage> WriteableRestateMessage for M {
@@ -70,8 +73,12 @@ macro_rules! impl_message_traits {
                 self.result.is_some()
             }
 
-            fn into_completion(self) -> Option<Value> {
-                self.result.map(Into::into)
+            fn into_completion(self) -> Result<Option<Value>, VMError> {
+                self.result.map(TryInto::try_into).transpose()
+            }
+
+            fn completion_parsing_hint() -> CompletionParsingHint {
+                CompletionParsingHint::EmptyOrSuccessOrValue
             }
         }
     };
@@ -115,6 +122,27 @@ impl_message_traits!(GetStateEntry: completable_entry);
 impl EntryMessageHeaderEq for GetStateEntryMessage {
     fn header_eq(&self, other: &Self) -> bool {
         self.key.eq(&other.key)
+    }
+}
+
+impl_message_traits!(GetStateKeysEntry: message);
+impl_message_traits!(GetStateKeysEntry: entry);
+impl CompletableEntryMessage for GetStateKeysEntryMessage {
+    fn is_completed(&self) -> bool {
+        self.result.is_some()
+    }
+
+    fn into_completion(self) -> Result<Option<Value>, VMError> {
+        self.result.map(TryInto::try_into).transpose()
+    }
+
+    fn completion_parsing_hint() -> CompletionParsingHint {
+        CompletionParsingHint::StateKeys
+    }
+}
+impl EntryMessageHeaderEq for GetStateKeysEntryMessage {
+    fn header_eq(&self, _: &Self) -> bool {
+        true
     }
 }
 
@@ -207,78 +235,101 @@ impl EntryMessageHeaderEq for RunEntryMessage {
 
 // --- Completion extraction
 
-impl From<completion_message::Result> for Value {
-    fn from(value: completion_message::Result) -> Self {
-        match value {
-            completion_message::Result::Empty(_) => Value::Void,
-            completion_message::Result::Value(b) => Value::Success(b.to_vec()),
-            completion_message::Result::Failure(f) => Value::Failure(f.into()),
-        }
-    }
-}
+impl TryFrom<get_state_entry_message::Result> for Value {
+    type Error = VMError;
 
-impl From<get_state_entry_message::Result> for Value {
-    fn from(value: get_state_entry_message::Result) -> Self {
-        match value {
+    fn try_from(value: get_state_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
             get_state_entry_message::Result::Empty(_) => Value::Void,
             get_state_entry_message::Result::Value(b) => Value::Success(b.into()),
             get_state_entry_message::Result::Failure(f) => Value::Failure(f.into()),
+        })
+    }
+}
+
+impl TryFrom<get_state_keys_entry_message::Result> for Value {
+    type Error = VMError;
+
+    fn try_from(value: get_state_keys_entry_message::Result) -> Result<Self, Self::Error> {
+        match value {
+            get_state_keys_entry_message::Result::Value(state_keys) => {
+                let mut state_keys = state_keys
+                    .keys
+                    .into_iter()
+                    .map(|b| String::from_utf8(b.to_vec()).map_err(DecodeStateKeysUtf8))
+                    .collect::<Result<Vec<_>, _>>()?;
+                state_keys.sort();
+                Ok(Value::StateKeys(state_keys))
+            }
+            get_state_keys_entry_message::Result::Failure(f) => Ok(Value::Failure(f.into())),
         }
     }
 }
 
-impl From<sleep_entry_message::Result> for Value {
-    fn from(value: sleep_entry_message::Result) -> Self {
-        match value {
+impl TryFrom<sleep_entry_message::Result> for Value {
+    type Error = VMError;
+
+    fn try_from(value: sleep_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
             sleep_entry_message::Result::Empty(_) => Value::Void,
             sleep_entry_message::Result::Failure(f) => Value::Failure(f.into()),
-        }
+        })
     }
 }
 
-impl From<call_entry_message::Result> for Value {
-    fn from(value: call_entry_message::Result) -> Self {
-        match value {
+impl TryFrom<call_entry_message::Result> for Value {
+    type Error = VMError;
+
+    fn try_from(value: call_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
             call_entry_message::Result::Value(b) => Value::Success(b.into()),
             call_entry_message::Result::Failure(f) => Value::Failure(f.into()),
-        }
+        })
     }
 }
 
-impl From<awakeable_entry_message::Result> for Value {
-    fn from(value: awakeable_entry_message::Result) -> Self {
-        match value {
+impl TryFrom<awakeable_entry_message::Result> for Value {
+    type Error = VMError;
+
+    fn try_from(value: awakeable_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
             awakeable_entry_message::Result::Value(b) => Value::Success(b.into()),
             awakeable_entry_message::Result::Failure(f) => Value::Failure(f.into()),
-        }
+        })
     }
 }
 
-impl From<get_promise_entry_message::Result> for Value {
-    fn from(value: get_promise_entry_message::Result) -> Self {
-        match value {
+impl TryFrom<get_promise_entry_message::Result> for Value {
+    type Error = VMError;
+
+    fn try_from(value: get_promise_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
             get_promise_entry_message::Result::Value(b) => Value::Success(b.into()),
             get_promise_entry_message::Result::Failure(f) => Value::Failure(f.into()),
-        }
+        })
     }
 }
 
-impl From<peek_promise_entry_message::Result> for Value {
-    fn from(value: peek_promise_entry_message::Result) -> Self {
-        match value {
+impl TryFrom<peek_promise_entry_message::Result> for Value {
+    type Error = VMError;
+
+    fn try_from(value: peek_promise_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
             peek_promise_entry_message::Result::Empty(_) => Value::Void,
             peek_promise_entry_message::Result::Value(b) => Value::Success(b.into()),
             peek_promise_entry_message::Result::Failure(f) => Value::Failure(f.into()),
-        }
+        })
     }
 }
 
-impl From<complete_promise_entry_message::Result> for Value {
-    fn from(value: complete_promise_entry_message::Result) -> Self {
-        match value {
+impl TryFrom<complete_promise_entry_message::Result> for Value {
+    type Error = VMError;
+
+    fn try_from(value: complete_promise_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
             complete_promise_entry_message::Result::Empty(_) => Value::Void,
             complete_promise_entry_message::Result::Failure(f) => Value::Failure(f.into()),
-        }
+        })
     }
 }
 
@@ -307,6 +358,42 @@ impl From<Failure> for crate::Failure {
         Self {
             code: value.code as u16,
             message: value.message,
+        }
+    }
+}
+
+// --- Completion parsing
+
+#[derive(Debug)]
+pub(crate) enum CompletionParsingHint {
+    StateKeys,
+    /// The normal case
+    EmptyOrSuccessOrValue,
+}
+
+impl CompletionParsingHint {
+    pub(crate) fn parse(self, result: completion_message::Result) -> Result<Value, VMError> {
+        match self {
+            CompletionParsingHint::StateKeys => match result {
+                completion_message::Result::Empty(_) => Err(EmptyStateKeys.into()),
+                completion_message::Result::Value(b) => {
+                    let mut state_keys = StateKeys::decode(b)
+                        .map_err(DecodeStateKeysProst)?
+                        .keys
+                        .into_iter()
+                        .map(|b| String::from_utf8(b.to_vec()).map_err(DecodeStateKeysUtf8))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    state_keys.sort();
+
+                    Ok(Value::StateKeys(state_keys))
+                }
+                completion_message::Result::Failure(f) => Ok(Value::Failure(f.into())),
+            },
+            CompletionParsingHint::EmptyOrSuccessOrValue => Ok(match result {
+                completion_message::Result::Empty(_) => Value::Void,
+                completion_message::Result::Value(b) => Value::Success(b.to_vec()),
+                completion_message::Result::Failure(f) => Value::Failure(f.into()),
+            }),
         }
     }
 }

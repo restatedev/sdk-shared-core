@@ -1,6 +1,9 @@
-use crate::service_protocol::messages::{EntryMessage, RestateMessage, WriteableRestateMessage};
+use crate::service_protocol::messages::{
+    completion_message, CompletionParsingHint, EntryMessage, RestateMessage,
+    WriteableRestateMessage,
+};
 use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::Value;
+use crate::{VMError, Value};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, VecDeque};
@@ -75,8 +78,15 @@ impl Output {
     }
 }
 
+#[derive(Debug)]
+enum UnparsedCompletionOrParsingHint {
+    UnparsedCompletion(completion_message::Result),
+    ParsingHint(CompletionParsingHint),
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct AsyncResultsState {
+    unparsed_completions_or_parsing_hints: HashMap<u32, UnparsedCompletionOrParsingHint>,
     ready_results: HashMap<u32, Value>,
     last_acked_entry: u32,
     waiting_ack_results: VecDeque<(u32, Value)>,
@@ -89,6 +99,58 @@ impl AsyncResultsState {
 
     pub(crate) fn take_ready_result(&mut self, index: u32) -> Option<Value> {
         self.ready_results.remove(&index)
+    }
+
+    pub(crate) fn insert_completion_parsing_hint(
+        &mut self,
+        index: u32,
+        completion_parsing_hint: CompletionParsingHint,
+    ) -> Result<(), VMError> {
+        if let Some(unparsed_completion_or_parsing_hint) =
+            self.unparsed_completions_or_parsing_hints.remove(&index)
+        {
+            match unparsed_completion_or_parsing_hint {
+                UnparsedCompletionOrParsingHint::UnparsedCompletion(result) => {
+                    self.ready_results
+                        .insert(index, completion_parsing_hint.parse(result)?);
+                }
+                UnparsedCompletionOrParsingHint::ParsingHint(_) => {
+                    panic!("Unexpected double call to insert_completion_parsing_hint for entry {index}")
+                }
+            }
+        } else {
+            self.unparsed_completions_or_parsing_hints.insert(
+                index,
+                UnparsedCompletionOrParsingHint::ParsingHint(completion_parsing_hint),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn insert_unparsed_completion(
+        &mut self,
+        index: u32,
+        result: completion_message::Result,
+    ) -> Result<(), VMError> {
+        if let Some(unparsed_completion_or_parsing_hint) =
+            self.unparsed_completions_or_parsing_hints.remove(&index)
+        {
+            match unparsed_completion_or_parsing_hint {
+                UnparsedCompletionOrParsingHint::UnparsedCompletion(_) => {
+                    panic!("Unexpected double call to insert_unparsed_completion for entry {index}")
+                }
+                UnparsedCompletionOrParsingHint::ParsingHint(completion_parsing_hint) => {
+                    self.ready_results
+                        .insert(index, completion_parsing_hint.parse(result)?);
+                }
+            }
+        } else {
+            self.unparsed_completions_or_parsing_hints.insert(
+                index,
+                UnparsedCompletionOrParsingHint::UnparsedCompletion(result),
+            );
+        }
+        Ok(())
     }
 
     pub(crate) fn insert_ready_result(&mut self, index: u32, value: Value) {
