@@ -1,3 +1,4 @@
+use crate::headers::HeaderMap;
 use crate::service_protocol::messages::{
     complete_awakeable_entry_message, complete_promise_entry_message, get_state_entry_message,
     output_entry_message, AwakeableEntryMessage, CallEntryMessage, ClearAllStateEntryMessage,
@@ -18,13 +19,12 @@ use base64::{alphabet, Engine};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use context::{AsyncResultsState, Context, Output, RunState};
 use std::borrow::Cow;
-use std::collections::{ VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
 use std::mem::size_of;
 use std::time::{Duration, SystemTime};
 use strum::IntoStaticStr;
 use tracing::instrument;
-use crate::headers::HeaderMap;
 
 mod context;
 pub(crate) mod errors;
@@ -97,8 +97,14 @@ const _: () = is_send::<CoreVM>();
 impl super::VM for CoreVM {
     #[instrument(level = "debug", skip_all, ret)]
     fn new(request_headers: impl HeaderMap) -> Result<Self, VMError> {
-        let version = request_headers.extract(CONTENT_TYPE)
-            .map_err(|e| VMError::new(errors::codes::BAD_REQUEST, format!("cannot read '{CONTENT_TYPE}' header: {e:?}")))?
+        let version = request_headers
+            .extract(CONTENT_TYPE)
+            .map_err(|e| {
+                VMError::new(
+                    errors::codes::BAD_REQUEST,
+                    format!("cannot read '{CONTENT_TYPE}' header: {e:?}"),
+                )
+            })?
             .ok_or(errors::MISSING_CONTENT_TYPE)?
             .parse::<Version>()?;
 

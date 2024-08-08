@@ -5,9 +5,9 @@ mod vm;
 use std::borrow::Cow;
 use std::time::Duration;
 
+pub use headers::HeaderMap;
 pub use request_identity::*;
 pub use vm::CoreVM;
-pub use headers::HeaderMap;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Header {
@@ -244,6 +244,6 @@ pub trait VM: Sized {
 //     }
 //     io.close()
 
+mod headers;
 #[cfg(test)]
 mod tests;
-mod headers;
