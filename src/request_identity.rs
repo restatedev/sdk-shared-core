@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::headers::HeaderMap;
 use jsonwebtoken::{DecodingKey, Validation};
 use serde::Deserialize;
 use std::collections::HashSet;
-use crate::headers::HeaderMap;
 
 const SIGNATURE_SCHEME_HEADER: &str = "x-restate-signature-scheme";
 const SIGNATURE_SCHEME_V1: &str = "v1";
