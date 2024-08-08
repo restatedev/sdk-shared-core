@@ -28,7 +28,7 @@ fn run_guard() {
 
             let_assert!(RunEnterResult::NotExecuted = vm.sys_run_enter("".to_owned()).unwrap());
             assert_that!(
-                vm.sys_get_state("Personaggio".to_owned()),
+                vm.sys_state_get("Personaggio".to_owned()),
                 err(eq_vm_error(vm::errors::INSIDE_RUN))
             );
         });

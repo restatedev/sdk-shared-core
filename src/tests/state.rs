@@ -10,7 +10,7 @@ use bytes::Bytes;
 fn get_state_handler(vm: &mut CoreVM) {
     vm.sys_input().unwrap();
 
-    let h1 = vm.sys_get_state("STATE".to_owned()).unwrap();
+    let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
     vm.notify_await_point(h1);
     let h1_result = vm.take_async_result(h1);
@@ -357,7 +357,7 @@ mod eager {
     fn get_empty_state_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_get_state("STATE".to_owned()).unwrap();
+        let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
         vm.notify_await_point(h1);
         let h1_result = vm.take_async_result(h1);
@@ -599,7 +599,7 @@ mod eager {
     fn append_state_handler(vm: &mut CoreVM) {
         let input = vm.sys_input().unwrap().input;
 
-        let h1 = vm.sys_get_state("STATE".to_owned()).unwrap();
+        let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
         vm.notify_await_point(h1);
         let h1_result = vm.take_async_result(h1);
         if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
@@ -618,13 +618,13 @@ mod eager {
             Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
-        vm.sys_set_state(
+        vm.sys_state_set(
             "STATE".to_owned(),
             [get_result.clone(), input.clone()].concat(),
         )
         .unwrap();
 
-        let h2 = vm.sys_get_state("STATE".to_owned()).unwrap();
+        let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
         vm.notify_await_point(h2);
         let h2_result = vm.take_async_result(h2);
         if let Err(SuspendedOrVMError::Suspended(_)) = &h2_result {
@@ -778,7 +778,7 @@ mod eager {
     fn get_and_clear_state_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_get_state("STATE".to_owned()).unwrap();
+        let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
         vm.notify_await_point(h1);
         let h1_result = vm.take_async_result(h1);
         if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
@@ -797,9 +797,9 @@ mod eager {
             Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
-        vm.sys_clear_state("STATE".to_owned()).unwrap();
+        vm.sys_state_clear("STATE".to_owned()).unwrap();
 
-        let h2 = vm.sys_get_state("STATE".to_owned()).unwrap();
+        let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
         vm.notify_await_point(h2);
         let h2_result = vm.take_async_result(h2);
         if let Err(SuspendedOrVMError::Suspended(_)) = &h2_result {
@@ -936,7 +936,7 @@ mod eager {
     fn get_and_clear_all_state_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_get_state("STATE".to_owned()).unwrap();
+        let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
         vm.notify_await_point(h1);
         let h1_result = vm.take_async_result(h1);
         if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
@@ -955,13 +955,13 @@ mod eager {
             Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
-        vm.sys_clear_all_state().unwrap();
+        vm.sys_state_clear_all().unwrap();
 
-        let h2 = vm.sys_get_state("STATE".to_owned()).unwrap();
+        let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
         vm.notify_await_point(h2);
         let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h2));
 
-        let h3 = vm.sys_get_state("ANOTHER_STATE".to_owned()).unwrap();
+        let h3 = vm.sys_state_get("ANOTHER_STATE".to_owned()).unwrap();
         vm.notify_await_point(h3);
         let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h3));
 
@@ -1110,11 +1110,11 @@ mod eager {
     fn consecutive_get_with_empty_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_get_state("key-0".to_owned()).unwrap();
+        let h1 = vm.sys_state_get("key-0".to_owned()).unwrap();
         vm.notify_await_point(h1);
         let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h1));
 
-        let h2 = vm.sys_get_state("key-0".to_owned()).unwrap();
+        let h2 = vm.sys_state_get("key-0".to_owned()).unwrap();
         vm.notify_await_point(h2);
         let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h2));
 
@@ -1215,7 +1215,7 @@ mod state_keys {
     fn get_state_keys_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_get_keys_state().unwrap();
+        let h1 = vm.sys_state_get_keys().unwrap();
 
         vm.notify_await_point(h1);
         let h1_result = vm.take_async_result(h1);

@@ -222,14 +222,14 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn sys_get_state(&mut self, key: String) -> Result<AsyncResultHandle, VMError> {
+    fn sys_state_get(&mut self, key: String) -> Result<AsyncResultHandle, VMError> {
         let result = match self.context.eager_state.get(&key) {
             EagerGetState::Unknown => None,
             EagerGetState::Empty => Some(get_state_entry_message::Result::Empty(Empty::default())),
             EagerGetState::Value(v) => Some(get_state_entry_message::Result::Value(v)),
         };
         self.do_transition(SysCompletableEntry(
-            "SysGetState",
+            "SysStateGet",
             GetStateEntryMessage {
                 key: Bytes::from(key),
                 result,
@@ -239,7 +239,7 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn sys_get_keys_state(&mut self) -> VMResult<AsyncResultHandle> {
+    fn sys_state_get_keys(&mut self) -> VMResult<AsyncResultHandle> {
         let result = match self.context.eager_state.get_keys() {
             EagerGetStateKeys::Unknown => None,
             EagerGetStateKeys::Keys(keys) => {
@@ -249,7 +249,7 @@ impl super::VM for CoreVM {
             }
         };
         self.do_transition(SysCompletableEntry(
-            "SysGetStateKeys",
+            "SysStateGetKeys",
             GetStateKeysEntryMessage {
                 result,
                 ..Default::default()
@@ -258,13 +258,13 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn sys_set_state(&mut self, key: String, value: Vec<u8>) -> Result<(), VMError> {
+    fn sys_state_set(&mut self, key: String, value: Vec<u8>) -> Result<(), VMError> {
         let value_buffer = Bytes::from(value);
         self.context
             .eager_state
             .set(key.clone(), value_buffer.clone());
         self.do_transition(SysNonCompletableEntry(
-            "SysSetState",
+            "SysStateSet",
             SetStateEntryMessage {
                 key: Bytes::from(key.into_bytes()),
                 value: value_buffer,
@@ -274,10 +274,10 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn sys_clear_state(&mut self, key: String) -> Result<(), VMError> {
+    fn sys_state_clear(&mut self, key: String) -> Result<(), VMError> {
         self.context.eager_state.clear(key.clone());
         self.do_transition(SysNonCompletableEntry(
-            "SysClearState",
+            "SysStateClear",
             ClearStateEntryMessage {
                 key: Bytes::from(key.into_bytes()),
                 ..ClearStateEntryMessage::default()
@@ -286,10 +286,10 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn sys_clear_all_state(&mut self) -> Result<(), VMError> {
+    fn sys_state_clear_all(&mut self) -> Result<(), VMError> {
         self.context.eager_state.clear_all();
         self.do_transition(SysNonCompletableEntry(
-            "SysClearAllState",
+            "SysStateClearAll",
             ClearAllStateEntryMessage::default(),
         ))
     }

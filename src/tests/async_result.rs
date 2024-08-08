@@ -220,7 +220,7 @@ mod reverse_await_order {
         }
         let_assert!(Some(Value::Success(h2_value)) = h2_result.unwrap());
 
-        vm.sys_set_state("A2".to_owned(), h2_value.clone()).unwrap();
+        vm.sys_state_set("A2".to_owned(), h2_value.clone()).unwrap();
 
         vm.notify_await_point(h1);
         let h1_result = vm.take_async_result(h1);
