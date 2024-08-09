@@ -6,6 +6,14 @@ use crate::service_protocol::messages::{
 use assert2::let_assert;
 use test_log::test;
 
+fn echo_handler(vm: &mut CoreVM) {
+    let_assert!(Input { input, .. } = vm.sys_input().unwrap());
+    assert_eq!(input, b"my-data".to_vec());
+
+    vm.sys_write_output(NonEmptyValue::Success(input)).unwrap();
+    vm.sys_end().unwrap();
+}
+
 #[test]
 fn echo() {
     let mut output = VMTestCase::new(Version::V1)
@@ -22,13 +30,7 @@ fn echo() {
             value: Bytes::from_static(b"my-data"),
             ..InputEntryMessage::default()
         })
-        .run(|vm| {
-            let_assert!(Input { input, .. } = vm.sys_input().unwrap());
-            assert_eq!(input, b"my-data".to_vec());
-
-            vm.sys_write_output(NonEmptyValue::Success(input)).unwrap();
-            vm.sys_end().unwrap();
-        });
+        .run(echo_handler);
 
     assert_eq!(
         output.next_decoded::<OutputEntryMessage>().unwrap(),
@@ -85,6 +87,37 @@ fn headers() {
             ..OutputEntryMessage::default()
         }
     );
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn replay_output_too() {
+    let mut output = VMTestCase::new(Version::V1)
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 2,
+            state_map: vec![],
+            partial_state: false,
+            key: "".to_string(),
+        })
+        .input(InputEntryMessage {
+            headers: vec![],
+            value: Bytes::from_static(b"my-data"),
+            ..InputEntryMessage::default()
+        })
+        .input(OutputEntryMessage {
+            result: Some(output_entry_message::Result::Value(Bytes::from_static(
+                b"my-data",
+            ))),
+            ..OutputEntryMessage::default()
+        })
+        .run(echo_handler);
+
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),
         EndMessage::default()
