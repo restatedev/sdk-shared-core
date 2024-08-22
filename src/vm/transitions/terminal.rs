@@ -4,13 +4,26 @@ use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::Transition;
 use crate::vm::State;
 use crate::VMError;
+use std::time::Duration;
 
-pub(crate) struct HitError(pub(crate) VMError);
+pub(crate) struct HitError {
+    pub(crate) error: VMError,
+    pub(crate) next_retry_delay: Option<Duration>,
+}
 
 impl Transition<Context, HitError> for State {
-    fn transition(self, _: &mut Context, HitError(e): HitError) -> Result<Self, VMError> {
+    fn transition(
+        self,
+        ctx: &mut Context,
+        HitError {
+            error,
+            next_retry_delay,
+        }: HitError,
+    ) -> Result<Self, VMError> {
+        ctx.next_retry_delay = next_retry_delay;
+
         // We let CoreVM::do_transition handle this
-        Err(e)
+        Err(error)
     }
 }
 

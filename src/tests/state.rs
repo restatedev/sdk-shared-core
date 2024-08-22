@@ -1,5 +1,4 @@
 use crate::service_protocol::messages::{start_message::StateEntry, *};
-use crate::service_protocol::Version;
 use crate::tests::VMTestCase;
 use crate::{CoreVM, NonEmptyValue, SuspendedOrVMError, Value, VM};
 use assert2::let_assert;
@@ -43,7 +42,7 @@ mod only_lazy_state {
 
     #[test]
     fn entry_already_completed() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -81,7 +80,7 @@ mod only_lazy_state {
     }
     #[test]
     fn entry_already_completed_empty() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -117,7 +116,7 @@ mod only_lazy_state {
     }
     #[test]
     fn new_entry() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -149,7 +148,7 @@ mod only_lazy_state {
     }
     #[test]
     fn entry_not_completed_on_replay() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -178,7 +177,7 @@ mod only_lazy_state {
     }
     #[test]
     fn entry_on_replay_completed_later() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -219,7 +218,7 @@ mod only_lazy_state {
     }
     #[test]
     fn new_entry_completed_later() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -263,7 +262,7 @@ mod only_lazy_state {
     }
     #[test]
     fn replay_failed_get_state_entry() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -303,7 +302,7 @@ mod only_lazy_state {
     }
     #[test]
     fn complete_failing_get_state_entry() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -387,7 +386,7 @@ mod eager {
 
     #[test]
     fn get_empty_with_complete_state() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -423,7 +422,7 @@ mod eager {
 
     #[test]
     fn get_empty_with_partial_state() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -453,7 +452,7 @@ mod eager {
 
     #[test]
     fn get_empty_resume_with_partial_state() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -487,7 +486,7 @@ mod eager {
 
     #[test]
     fn get_with_complete_state() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -530,7 +529,7 @@ mod eager {
 
     #[test]
     fn get_with_partial_state() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -541,6 +540,7 @@ mod eager {
                 }],
                 partial_state: true,
                 key: "my-greeter".to_owned(),
+                ..Default::default()
             })
             .input(InputEntryMessage::default())
             .run(get_state_handler);
@@ -573,7 +573,7 @@ mod eager {
 
     #[test]
     fn get_with_partial_state_without_the_state_entry() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -654,7 +654,7 @@ mod eager {
 
     #[test]
     fn append_with_state_in_the_state_map() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -665,6 +665,7 @@ mod eager {
                 }],
                 partial_state: true,
                 key: "my-greeter".to_owned(),
+                ..Default::default()
             })
             .input(InputEntryMessage {
                 value: Bytes::from_static(b"Till"),
@@ -718,7 +719,7 @@ mod eager {
 
     #[test]
     fn append_with_partial_state_on_the_first_get() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -818,7 +819,7 @@ mod eager {
 
     #[test]
     fn get_and_clear_state_with_state_in_the_state_map() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -829,6 +830,7 @@ mod eager {
                 }],
                 partial_state: true,
                 key: "my-greeter".to_owned(),
+                ..Default::default()
             })
             .input(InputEntryMessage {
                 value: Bytes::from_static(b"Till"),
@@ -879,7 +881,7 @@ mod eager {
 
     #[test]
     fn get_and_clear_state_with_partial_state_on_the_first_get() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -976,7 +978,7 @@ mod eager {
 
     #[test]
     fn get_clear_all_with_state_in_the_state_map() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -993,6 +995,7 @@ mod eager {
                 ],
                 partial_state: true,
                 key: "my-greeter".to_owned(),
+                ..Default::default()
             })
             .input(InputEntryMessage {
                 value: Bytes::from_static(b"Till"),
@@ -1048,7 +1051,7 @@ mod eager {
 
     #[test]
     fn get_clear_all_with_partial_state_on_the_first_get() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -1129,7 +1132,7 @@ mod eager {
 
     #[test]
     fn consecutive_get_with_empty() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -1171,7 +1174,7 @@ mod eager {
 
     #[test]
     fn consecutive_get_with_empty_run_with_replay_of_the_first_get() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -1240,7 +1243,7 @@ mod state_keys {
 
     #[test]
     fn entry_already_completed() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -1280,7 +1283,7 @@ mod state_keys {
     }
     #[test]
     fn new_entry() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -1317,7 +1320,7 @@ mod state_keys {
         }
         .encode_to_vec()
         .into();
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -1364,7 +1367,7 @@ mod state_keys {
         }
         .encode_to_vec()
         .into();
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -1400,7 +1403,7 @@ mod state_keys {
     }
     #[test]
     fn new_entry_completed_with_eager_state() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),

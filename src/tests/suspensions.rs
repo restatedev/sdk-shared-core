@@ -8,7 +8,7 @@ use test_log::test;
 
 #[test]
 fn suspension_should_be_triggered_in_notify_input_closed() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run_without_closing_input(|vm, _| {
@@ -47,7 +47,7 @@ fn suspension_should_be_triggered_in_notify_input_closed() {
 
 #[test]
 fn suspension_should_be_triggered_with_correct_entry() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run_without_closing_input(|vm, _| {
@@ -89,7 +89,7 @@ fn suspension_should_be_triggered_with_correct_entry() {
 fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_no_suspension() {
     let completion = Bytes::from_static(b"completion");
 
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run_without_closing_input(|vm, encoder| {
@@ -132,7 +132,7 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
     );
     assert_that!(
         output.next_decoded::<OutputEntryMessage>().unwrap(),
-        has_output_success(completion)
+        is_output_with_success(completion)
     );
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),
@@ -145,7 +145,7 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
 fn when_notify_await_point_then_notify_completion_then_notify_input_closed_then_no_suspension() {
     let completion = Bytes::from_static(b"completion");
 
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run_without_closing_input(|vm, encoder| {
@@ -186,7 +186,7 @@ fn when_notify_await_point_then_notify_completion_then_notify_input_closed_then_
     );
     assert_that!(
         output.next_decoded::<OutputEntryMessage>().unwrap(),
-        has_output_success(completion)
+        is_output_with_success(completion)
     );
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),

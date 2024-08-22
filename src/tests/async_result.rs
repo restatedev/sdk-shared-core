@@ -15,7 +15,7 @@ fn greeter_target() -> Target {
 
 #[test]
 fn dont_await_call() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
@@ -61,7 +61,7 @@ fn dont_await_call() {
 
 #[test]
 fn dont_await_call_dont_notify_input_closed() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
@@ -111,14 +111,12 @@ mod notify_await_point {
 
     #[test]
     fn await_twice_the_same_handle() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"123"),
                 debug_id: "123".to_string(),
                 known_entries: 1,
-                state_map: vec![],
-                partial_state: false,
-                key: "".to_string(),
+                ..Default::default()
             })
             .input(InputEntryMessage {
                 headers: vec![],
@@ -151,14 +149,12 @@ mod notify_await_point {
 
     #[test]
     fn await_two_handles_at_same_time() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"123"),
                 debug_id: "123".to_string(),
                 known_entries: 1,
-                state_map: vec![],
-                partial_state: false,
-                key: "".to_string(),
+                ..Default::default()
             })
             .input(InputEntryMessage {
                 headers: vec![],
@@ -240,7 +236,7 @@ mod reverse_await_order {
 
     #[test]
     fn none_completed() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -281,7 +277,7 @@ mod reverse_await_order {
 
     #[test]
     fn a1_and_a2_completed_later() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -349,7 +345,7 @@ mod reverse_await_order {
 
     #[test]
     fn a2_and_a1_completed_later() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -417,7 +413,7 @@ mod reverse_await_order {
 
     #[test]
     fn only_a2_completed() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
@@ -472,7 +468,7 @@ mod reverse_await_order {
 
     #[test]
     fn only_a1_completed() {
-        let mut output = VMTestCase::new(Version::V1)
+        let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),

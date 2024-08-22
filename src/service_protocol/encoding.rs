@@ -38,8 +38,9 @@ impl Encoder {
     pub fn new(service_protocol_version: Version) -> Self {
         assert_eq!(
             service_protocol_version,
-            Version::V1,
-            "Encoder only supports service protocol version V1"
+            Version::latest(),
+            "Encoder only supports service protocol version {:?}",
+            Version::latest()
         );
         Self {}
     }
@@ -106,8 +107,9 @@ impl Decoder {
     pub fn new(service_protocol_version: Version) -> Self {
         assert_eq!(
             service_protocol_version,
-            Version::V1,
-            "Decoder only supports service protocol version V1"
+            Version::latest(),
+            "Decoder only supports service protocol version {:?}",
+            Version::latest()
         );
         Self {
             buf: SegmentedBuf::new(),
@@ -183,8 +185,8 @@ mod tests {
 
     #[test]
     fn fill_decoder_with_several_messages() {
-        let encoder = Encoder::new(Version::V1);
-        let mut decoder = Decoder::new(Version::V1);
+        let encoder = Encoder::new(Version::latest());
+        let mut decoder = Decoder::new(Version::latest());
 
         let expected_msg_0 = messages::StartMessage {
             id: "key".into(),
@@ -193,6 +195,8 @@ mod tests {
             state_map: vec![],
             partial_state: true,
             key: "key".to_string(),
+            retry_count_since_last_stored_entry: 0,
+            duration_since_last_stored_entry: 0,
         };
 
         let expected_msg_1 = messages::InputEntryMessage {
@@ -256,8 +260,8 @@ mod tests {
     }
 
     fn partial_decoding_test(split_index: usize) {
-        let encoder = Encoder::new(Version::V1);
-        let mut decoder = Decoder::new(Version::V1);
+        let encoder = Encoder::new(Version::latest());
+        let mut decoder = Decoder::new(Version::latest());
 
         let expected_msg = messages::InputEntryMessage {
             value: Bytes::from_static("input".as_bytes()),

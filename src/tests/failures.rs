@@ -8,8 +8,8 @@ use test_log::test;
 
 #[test]
 fn got_closed_stream_before_end_of_replay() {
-    let mut vm = CoreVM::mock_init(Version::V1);
-    let encoder = Encoder::new(Version::V1);
+    let mut vm = CoreVM::mock_init(Version::latest());
+    let encoder = Encoder::new(Version::latest());
 
     vm.notify_input(encoder.encode(&StartMessage {
         id: Bytes::from_static(b"123"),
@@ -88,7 +88,7 @@ fn test_entry_mismatch<M: WriteableRestateMessage + Clone, T: fmt::Debug>(
     actual: M,
     user_code: impl FnOnce(&mut CoreVM) -> Result<T, VMError>,
 ) {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
