@@ -30,7 +30,8 @@ fn sleep_suspends() {
             }
             let_assert!(Some(Value::Void) = h1_result.unwrap());
 
-            vm.sys_write_output(NonEmptyValue::Success(vec![])).unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
+                .unwrap();
             vm.sys_end().unwrap();
         });
 
@@ -74,7 +75,8 @@ fn sleep_completed() {
             }
             let_assert!(Some(Value::Void) = h1_result.unwrap());
 
-            vm.sys_write_output(NonEmptyValue::Success(vec![])).unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
+                .unwrap();
             vm.sys_end().unwrap();
         });
 
@@ -121,7 +123,8 @@ fn sleep_still_sleeping() {
             }
             let_assert!(Some(Value::Void) = h1_result.unwrap());
 
-            vm.sys_write_output(NonEmptyValue::Success(vec![])).unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
+                .unwrap();
             vm.sys_end().unwrap();
         });
 

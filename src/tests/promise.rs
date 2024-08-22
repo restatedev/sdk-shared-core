@@ -299,8 +299,7 @@ mod complete_promise {
                 v => panic!("Unexpected value {v:?}"),
             };
 
-            vm.sys_write_output(NonEmptyValue::Success(output.to_vec()))
-                .unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(output)).unwrap();
             vm.sys_end().unwrap();
         }
     }
@@ -320,7 +319,9 @@ mod complete_promise {
                 entry_index: 1,
                 result: Some(completion_message::Result::Empty(Empty::default())),
             })
-            .run(handler(NonEmptyValue::Success(b"my val".to_vec())));
+            .run(handler(NonEmptyValue::Success(Bytes::from_static(
+                b"my val",
+            ))));
 
         assert_eq!(
             output
@@ -366,7 +367,9 @@ mod complete_promise {
                     message: "cannot write promise".to_owned(),
                 })),
             })
-            .run(handler(NonEmptyValue::Success(b"my val".to_vec())));
+            .run(handler(NonEmptyValue::Success(Bytes::from_static(
+                b"my val",
+            ))));
 
         assert_eq!(
             output

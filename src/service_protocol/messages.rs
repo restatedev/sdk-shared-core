@@ -241,7 +241,7 @@ impl TryFrom<get_state_entry_message::Result> for Value {
     fn try_from(value: get_state_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
             get_state_entry_message::Result::Empty(_) => Value::Void,
-            get_state_entry_message::Result::Value(b) => Value::Success(b.into()),
+            get_state_entry_message::Result::Value(b) => Value::Success(b),
             get_state_entry_message::Result::Failure(f) => Value::Failure(f.into()),
         })
     }
@@ -282,7 +282,7 @@ impl TryFrom<call_entry_message::Result> for Value {
 
     fn try_from(value: call_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
-            call_entry_message::Result::Value(b) => Value::Success(b.into()),
+            call_entry_message::Result::Value(b) => Value::Success(b),
             call_entry_message::Result::Failure(f) => Value::Failure(f.into()),
         })
     }
@@ -293,7 +293,7 @@ impl TryFrom<awakeable_entry_message::Result> for Value {
 
     fn try_from(value: awakeable_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
-            awakeable_entry_message::Result::Value(b) => Value::Success(b.into()),
+            awakeable_entry_message::Result::Value(b) => Value::Success(b),
             awakeable_entry_message::Result::Failure(f) => Value::Failure(f.into()),
         })
     }
@@ -304,7 +304,7 @@ impl TryFrom<get_promise_entry_message::Result> for Value {
 
     fn try_from(value: get_promise_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
-            get_promise_entry_message::Result::Value(b) => Value::Success(b.into()),
+            get_promise_entry_message::Result::Value(b) => Value::Success(b),
             get_promise_entry_message::Result::Failure(f) => Value::Failure(f.into()),
         })
     }
@@ -316,7 +316,7 @@ impl TryFrom<peek_promise_entry_message::Result> for Value {
     fn try_from(value: peek_promise_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
             peek_promise_entry_message::Result::Empty(_) => Value::Void,
-            peek_promise_entry_message::Result::Value(b) => Value::Success(b.into()),
+            peek_promise_entry_message::Result::Value(b) => Value::Success(b),
             peek_promise_entry_message::Result::Failure(f) => Value::Failure(f.into()),
         })
     }
@@ -336,7 +336,7 @@ impl TryFrom<complete_promise_entry_message::Result> for Value {
 impl From<run_entry_message::Result> for NonEmptyValue {
     fn from(value: run_entry_message::Result) -> Self {
         match value {
-            run_entry_message::Result::Value(b) => NonEmptyValue::Success(b.into()),
+            run_entry_message::Result::Value(b) => NonEmptyValue::Success(b),
             run_entry_message::Result::Failure(f) => NonEmptyValue::Failure(f.into()),
         }
     }
@@ -391,7 +391,7 @@ impl CompletionParsingHint {
             },
             CompletionParsingHint::EmptyOrSuccessOrValue => Ok(match result {
                 completion_message::Result::Empty(_) => Value::Void,
-                completion_message::Result::Value(b) => Value::Success(b.to_vec()),
+                completion_message::Result::Value(b) => Value::Success(b),
                 completion_message::Result::Failure(f) => Value::Failure(f.into()),
             }),
         }

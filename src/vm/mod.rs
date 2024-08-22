@@ -136,8 +136,8 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn notify_input(&mut self, buffer: Vec<u8>) {
-        self.decoder.push(buffer.into());
+    fn notify_input(&mut self, buffer: Bytes) {
+        self.decoder.push(buffer);
         loop {
             match self.decoder.consume_next() {
                 Ok(Some(msg)) => {
@@ -179,11 +179,10 @@ impl super::VM for CoreVM {
                 self.context
                     .output
                     .buffer
-                    .copy_to_bytes(self.context.output.buffer.remaining())
-                    .to_vec(),
+                    .copy_to_bytes(self.context.output.buffer.remaining()),
             )
         } else if !self.context.output.is_closed() {
-            TakeOutputResult::Buffer(Vec::default())
+            TakeOutputResult::Buffer(Bytes::default())
         } else {
             TakeOutputResult::EOF
         }
@@ -258,16 +257,13 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn sys_state_set(&mut self, key: String, value: Vec<u8>) -> Result<(), VMError> {
-        let value_buffer = Bytes::from(value);
-        self.context
-            .eager_state
-            .set(key.clone(), value_buffer.clone());
+    fn sys_state_set(&mut self, key: String, value: Bytes) -> Result<(), VMError> {
+        self.context.eager_state.set(key.clone(), value.clone());
         self.do_transition(SysNonCompletableEntry(
             "SysStateSet",
             SetStateEntryMessage {
                 key: Bytes::from(key.into_bytes()),
-                value: value_buffer,
+                value,
                 ..SetStateEntryMessage::default()
             },
         ))
@@ -304,32 +300,27 @@ impl super::VM for CoreVM {
         ))
     }
 
-    fn sys_call(&mut self, target: Target, input: Vec<u8>) -> VMResult<AsyncResultHandle> {
+    fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysCall",
             CallEntryMessage {
                 service_name: target.service,
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
-                parameter: input.into(),
+                parameter: input,
                 ..Default::default()
             },
         ))
     }
 
-    fn sys_send(
-        &mut self,
-        target: Target,
-        input: Vec<u8>,
-        delay: Option<Duration>,
-    ) -> VMResult<()> {
+    fn sys_send(&mut self, target: Target, input: Bytes, delay: Option<Duration>) -> VMResult<()> {
         self.do_transition(SysNonCompletableEntry(
             "SysOneWayCall",
             OneWayCallEntryMessage {
                 service_name: target.service,
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
-                parameter: input.into(),
+                parameter: input,
                 invoke_time: delay.map(duration_to_wakeup_time).unwrap_or_default(),
                 ..Default::default()
             },
@@ -358,9 +349,7 @@ impl super::VM for CoreVM {
             CompleteAwakeableEntryMessage {
                 id,
                 result: Some(match value {
-                    NonEmptyValue::Success(s) => {
-                        complete_awakeable_entry_message::Result::Value(s.into())
-                    }
+                    NonEmptyValue::Success(s) => complete_awakeable_entry_message::Result::Value(s),
                     NonEmptyValue::Failure(f) => {
                         complete_awakeable_entry_message::Result::Failure(f.into())
                     }
@@ -401,7 +390,7 @@ impl super::VM for CoreVM {
                 key,
                 completion: Some(match value {
                     NonEmptyValue::Success(s) => {
-                        complete_promise_entry_message::Completion::CompletionValue(s.into())
+                        complete_promise_entry_message::Completion::CompletionValue(s)
                     }
                     NonEmptyValue::Failure(f) => {
                         complete_promise_entry_message::Completion::CompletionFailure(f.into())
@@ -428,9 +417,7 @@ impl super::VM for CoreVM {
             "SysWriteOutput",
             OutputEntryMessage {
                 result: Some(match value {
-                    NonEmptyValue::Success(b) => {
-                        output_entry_message::Result::Value(Bytes::from(b))
-                    }
+                    NonEmptyValue::Success(b) => output_entry_message::Result::Value(b),
                     NonEmptyValue::Failure(f) => output_entry_message::Result::Failure(f.into()),
                 }),
                 ..OutputEntryMessage::default()

@@ -76,7 +76,8 @@ fn headers() {
                 })]
             );
 
-            vm.sys_write_output(NonEmptyValue::Success(vec![])).unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
+                .unwrap();
             vm.sys_end().unwrap();
         });
 

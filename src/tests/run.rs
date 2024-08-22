@@ -60,7 +60,7 @@ fn exit_without_enter() {
             vm.sys_input().unwrap();
 
             assert_that!(
-                vm.sys_run_exit(NonEmptyValue::Success(vec![1, 2, 3])),
+                vm.sys_run_exit(NonEmptyValue::Success(vec![1, 2, 3].into())),
                 err(eq_vm_error(vm::errors::INVOKED_RUN_EXIT_WITHOUT_ENTER))
             );
         });
@@ -96,7 +96,7 @@ fn enter_then_exit_then_suspend() {
                     vm.sys_run_enter("my-side-effect".to_owned()).unwrap()
             );
             let handle = vm
-                .sys_run_exit(NonEmptyValue::Success(b"123".to_vec()))
+                .sys_run_exit(NonEmptyValue::Success(Bytes::from_static(b"123")))
                 .unwrap();
             vm.notify_await_point(handle);
 
@@ -146,12 +146,12 @@ fn enter_then_exit_then_ack() {
                     vm.sys_run_enter("my-side-effect".to_owned()).unwrap()
             );
             let handle = vm
-                .sys_run_exit(NonEmptyValue::Success(b"123".to_vec()))
+                .sys_run_exit(NonEmptyValue::Success(Bytes::from_static(b"123")))
                 .unwrap();
             vm.notify_await_point(handle);
 
             // Send the ack and close the input
-            vm.notify_input(encoder.encode(&EntryAckMessage { entry_index: 1 }).into());
+            vm.notify_input(encoder.encode(&EntryAckMessage { entry_index: 1 }));
             vm.notify_input_closed();
 
             // We should now get the side effect result
@@ -247,7 +247,7 @@ mod consecutive_run {
         // First run
         let_assert!(RunEnterResult::NotExecuted = vm.sys_run_enter("".to_owned()).unwrap());
         let h1 = vm
-            .sys_run_exit(NonEmptyValue::Success(b"Francesco".to_vec()))
+            .sys_run_exit(NonEmptyValue::Success(Bytes::from_static(b"Francesco")))
             .unwrap();
         vm.notify_await_point(h1);
         let h1_result = vm.take_async_result(h1);
@@ -259,9 +259,9 @@ mod consecutive_run {
         // Second run
         let_assert!(RunEnterResult::NotExecuted = vm.sys_run_enter("".to_owned()).unwrap());
         let h2 = vm
-            .sys_run_exit(NonEmptyValue::Success(Vec::from(
-                String::from_utf8(h1_value).unwrap().to_uppercase(),
-            )))
+            .sys_run_exit(NonEmptyValue::Success(
+                Vec::from(String::from_utf8(h1_value.to_vec()).unwrap().to_uppercase()).into(),
+            ))
             .unwrap();
         vm.notify_await_point(h2);
         let h2_result = vm.take_async_result(h2);
@@ -272,7 +272,9 @@ mod consecutive_run {
 
         // Write the result as output
         vm.sys_write_output(NonEmptyValue::Success(
-            format!("Hello {}", String::from_utf8(h2_value).unwrap()).into_bytes(),
+            format!("Hello {}", String::from_utf8(h2_value.to_vec()).unwrap())
+                .into_bytes()
+                .into(),
         ))
         .unwrap();
         vm.sys_end().unwrap();

@@ -52,7 +52,7 @@ impl VMTestCase {
     }
 
     fn input<M: WriteableRestateMessage>(mut self, m: M) -> Self {
-        self.vm.notify_input(self.encoder.encode(&m).to_vec());
+        self.vm.notify_input(self.encoder.encode(&m));
         self
     }
 
@@ -83,7 +83,7 @@ impl OutputIterator {
     fn collect_vm(vm: &mut impl VM) -> Self {
         let mut decoder = Decoder::new(Version::V1);
         while let TakeOutputResult::Buffer(b) = vm.take_output() {
-            decoder.push(b.into());
+            decoder.push(b);
         }
         assert_eq!(vm.take_output(), TakeOutputResult::EOF);
 
@@ -170,6 +170,6 @@ fn take_output_on_newly_initialized_vm() {
     let mut vm = CoreVM::mock_init(Version::V1);
     assert_that!(
         vm.take_output(),
-        eq(TakeOutputResult::Buffer(Vec::default()))
+        eq(TakeOutputResult::Buffer(Bytes::default()))
     );
 }
