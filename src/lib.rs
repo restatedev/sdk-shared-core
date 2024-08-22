@@ -2,6 +2,7 @@ mod request_identity;
 mod service_protocol;
 mod vm;
 
+use bytes::Bytes;
 use std::borrow::Cow;
 use std::time::Duration;
 
@@ -57,7 +58,7 @@ pub struct Input {
     pub random_seed: u64,
     pub key: String,
     pub headers: Vec<Header>,
-    pub input: Vec<u8>,
+    pub input: Bytes,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -86,7 +87,7 @@ impl From<AsyncResultHandle> for u32 {
 pub enum Value {
     /// a void/None/undefined success
     Void,
-    Success(Vec<u8>),
+    Success(Bytes),
     Failure(Failure),
     /// Only returned for get_state_keys
     StateKeys(Vec<String>),
@@ -107,7 +108,7 @@ pub enum RunEnterResult {
 
 #[derive(Debug, Clone)]
 pub enum NonEmptyValue {
-    Success(Vec<u8>),
+    Success(Bytes),
     Failure(Failure),
 }
 
@@ -122,7 +123,7 @@ impl From<NonEmptyValue> for Value {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum TakeOutputResult {
-    Buffer(Vec<u8>),
+    Buffer(Bytes),
     EOF,
 }
 
@@ -135,7 +136,7 @@ pub trait VM: Sized {
 
     // --- Input stream
 
-    fn notify_input(&mut self, buffer: Vec<u8>);
+    fn notify_input(&mut self, buffer: Bytes);
 
     fn notify_input_closed(&mut self);
 
@@ -169,7 +170,7 @@ pub trait VM: Sized {
 
     fn sys_state_get_keys(&mut self) -> VMResult<AsyncResultHandle>;
 
-    fn sys_state_set(&mut self, key: String, value: Vec<u8>) -> VMResult<()>;
+    fn sys_state_set(&mut self, key: String, value: Bytes) -> VMResult<()>;
 
     fn sys_state_clear(&mut self, key: String) -> VMResult<()>;
 
@@ -177,10 +178,9 @@ pub trait VM: Sized {
 
     fn sys_sleep(&mut self, duration: Duration) -> VMResult<AsyncResultHandle>;
 
-    fn sys_call(&mut self, target: Target, input: Vec<u8>) -> VMResult<AsyncResultHandle>;
+    fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle>;
 
-    fn sys_send(&mut self, target: Target, input: Vec<u8>, delay: Option<Duration>)
-        -> VMResult<()>;
+    fn sys_send(&mut self, target: Target, input: Bytes, delay: Option<Duration>) -> VMResult<()>;
 
     fn sys_awakeable(&mut self) -> VMResult<(String, AsyncResultHandle)>;
 

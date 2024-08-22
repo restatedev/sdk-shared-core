@@ -20,7 +20,7 @@ fn get_state_handler(vm: &mut CoreVM) {
 
     let str_result = match h1_result.unwrap().unwrap() {
         Value::Void => "Unknown".to_owned(),
-        Value::Success(s) => String::from_utf8(s).unwrap(),
+        Value::Success(s) => String::from_utf8(s.to_vec()).unwrap(),
         Value::Failure(f) => {
             vm.sys_write_output(NonEmptyValue::Failure(f)).unwrap();
             vm.sys_end().unwrap();
@@ -29,8 +29,10 @@ fn get_state_handler(vm: &mut CoreVM) {
         Value::StateKeys(_) => panic!("Unexpected variant"),
     };
 
-    vm.sys_write_output(NonEmptyValue::Success(str_result.into_bytes()))
-        .unwrap();
+    vm.sys_write_output(NonEmptyValue::Success(Bytes::copy_from_slice(
+        str_result.as_bytes(),
+    )))
+    .unwrap();
     vm.sys_end().unwrap()
 }
 
@@ -376,8 +378,10 @@ mod eager {
             Value::StateKeys(_) => panic!("Unexpected variant"),
         };
 
-        vm.sys_write_output(NonEmptyValue::Success(str_result.into_bytes()))
-            .unwrap();
+        vm.sys_write_output(NonEmptyValue::Success(Bytes::copy_from_slice(
+            str_result.as_bytes(),
+        )))
+        .unwrap();
         vm.sys_end().unwrap()
     }
 
@@ -620,7 +624,7 @@ mod eager {
 
         vm.sys_state_set(
             "STATE".to_owned(),
-            [get_result.clone(), input.clone()].concat(),
+            Bytes::from([get_result.clone(), input.clone()].concat()),
         )
         .unwrap();
 
@@ -1118,7 +1122,8 @@ mod eager {
         vm.notify_await_point(h2);
         let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h2));
 
-        vm.sys_write_output(NonEmptyValue::Success(vec![])).unwrap();
+        vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
+            .unwrap();
         vm.sys_end().unwrap()
     }
 
@@ -1226,7 +1231,7 @@ mod state_keys {
         let output = match h1_result.unwrap().unwrap() {
             Value::Void | Value::Success(_) => panic!("Unexpected variants"),
             Value::Failure(f) => NonEmptyValue::Failure(f),
-            Value::StateKeys(keys) => NonEmptyValue::Success(keys.join(",").into_bytes()),
+            Value::StateKeys(keys) => NonEmptyValue::Success(Bytes::from(keys.join(","))),
         };
 
         vm.sys_write_output(output).unwrap();

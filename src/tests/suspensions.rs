@@ -102,14 +102,10 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             assert_that!(vm.take_async_result(h2), ok(none()));
 
             // Let's send Completion for h2
-            vm.notify_input(
-                encoder
-                    .encode(&CompletionMessage {
-                        entry_index: 2,
-                        result: Some(completion_message::Result::Value(completion.clone())),
-                    })
-                    .to_vec(),
-            );
+            vm.notify_input(encoder.encode(&CompletionMessage {
+                entry_index: 2,
+                result: Some(completion_message::Result::Value(completion.clone())),
+            }));
 
             // Let's await for input h2, then notify_input_closed
             vm.notify_await_point(h2);
@@ -118,10 +114,10 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             // This should not suspend
             assert_that!(
                 vm.take_async_result(h2),
-                ok(some(eq(Value::Success(completion.to_vec()))))
+                ok(some(eq(Value::Success(completion.clone()))))
             );
 
-            vm.sys_write_output(NonEmptyValue::Success(completion.to_vec()))
+            vm.sys_write_output(NonEmptyValue::Success(completion.clone()))
                 .unwrap();
             vm.sys_end().unwrap();
         });
@@ -163,23 +159,19 @@ fn when_notify_await_point_then_notify_completion_then_notify_input_closed_then_
 
             // Notify await point, then send completion, then close input
             vm.notify_await_point(h2);
-            vm.notify_input(
-                encoder
-                    .encode(&CompletionMessage {
-                        entry_index: 2,
-                        result: Some(completion_message::Result::Value(completion.clone())),
-                    })
-                    .to_vec(),
-            );
+            vm.notify_input(encoder.encode(&CompletionMessage {
+                entry_index: 2,
+                result: Some(completion_message::Result::Value(completion.clone())),
+            }));
             vm.notify_input_closed();
 
             // This should not suspend
             assert_that!(
                 vm.take_async_result(h2),
-                ok(some(eq(Value::Success(completion.to_vec()))))
+                ok(some(eq(Value::Success(completion.clone()))))
             );
 
-            vm.sys_write_output(NonEmptyValue::Success(completion.to_vec()))
+            vm.sys_write_output(NonEmptyValue::Success(completion.clone()))
                 .unwrap();
             vm.sys_end().unwrap();
         });

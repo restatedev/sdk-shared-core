@@ -11,18 +11,14 @@ fn got_closed_stream_before_end_of_replay() {
     let mut vm = CoreVM::mock_init(Version::V1);
     let encoder = Encoder::new(Version::V1);
 
-    vm.notify_input(
-        encoder
-            .encode(&StartMessage {
-                id: Bytes::from_static(b"123"),
-                debug_id: "123".to_string(),
-                // 2 expected entries!
-                known_entries: 2,
-                ..Default::default()
-            })
-            .to_vec(),
-    );
-    vm.notify_input(encoder.encode(&InputEntryMessage::default()).to_vec());
+    vm.notify_input(encoder.encode(&StartMessage {
+        id: Bytes::from_static(b"123"),
+        debug_id: "123".to_string(),
+        // 2 expected entries!
+        known_entries: 2,
+        ..Default::default()
+    }));
+    vm.notify_input(encoder.encode(&InputEntryMessage::default()));
 
     // Now notify input closed
     vm.notify_input_closed();
@@ -80,7 +76,7 @@ fn one_way_call_entry_mismatch() {
                     handler: "greet".to_owned(),
                     key: Some("my-key".to_owned()),
                 },
-                b"456".to_vec(),
+                Bytes::from_static(b"456"),
                 None,
             )
         },

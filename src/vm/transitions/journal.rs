@@ -127,7 +127,7 @@ impl TransitionAndReturn<Context, SysInput> for State {
                         value: value.into(),
                     })
                     .collect(),
-                input: msg.value.to_vec(),
+                input: msg.value,
             },
         ))
     }
@@ -274,7 +274,7 @@ impl TransitionAndReturn<Context, SysRunExit> for State {
                 let expected = RunEntryMessage {
                     name,
                     result: Some(match value {
-                        NonEmptyValue::Success(b) => run_entry_message::Result::Value(b.into()),
+                        NonEmptyValue::Success(b) => run_entry_message::Result::Value(b),
                         NonEmptyValue::Failure(f) => run_entry_message::Result::Failure(f.into()),
                     }),
                 };

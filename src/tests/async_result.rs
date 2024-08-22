@@ -27,9 +27,9 @@ fn dont_await_call() {
             vm.sys_input().unwrap();
 
             let _ = vm
-                .sys_call(greeter_target(), b"Francesco".to_vec())
+                .sys_call(greeter_target(), Bytes::from_static(b"Francesco"))
                 .unwrap();
-            vm.sys_write_output(NonEmptyValue::Success(b"Whatever".to_vec()))
+            vm.sys_write_output(NonEmptyValue::Success(Bytes::from_static(b"Whatever")))
                 .unwrap();
             vm.sys_end().unwrap()
         });
@@ -72,9 +72,9 @@ fn dont_await_call_dont_notify_input_closed() {
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
             let _ = vm
-                .sys_call(greeter_target(), b"Francesco".to_vec())
+                .sys_call(greeter_target(), Bytes::from_static(b"Francesco"))
                 .unwrap();
-            vm.sys_write_output(NonEmptyValue::Success(b"Whatever".to_vec()))
+            vm.sys_write_output(NonEmptyValue::Success(Bytes::from_static(b"Whatever")))
                 .unwrap();
             vm.sys_end().unwrap()
         });
@@ -209,9 +209,11 @@ mod reverse_await_order {
         vm.sys_input().unwrap();
 
         let h1 = vm
-            .sys_call(greeter_target(), b"Francesco".to_vec())
+            .sys_call(greeter_target(), Bytes::from_static(b"Francesco"))
             .unwrap();
-        let h2 = vm.sys_call(greeter_target(), b"Till".to_vec()).unwrap();
+        let h2 = vm
+            .sys_call(greeter_target(), Bytes::from_static(b"Till"))
+            .unwrap();
 
         vm.notify_await_point(h2);
         let h2_result = vm.take_async_result(h2);
@@ -229,9 +231,9 @@ mod reverse_await_order {
         }
         let_assert!(Some(Value::Success(h1_value)) = h1_result.unwrap());
 
-        vm.sys_write_output(NonEmptyValue::Success(
+        vm.sys_write_output(NonEmptyValue::Success(Bytes::from(
             [&h1_value[..], b"-", &h2_value[..]].concat(),
-        ))
+        )))
         .unwrap();
         vm.sys_end().unwrap()
     }
