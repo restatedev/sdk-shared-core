@@ -20,6 +20,18 @@ pub struct StartMessage {
     /// If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
     #[prost(string, tag = "6")]
     pub key: ::prost::alloc::string::String,
+    /// Retry count since the last stored entry.
+    ///
+    /// Please note that this count might not be accurate, as it's not durably stored,
+    /// thus it might get reset in case Restate crashes/changes leader.
+    #[prost(uint32, tag = "7")]
+    pub retry_count_since_last_stored_entry: u32,
+    /// Duration since the last stored entry, in milliseconds.
+    ///
+    /// Please note this duration might not be accurate,
+    /// and might change depending on which Restate replica executes the request.
+    #[prost(uint64, tag = "8")]
+    pub duration_since_last_stored_entry: u64,
 }
 /// Nested message and enum types in `StartMessage`.
 pub mod start_message {
@@ -97,6 +109,10 @@ pub struct ErrorMessage {
     /// Entry type.
     #[prost(uint32, optional, tag = "6")]
     pub related_entry_type: ::core::option::Option<u32>,
+    /// Delay before executing the next retry, specified as duration in milliseconds.
+    /// If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
+    #[prost(uint64, optional, tag = "8")]
+    pub next_retry_delay: ::core::option::Option<u64>,
 }
 /// Type: 0x0000 + 4
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -522,6 +538,9 @@ pub enum ServiceProtocolVersion {
     Unspecified = 0,
     /// initial service protocol version
     V1 = 1,
+    /// Added
+    /// * Entry retry mechanism: ErrorMessage.next_retry_delay, StartMessage.retry_count_since_last_stored_entry and StartMessage.duration_since_last_stored_entry
+    V2 = 2,
 }
 impl ServiceProtocolVersion {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -532,6 +551,7 @@ impl ServiceProtocolVersion {
         match self {
             ServiceProtocolVersion::Unspecified => "SERVICE_PROTOCOL_VERSION_UNSPECIFIED",
             ServiceProtocolVersion::V1 => "V1",
+            ServiceProtocolVersion::V2 => "V2",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -539,6 +559,7 @@ impl ServiceProtocolVersion {
         match value {
             "SERVICE_PROTOCOL_VERSION_UNSPECIFIED" => Some(Self::Unspecified),
             "V1" => Some(Self::V1),
+            "V2" => Some(Self::V2),
             _ => None,
         }
     }

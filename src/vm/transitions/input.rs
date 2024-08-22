@@ -47,6 +47,8 @@ impl Transition<Context, NewStartMessage> for State {
             debug_id: msg.debug_id,
             key: msg.key,
             entries_to_replay: msg.known_entries,
+            retry_count_since_last_stored_entry: msg.retry_count_since_last_stored_entry,
+            duration_since_last_stored_entry: msg.duration_since_last_stored_entry,
         });
         context.eager_state = EagerState::new(
             msg.partial_state,

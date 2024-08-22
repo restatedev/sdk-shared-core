@@ -13,8 +13,8 @@ use crate::vm::context::{EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::*;
 use crate::{
-    AsyncResultHandle, Header, Input, NonEmptyValue, ResponseHead, RunEnterResult,
-    SuspendedOrVMError, TakeOutputResult, Target, VMError, VMResult, Value,
+    AsyncResultHandle, Header, Input, NonEmptyValue, ResponseHead, RetryPolicy, RunEnterResult,
+    RunExitResult, SuspendedOrVMError, TakeOutputResult, Target, VMError, VMResult, Value,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -110,6 +110,13 @@ impl super::VM for CoreVM {
             .ok_or(errors::MISSING_CONTENT_TYPE)?
             .parse::<Version>()?;
 
+        if version != Version::latest() {
+            return Err(VMError::new(
+                errors::codes::UNSUPPORTED_MEDIA_TYPE,
+                format!("Unsupported protocol version {:?}", version),
+            ));
+        }
+
         Ok(Self {
             version,
             decoder: Decoder::new(version),
@@ -119,6 +126,7 @@ impl super::VM for CoreVM {
                 start_info: None,
                 journal: Default::default(),
                 eager_state: Default::default(),
+                next_retry_delay: None,
             },
             last_transition: Ok(State::WaitingStart),
         })
@@ -149,7 +157,13 @@ impl super::VM for CoreVM {
                     return;
                 }
                 Err(e) => {
-                    if self.do_transition(HitError(e.into())).is_err() {
+                    if self
+                        .do_transition(HitError {
+                            error: e.into(),
+                            next_retry_delay: None,
+                        })
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -164,12 +178,20 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn notify_error(&mut self, message: Cow<'static, str>, description: Cow<'static, str>) {
-        let _ = self.do_transition(HitError(VMError {
-            code: errors::codes::INTERNAL.into(),
-            message,
-            description,
-        }));
+    fn notify_error(
+        &mut self,
+        message: Cow<'static, str>,
+        description: Cow<'static, str>,
+        next_retry_delay: Option<Duration>,
+    ) {
+        let _ = self.do_transition(HitError {
+            error: VMError {
+                code: errors::codes::INTERNAL.into(),
+                message,
+                description,
+            },
+            next_retry_delay,
+        });
     }
 
     #[instrument(level = "debug", ret)]
@@ -407,8 +429,12 @@ impl super::VM for CoreVM {
     }
 
     #[instrument(level = "debug", ret)]
-    fn sys_run_exit(&mut self, value: NonEmptyValue) -> Result<AsyncResultHandle, VMError> {
-        self.do_transition(SysRunExit(value))
+    fn sys_run_exit(
+        &mut self,
+        value: RunExitResult,
+        retry_policy: RetryPolicy,
+    ) -> Result<AsyncResultHandle, VMError> {
+        self.do_transition(SysRunExit(value, retry_policy))
     }
 
     #[instrument(level = "debug", ret)]

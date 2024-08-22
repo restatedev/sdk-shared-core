@@ -1,3 +1,4 @@
+use crate::retries::NextRetry;
 use crate::service_protocol::messages;
 use crate::service_protocol::messages::{
     run_entry_message, CompletableEntryMessage, EntryMessage, EntryMessageHeaderEq,
@@ -10,7 +11,10 @@ use crate::vm::errors::{
 };
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
-use crate::{AsyncResultHandle, Header, Input, NonEmptyValue, RunEnterResult, VMError};
+use crate::{
+    AsyncResultHandle, Header, Input, NonEmptyValue, RetryPolicy, RunEnterResult, RunExitResult,
+    VMError,
+};
 use bytes::Buf;
 use sha2::{Digest, Sha256};
 use std::{fmt, mem};
@@ -229,7 +233,11 @@ impl TransitionAndReturn<Context, SysRunEnter> for State {
                 ref mut run_state, ..
             } => {
                 *run_state = RunState::Running(name);
-                Ok((self, RunEnterResult::NotExecuted))
+
+                Ok((
+                    self,
+                    RunEnterResult::NotExecuted(context.infer_entry_retry_info()),
+                ))
             }
             s => {
                 let (s, msg) =
@@ -243,7 +251,7 @@ impl TransitionAndReturn<Context, SysRunEnter> for State {
     }
 }
 
-pub(crate) struct SysRunExit(pub(crate) NonEmptyValue);
+pub(crate) struct SysRunExit(pub(crate) RunExitResult, pub(crate) RetryPolicy);
 
 impl TransitionAndReturn<Context, SysRunExit> for State {
     type Output = AsyncResultHandle;
@@ -251,7 +259,7 @@ impl TransitionAndReturn<Context, SysRunExit> for State {
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        SysRunExit(value): SysRunExit,
+        SysRunExit(run_exit_result, retry_policy): SysRunExit,
     ) -> Result<(Self, Self::Output), VMError> {
         match self {
             State::Processing {
@@ -265,8 +273,32 @@ impl TransitionAndReturn<Context, SysRunExit> for State {
                         return Err(INVOKED_RUN_EXIT_WITHOUT_ENTER);
                     }
                 };
-
                 let current_journal_index = context.journal.expect_index();
+
+                let value = match run_exit_result {
+                    RunExitResult::Success(s) => NonEmptyValue::Success(s),
+                    RunExitResult::TerminalFailure(f) => NonEmptyValue::Failure(f),
+                    RunExitResult::RetryableFailure {
+                        failure,
+                        attempt_duration,
+                    } => {
+                        let mut retry_info = context.infer_entry_retry_info();
+                        retry_info.retry_count += 1;
+                        retry_info.retry_loop_duration += attempt_duration;
+
+                        match retry_policy.next_retry(retry_info) {
+                            NextRetry::Retry(next_retry_interval) => {
+                                // We need to retry!
+                                context.next_retry_delay = next_retry_interval;
+                                return Err(VMError::new(failure.code, failure.message));
+                            }
+                            NextRetry::DoNotRetry => {
+                                // We don't retry, but convert the retryable error to actual error
+                                NonEmptyValue::Failure(failure)
+                            }
+                        }
+                    }
+                };
 
                 async_results
                     .insert_waiting_ack_result(current_journal_index, value.clone().into());

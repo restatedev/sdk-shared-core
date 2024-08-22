@@ -11,10 +11,10 @@ mod suspensions;
 use super::*;
 
 use crate::service_protocol::messages::{
-    output_entry_message, ErrorMessage, InputEntryMessage, OutputEntryMessage, RestateMessage,
-    StartMessage, SuspensionMessage, WriteableRestateMessage,
+    output_entry_message, run_entry_message, ErrorMessage, InputEntryMessage, OutputEntryMessage,
+    RestateMessage, RunEntryMessage, StartMessage, SuspensionMessage, WriteableRestateMessage,
 };
-use crate::service_protocol::{Decoder, Encoder, RawMessage, Version};
+use crate::service_protocol::{messages, Decoder, Encoder, RawMessage, Version};
 use bytes::Bytes;
 use googletest::prelude::*;
 use std::result::Result;
@@ -44,10 +44,10 @@ struct VMTestCase {
 }
 
 impl VMTestCase {
-    fn new(version: Version) -> Self {
+    fn new() -> Self {
         Self {
-            encoder: Encoder::new(version),
-            vm: CoreVM::mock_init(version),
+            encoder: Encoder::new(Version::latest()),
+            vm: CoreVM::mock_init(Version::latest()),
         }
     }
 
@@ -81,7 +81,7 @@ struct OutputIterator(Decoder);
 
 impl OutputIterator {
     fn collect_vm(vm: &mut impl VM) -> Self {
-        let mut decoder = Decoder::new(Version::V1);
+        let mut decoder = Decoder::new(Version::latest());
         while let TakeOutputResult::Buffer(b) = vm.take_output() {
             decoder.push(b);
         }
@@ -136,10 +136,47 @@ pub fn is_suspended() -> impl Matcher<ActualT = SuspendedOrVMError> {
     pat!(SuspendedOrVMError::Suspended(_))
 }
 
-pub fn has_output_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = OutputEntryMessage> {
+#[allow(dead_code)]
+pub fn is_run_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = RunEntryMessage> {
+    pat!(RunEntryMessage {
+        result: some(pat!(run_entry_message::Result::Value(eq(
+            Bytes::copy_from_slice(b.as_ref())
+        ))))
+    })
+}
+
+pub fn is_run_with_failure(
+    code: u16,
+    message: impl Into<String>,
+) -> impl Matcher<ActualT = RunEntryMessage> {
+    pat!(RunEntryMessage {
+        result: some(pat!(run_entry_message::Result::Failure(eq(
+            messages::Failure {
+                code: code as u32,
+                message: message.into(),
+            }
+        ))))
+    })
+}
+
+pub fn is_output_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = OutputEntryMessage> {
     pat!(OutputEntryMessage {
         result: some(pat!(output_entry_message::Result::Value(eq(
             Bytes::copy_from_slice(b.as_ref())
+        ))))
+    })
+}
+
+pub fn is_output_with_failure(
+    code: u16,
+    message: impl Into<String>,
+) -> impl Matcher<ActualT = OutputEntryMessage> {
+    pat!(OutputEntryMessage {
+        result: some(pat!(output_entry_message::Result::Failure(eq(
+            messages::Failure {
+                code: code as u32,
+                message: message.into(),
+            }
         ))))
     })
 }
@@ -154,6 +191,8 @@ pub fn start_message(known_entries: u32) -> StartMessage {
         state_map: vec![],
         partial_state: true,
         key: "".to_string(),
+        retry_count_since_last_stored_entry: 0,
+        duration_since_last_stored_entry: 0,
     }
 }
 
@@ -167,7 +206,7 @@ pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputEntryMessage {
 
 #[test]
 fn take_output_on_newly_initialized_vm() {
-    let mut vm = CoreVM::mock_init(Version::V1);
+    let mut vm = CoreVM::mock_init(Version::latest());
     assert_that!(
         vm.take_output(),
         eq(TakeOutputResult::Buffer(Bytes::default()))

@@ -7,7 +7,7 @@ use test_log::test;
 
 #[test]
 fn sleep_suspends() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(StartMessage {
             id: Bytes::from_static(b"abc"),
             debug_id: "abc".to_owned(),
@@ -47,7 +47,7 @@ fn sleep_suspends() {
 
 #[test]
 fn sleep_completed() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(StartMessage {
             id: Bytes::from_static(b"abc"),
             debug_id: "abc".to_owned(),
@@ -96,7 +96,7 @@ fn sleep_completed() {
 
 #[test]
 fn sleep_still_sleeping() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(StartMessage {
             id: Bytes::from_static(b"abc"),
             debug_id: "abc".to_owned(),

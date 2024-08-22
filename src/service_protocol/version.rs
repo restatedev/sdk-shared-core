@@ -4,15 +4,22 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Version {
     V1,
+    V2,
 }
 
 const CONTENT_TYPE_V1: &str = "application/vnd.restate.invocation.v1";
+const CONTENT_TYPE_V2: &str = "application/vnd.restate.invocation.v2";
 
 impl Version {
     pub const fn content_type(&self) -> &'static str {
         match self {
             Version::V1 => CONTENT_TYPE_V1,
+            Version::V2 => CONTENT_TYPE_V2,
         }
+    }
+
+    pub const fn latest() -> Self {
+        Version::V2
     }
 }
 
@@ -32,6 +39,7 @@ impl FromStr for Version {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             CONTENT_TYPE_V1 => Ok(Version::V1),
+            CONTENT_TYPE_V2 => Ok(Version::V2),
             s => Err(UnsupportedVersionError(s.to_owned())),
         }
     }

@@ -4,14 +4,13 @@ mod journal;
 mod terminal;
 
 use crate::service_protocol::messages::ErrorMessage;
+use crate::vm::context::Context;
 use crate::vm::State;
 use crate::{CoreVM, VMError};
-use std::mem;
-
-use crate::vm::context::Context;
 pub(crate) use async_results::*;
 pub(crate) use input::*;
 pub(crate) use journal::*;
+use std::mem;
 pub(crate) use terminal::*;
 
 trait Transition<CTX, E>
@@ -84,6 +83,10 @@ impl CoreVM {
                             related_entry_type: Some(u16::from(
                                 self.context.journal.current_entry_ty,
                             ) as u32),
+                            next_retry_delay: self
+                                .context
+                                .next_retry_delay
+                                .map(|d| d.as_millis() as u64),
                         };
                         self.context.output.send(&msg);
                         self.context.output.send_eof();

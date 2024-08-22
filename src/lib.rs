@@ -1,4 +1,6 @@
+mod headers;
 mod request_identity;
+mod retries;
 mod service_protocol;
 mod vm;
 
@@ -6,6 +8,7 @@ use bytes::Bytes;
 use std::borrow::Cow;
 use std::time::Duration;
 
+pub use crate::retries::RetryPolicy;
 pub use headers::HeaderMap;
 pub use request_identity::*;
 pub use vm::CoreVM;
@@ -29,9 +32,9 @@ pub struct SuspendedError;
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("VM Error [{code}]: {message}. Description: {description}")]
 pub struct VMError {
-    pub code: u16,
-    pub message: Cow<'static, str>,
-    pub description: Cow<'static, str>,
+    code: u16,
+    message: Cow<'static, str>,
+    description: Cow<'static, str>,
 }
 
 impl VMError {
@@ -41,6 +44,18 @@ impl VMError {
             message: message.into(),
             description: Default::default(),
         }
+    }
+
+    pub fn code(&self) -> u16 {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
     }
 }
 
@@ -100,10 +115,28 @@ pub struct Failure {
     pub message: String,
 }
 
+#[derive(Debug, Default)]
+pub struct EntryRetryInfo {
+    /// Number of retries that happened so far for this entry.
+    pub retry_count: u32,
+    /// Time spent in the current retry loop.
+    pub retry_loop_duration: Duration,
+}
+
 #[derive(Debug)]
 pub enum RunEnterResult {
     Executed(NonEmptyValue),
-    NotExecuted,
+    NotExecuted(EntryRetryInfo),
+}
+
+#[derive(Debug, Clone)]
+pub enum RunExitResult {
+    Success(Bytes),
+    TerminalFailure(Failure),
+    RetryableFailure {
+        attempt_duration: Duration,
+        failure: Failure,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +175,12 @@ pub trait VM: Sized {
 
     // --- Errors
 
-    fn notify_error(&mut self, message: Cow<'static, str>, description: Cow<'static, str>);
+    fn notify_error(
+        &mut self,
+        message: Cow<'static, str>,
+        description: Cow<'static, str>,
+        next_retry_delay: Option<Duration>,
+    );
 
     // --- Output stream
 
@@ -198,7 +236,11 @@ pub trait VM: Sized {
 
     fn sys_run_enter(&mut self, name: String) -> VMResult<RunEnterResult>;
 
-    fn sys_run_exit(&mut self, value: NonEmptyValue) -> VMResult<AsyncResultHandle>;
+    fn sys_run_exit(
+        &mut self,
+        value: RunExitResult,
+        retry_policy: RetryPolicy,
+    ) -> VMResult<AsyncResultHandle>;
 
     fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()>;
 
@@ -246,6 +288,5 @@ pub trait VM: Sized {
 //     }
 //     io.close()
 
-mod headers;
 #[cfg(test)]
 mod tests;

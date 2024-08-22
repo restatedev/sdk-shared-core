@@ -3,10 +3,11 @@ use crate::service_protocol::messages::{
     WriteableRestateMessage,
 };
 use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{VMError, Value};
+use crate::{EntryRetryInfo, VMError, Value};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub(crate) struct StartInfo {
@@ -14,6 +15,8 @@ pub(crate) struct StartInfo {
     pub(crate) debug_id: String,
     pub(crate) key: String,
     pub(crate) entries_to_replay: u32,
+    pub(crate) retry_count_since_last_stored_entry: u32,
+    pub(crate) duration_since_last_stored_entry: u64,
 }
 
 pub(crate) struct Journal {
@@ -280,6 +283,9 @@ pub(crate) struct Context {
     pub(crate) input_is_closed: bool,
     pub(crate) output: Output,
     pub(crate) eager_state: EagerState,
+
+    // Used by the error handler to set ErrorMessage.next_retry_delay
+    pub(crate) next_retry_delay: Option<Duration>,
 }
 
 impl Context {
@@ -289,5 +295,29 @@ impl Context {
 
     pub(crate) fn expect_start_info(&self) -> &StartInfo {
         self.start_info().expect("state is not WaitingStart")
+    }
+
+    pub(crate) fn infer_entry_retry_info(&self) -> EntryRetryInfo {
+        let start_info = self.expect_start_info();
+        if self.journal.expect_index() == start_info.entries_to_replay {
+            // This is the first entry we try to commit after replay.
+            //  ONLY in this case we re-use the StartInfo!
+            let retry_count = start_info.retry_count_since_last_stored_entry;
+            let retry_loop_duration = if start_info.retry_count_since_last_stored_entry == 0 {
+                // When the retry count is == 0, the duration_since_last_stored_entry might not be zero.
+                //
+                // In fact, in that case the duration is the interval between the previously stored entry and the time to start/resume the invocation.
+                // For the sake of entry retries though, we're not interested in that time elapsed, so we 0 it here for simplicity of the downstream consumer (the retry policy).
+                Duration::ZERO
+            } else {
+                Duration::from_millis(start_info.duration_since_last_stored_entry)
+            };
+            EntryRetryInfo {
+                retry_count,
+                retry_loop_duration,
+            }
+        } else {
+            EntryRetryInfo::default()
+        }
     }
 }

@@ -11,14 +11,12 @@ use test_log::test;
 
 #[test]
 fn just_replay() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 2,
-            state_map: vec![],
-            partial_state: false,
-            key: "".to_string(),
+            ..Default::default()
         })
         .input(InputEntryMessage {
             headers: vec![],
@@ -61,7 +59,7 @@ fn just_replay() {
 
 #[test]
 fn suspend() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run(|vm| {
@@ -95,7 +93,7 @@ fn suspend() {
 
 #[test]
 fn completed() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
         .input(CompletionMessage {
@@ -142,7 +140,7 @@ fn completed() {
 
 #[test]
 fn completed_with_eager_state() {
-    let mut output = VMTestCase::new(Version::V1)
+    let mut output = VMTestCase::new()
         .input(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
@@ -151,8 +149,7 @@ fn completed_with_eager_state() {
                 key: Bytes::from_static(b"Personaggio"),
                 value: Bytes::from_static(b"Francesco"),
             }],
-            partial_state: false,
-            key: "".to_string(),
+            ..Default::default()
         })
         .input(input_entry_message(b"my-data"))
         .run(|vm| {
