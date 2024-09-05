@@ -6,6 +6,7 @@ mod vm;
 
 use bytes::Bytes;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::time::Duration;
 
 pub use crate::retries::RetryPolicy;
@@ -106,6 +107,8 @@ pub enum Value {
     Failure(Failure),
     /// Only returned for get_state_keys
     StateKeys(Vec<String>),
+    /// Only returned by combinators with semantics `Any` or `Race`
+    AnyOrRace(AsyncResultHandle)
 }
 
 /// Terminal failure
@@ -158,6 +161,18 @@ impl From<NonEmptyValue> for Value {
 pub enum TakeOutputResult {
     Buffer(Bytes),
     EOF,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum CombinatorSemantics {
+    /// First succeeded
+    Any,
+    /// First completed
+    Race,
+    /// All succeeded, fail on first failed
+    All,
+    /// All completed
+    Join
 }
 
 pub type VMResult<T> = Result<T, VMError>;
@@ -241,6 +256,8 @@ pub trait VM: Sized {
         value: RunExitResult,
         retry_policy: RetryPolicy,
     ) -> VMResult<AsyncResultHandle>;
+
+    fn sys_combinator(&mut self, handles: Vec<AsyncResultHandle>, semantics: CombinatorSemantics) -> VMResult<AsyncResultHandle>;
 
     fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()>;
 
