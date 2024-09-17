@@ -471,6 +471,52 @@ pub mod run_entry_message {
         Failure(super::Failure),
     }
 }
+/// Completable: No
+/// Fallible: Yes
+/// Type: 0x0C00 + 6
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CancelInvocationEntryMessage {
+    /// Entry name
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(oneof = "cancel_invocation_entry_message::Target", tags = "1, 2")]
+    pub target: ::core::option::Option<cancel_invocation_entry_message::Target>,
+}
+/// Nested message and enum types in `CancelInvocationEntryMessage`.
+pub mod cancel_invocation_entry_message {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Target {
+        /// Target invocation id to cancel
+        #[prost(string, tag = "1")]
+        InvocationId(::prost::alloc::string::String),
+        /// Target index of the call/one way call journal entry in this journal.
+        #[prost(uint32, tag = "2")]
+        CallEntryIndex(u32),
+    }
+}
+/// Completable: Yes
+/// Fallible: Yes
+/// Type: 0x0C00 + 7
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetCallInvocationIdEntryMessage {
+    /// Index of the call/one way call journal entry in this journal.
+    #[prost(uint32, tag = "1")]
+    pub call_entry_index: u32,
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(oneof = "get_call_invocation_id_entry_message::Result", tags = "14, 15")]
+    pub result: ::core::option::Option<get_call_invocation_id_entry_message::Result>,
+}
+/// Nested message and enum types in `GetCallInvocationIdEntryMessage`.
+pub mod get_call_invocation_id_entry_message {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(string, tag = "14")]
+        Value(::prost::alloc::string::String),
+        #[prost(message, tag = "15")]
+        Failure(super::Failure),
+    }
+}
 /// This failure object carries user visible errors,
 /// e.g. invocation failure return value or failure result of an InvokeEntryMessage.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -501,6 +547,10 @@ pub enum ServiceProtocolVersion {
     /// Added
     /// * Entry retry mechanism: ErrorMessage.next_retry_delay, StartMessage.retry_count_since_last_stored_entry and StartMessage.duration_since_last_stored_entry
     V2 = 2,
+    /// Added
+    /// * New entry to cancel invocations: CancelInvocationEntryMessage
+    /// * New entry to retrieve the invocation id: GetCallInvocationIdEntryMessage
+    V3 = 3,
 }
 impl ServiceProtocolVersion {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -512,6 +562,7 @@ impl ServiceProtocolVersion {
             Self::Unspecified => "SERVICE_PROTOCOL_VERSION_UNSPECIFIED",
             Self::V1 => "V1",
             Self::V2 => "V2",
+            Self::V3 => "V3",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -520,6 +571,7 @@ impl ServiceProtocolVersion {
             "SERVICE_PROTOCOL_VERSION_UNSPECIFIED" => Some(Self::Unspecified),
             "V1" => Some(Self::V1),
             "V2" => Some(Self::V2),
+            "V3" => Some(Self::V3),
             _ => None,
         }
     }

@@ -196,6 +196,14 @@ pub struct DecodeStateKeysUtf8(#[from] pub(crate) std::string::FromUtf8Error);
 #[error("Unexpected empty value variant for state keys")]
 pub struct EmptyStateKeys;
 
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Unexpected empty variant for get call invocation id")]
+pub struct EmptyGetCallInvocationId;
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Cannot decode get call invocation id: {0}")]
+pub struct DecodeGetCallInvocationIdUtf8(#[from] pub(crate) std::string::FromUtf8Error);
+
 // Conversions to VMError
 
 trait WithInvocationErrorCode {
@@ -234,3 +242,5 @@ impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
 impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);
 impl_error_code!(EmptyStateKeys, PROTOCOL_VIOLATION);
+impl_error_code!(EmptyGetCallInvocationId, PROTOCOL_VIOLATION);
+impl_error_code!(DecodeGetCallInvocationIdUtf8, PROTOCOL_VIOLATION);

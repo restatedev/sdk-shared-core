@@ -8,83 +8,124 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-const CUSTOM_MESSAGE_MASK: u16 = 0xFC00;
+const CUSTOM_ENTRY_MASK: u16 = 0xFC00;
 const COMPLETED_MASK: u64 = 0x0001_0000_0000;
 const REQUIRES_ACK_MASK: u64 = 0x8000_0000_0000;
 
 type MessageTypeId = u16;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum MessageKind {
-    Core,
-    IO,
-    State,
-    Syscall,
-    CustomEntry,
+#[derive(Debug, thiserror::Error)]
+#[error("unknown protocol.message code {0:#x}")]
+pub struct UnknownMessageType(u16);
+
+// This macro generates the MessageKind enum, together with the conversions back and forth to MessageTypeId
+macro_rules! gen_message_type_enum {
+    (@gen_enum [] -> [$($body:tt)*]) => {
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        pub enum MessageType {
+            $($body)*
+            CustomEntry(u16)
+        }
+    };
+    (@gen_enum [$variant:ident Entry = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message_type_enum!(@gen_enum [$($tail)*] -> [[<$variant Entry>], $($body)*]); }
+    };
+    (@gen_enum [$variant:ident = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message_type_enum!(@gen_enum [$($tail)*] -> [$variant, $($body)*]);
+    };
+
+    (@gen_is_entry_impl [] -> [$($variant:ident, $is_entry:literal,)*]) => {
+        impl MessageType {
+            pub fn is_entry(&self) -> bool {
+                match self {
+                    $(MessageType::$variant => $is_entry,)*
+                    MessageType::CustomEntry(_) => true
+                }
+            }
+        }
+    };
+    (@gen_is_entry_impl [$variant:ident Entry = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message_type_enum!(@gen_is_entry_impl [$($tail)*] -> [[<$variant Entry>], true, $($body)*]); }
+    };
+    (@gen_is_entry_impl [$variant:ident = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message_type_enum!(@gen_is_entry_impl [$($tail)*] -> [$variant, false, $($body)*]);
+    };
+
+    (@gen_to_id [] -> [$($variant:ident, $id:literal,)*]) => {
+        impl From<MessageType> for MessageTypeId {
+            fn from(mt: MessageType) -> Self {
+                match mt {
+                    $(MessageType::$variant => $id,)*
+                    MessageType::CustomEntry(id) => id
+                }
+            }
+        }
+    };
+    (@gen_to_id [$variant:ident Entry = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message_type_enum!(@gen_to_id [$($tail)*] -> [[<$variant Entry>], $id, $($body)*]); }
+    };
+    (@gen_to_id [$variant:ident = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message_type_enum!(@gen_to_id [$($tail)*] -> [$variant, $id, $($body)*]);
+    };
+
+    (@gen_from_id [] -> [$($variant:ident, $id:literal,)*]) => {
+        impl TryFrom<MessageTypeId> for MessageType {
+            type Error = UnknownMessageType;
+
+            fn try_from(value: MessageTypeId) -> Result<Self, UnknownMessageType> {
+                match value {
+                    $($id => Ok(MessageType::$variant),)*
+                    v if (v & CUSTOM_ENTRY_MASK) != 0 => Ok(MessageType::CustomEntry(v)),
+                    v => Err(UnknownMessageType(v)),
+                }
+            }
+        }
+    };
+    (@gen_from_id [$variant:ident Entry = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        paste::paste! { gen_message_type_enum!(@gen_from_id [$($tail)*] -> [[<$variant Entry>], $id, $($body)*]); }
+    };
+    (@gen_from_id [$variant:ident = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
+        gen_message_type_enum!(@gen_from_id [$($tail)*] -> [$variant, $id, $($body)*]);
+    };
+
+    // Entrypoint of the macro
+    ($($tokens:tt)*) => {
+        gen_message_type_enum!(@gen_enum [$($tokens)*] -> []);
+        gen_message_type_enum!(@gen_is_entry_impl [$($tokens)*] -> []);
+        gen_message_type_enum!(@gen_to_id [$($tokens)*] -> []);
+        gen_message_type_enum!(@gen_from_id [$($tokens)*] -> []);
+    };
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum MessageType {
-    Start,
-    Completion,
-    Suspension,
-    Error,
-    End,
-    EntryAck,
-    InputEntry,
-    OutputEntry,
-    GetStateEntry,
-    SetStateEntry,
-    ClearStateEntry,
-    GetStateKeysEntry,
-    ClearAllStateEntry,
-    SleepEntry,
-    CallEntry,
-    OneWayCallEntry,
-    AwakeableEntry,
-    CompleteAwakeableEntry,
-    RunEntry,
-    GetPromiseEntry,
-    PeekPromiseEntry,
-    CompletePromiseEntry,
-    CombinatorEntry,
-    CustomEntry(u16),
-}
+gen_message_type_enum!(
+    Start = 0x0000,
+    Completion = 0x0001,
+    Suspension = 0x0002,
+    Error = 0x0003,
+    End = 0x0005,
+    EntryAck = 0x0004,
+    Input Entry = 0x0400,
+    Output Entry = 0x0401,
+    GetState Entry = 0x0800,
+    SetState Entry = 0x0801,
+    ClearState Entry = 0x0802,
+    GetStateKeys Entry = 0x0804,
+    ClearAllState Entry = 0x0803,
+    GetPromise Entry = 0x0808,
+    PeekPromise Entry = 0x0809,
+    CompletePromise Entry = 0x080A,
+    Sleep Entry = 0x0C00,
+    Call Entry = 0x0C01,
+    OneWayCall Entry = 0x0C02,
+    Awakeable Entry = 0x0C03,
+    CompleteAwakeable Entry = 0x0C04,
+    Run Entry = 0x0C05,
+    CancelInvocation Entry = 0x0C06,
+    GetCallInvocationId Entry = 0x0C07,
+    Combinator Entry = 0xFC02,
+);
 
 impl MessageType {
-    fn kind(&self) -> MessageKind {
-        match self {
-            MessageType::Start => MessageKind::Core,
-            MessageType::Completion => MessageKind::Core,
-            MessageType::Suspension => MessageKind::Core,
-            MessageType::Error => MessageKind::Core,
-            MessageType::End => MessageKind::Core,
-            MessageType::EntryAck => MessageKind::Core,
-            MessageType::InputEntry => MessageKind::IO,
-            MessageType::OutputEntry => MessageKind::IO,
-            MessageType::GetStateEntry => MessageKind::State,
-            MessageType::SetStateEntry => MessageKind::State,
-            MessageType::ClearStateEntry => MessageKind::State,
-            MessageType::GetStateKeysEntry => MessageKind::State,
-            MessageType::ClearAllStateEntry => MessageKind::State,
-            MessageType::SleepEntry => MessageKind::Syscall,
-            MessageType::CallEntry => MessageKind::Syscall,
-            MessageType::OneWayCallEntry => MessageKind::Syscall,
-            MessageType::AwakeableEntry => MessageKind::Syscall,
-            MessageType::CompleteAwakeableEntry => MessageKind::Syscall,
-            MessageType::RunEntry => MessageKind::Syscall,
-            MessageType::GetPromiseEntry => MessageKind::State,
-            MessageType::PeekPromiseEntry => MessageKind::State,
-            MessageType::CompletePromiseEntry => MessageKind::State,
-            MessageType::CombinatorEntry => MessageKind::Syscall,
-            MessageType::CustomEntry(_) => MessageKind::CustomEntry,
-        }
-    }
-
-    pub fn is_entry(&self) -> bool {
-        !matches!(self.kind(), MessageKind::Core)
-    }
-
     fn has_completed_flag(&self) -> bool {
         matches!(
             self,
@@ -96,107 +137,8 @@ impl MessageType {
                 | MessageType::GetPromiseEntry
                 | MessageType::PeekPromiseEntry
                 | MessageType::CompletePromiseEntry
+                | MessageType::GetCallInvocationIdEntry
         )
-    }
-
-    fn has_requires_ack_flag(&self) -> bool {
-        matches!(
-            self.kind(),
-            MessageKind::State | MessageKind::IO | MessageKind::Syscall | MessageKind::CustomEntry
-        )
-    }
-}
-
-const START_MESSAGE_TYPE: u16 = 0x0000;
-const COMPLETION_MESSAGE_TYPE: u16 = 0x0001;
-const SUSPENSION_MESSAGE_TYPE: u16 = 0x0002;
-const ERROR_MESSAGE_TYPE: u16 = 0x0003;
-const ENTRY_ACK_MESSAGE_TYPE: u16 = 0x0004;
-const END_MESSAGE_TYPE: u16 = 0x0005;
-const INPUT_ENTRY_MESSAGE_TYPE: u16 = 0x0400;
-const OUTPUT_ENTRY_MESSAGE_TYPE: u16 = 0x0401;
-const GET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0800;
-const SET_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0801;
-const CLEAR_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0802;
-const CLEAR_ALL_STATE_ENTRY_MESSAGE_TYPE: u16 = 0x0803;
-const GET_STATE_KEYS_ENTRY_MESSAGE_TYPE: u16 = 0x0804;
-const GET_PROMISE_ENTRY_MESSAGE_TYPE: u16 = 0x0808;
-const PEEK_PROMISE_ENTRY_MESSAGE_TYPE: u16 = 0x0809;
-const COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE: u16 = 0x080A;
-const SLEEP_ENTRY_MESSAGE_TYPE: u16 = 0x0C00;
-const INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C01;
-const BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C02;
-const AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C03;
-const COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C04;
-const SIDE_EFFECT_ENTRY_MESSAGE_TYPE: u16 = 0x0C05;
-const COMBINATOR_ENTRY_MESSAGE_TYPE: u16 = 0xFC02;
-
-impl From<MessageType> for MessageTypeId {
-    fn from(mt: MessageType) -> Self {
-        match mt {
-            MessageType::Start => START_MESSAGE_TYPE,
-            MessageType::Completion => COMPLETION_MESSAGE_TYPE,
-            MessageType::Suspension => SUSPENSION_MESSAGE_TYPE,
-            MessageType::Error => ERROR_MESSAGE_TYPE,
-            MessageType::End => END_MESSAGE_TYPE,
-            MessageType::EntryAck => ENTRY_ACK_MESSAGE_TYPE,
-            MessageType::InputEntry => INPUT_ENTRY_MESSAGE_TYPE,
-            MessageType::OutputEntry => OUTPUT_ENTRY_MESSAGE_TYPE,
-            MessageType::GetStateEntry => GET_STATE_ENTRY_MESSAGE_TYPE,
-            MessageType::SetStateEntry => SET_STATE_ENTRY_MESSAGE_TYPE,
-            MessageType::ClearStateEntry => CLEAR_STATE_ENTRY_MESSAGE_TYPE,
-            MessageType::ClearAllStateEntry => CLEAR_ALL_STATE_ENTRY_MESSAGE_TYPE,
-            MessageType::GetStateKeysEntry => GET_STATE_KEYS_ENTRY_MESSAGE_TYPE,
-            MessageType::SleepEntry => SLEEP_ENTRY_MESSAGE_TYPE,
-            MessageType::CallEntry => INVOKE_ENTRY_MESSAGE_TYPE,
-            MessageType::OneWayCallEntry => BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE,
-            MessageType::AwakeableEntry => AWAKEABLE_ENTRY_MESSAGE_TYPE,
-            MessageType::CompleteAwakeableEntry => COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE,
-            MessageType::RunEntry => SIDE_EFFECT_ENTRY_MESSAGE_TYPE,
-            MessageType::GetPromiseEntry => GET_PROMISE_ENTRY_MESSAGE_TYPE,
-            MessageType::PeekPromiseEntry => PEEK_PROMISE_ENTRY_MESSAGE_TYPE,
-            MessageType::CompletePromiseEntry => COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE,
-            MessageType::CombinatorEntry => COMBINATOR_ENTRY_MESSAGE_TYPE,
-            MessageType::CustomEntry(id) => id,
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("unknown protocol.message code {0:#x}")]
-pub struct UnknownMessageType(u16);
-
-impl TryFrom<MessageTypeId> for MessageType {
-    type Error = UnknownMessageType;
-
-    fn try_from(value: MessageTypeId) -> Result<Self, UnknownMessageType> {
-        match value {
-            START_MESSAGE_TYPE => Ok(MessageType::Start),
-            COMPLETION_MESSAGE_TYPE => Ok(MessageType::Completion),
-            SUSPENSION_MESSAGE_TYPE => Ok(MessageType::Suspension),
-            ERROR_MESSAGE_TYPE => Ok(MessageType::Error),
-            END_MESSAGE_TYPE => Ok(MessageType::End),
-            ENTRY_ACK_MESSAGE_TYPE => Ok(MessageType::EntryAck),
-            INPUT_ENTRY_MESSAGE_TYPE => Ok(MessageType::InputEntry),
-            OUTPUT_ENTRY_MESSAGE_TYPE => Ok(MessageType::OutputEntry),
-            GET_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetStateEntry),
-            SET_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::SetStateEntry),
-            CLEAR_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::ClearStateEntry),
-            GET_STATE_KEYS_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetStateKeysEntry),
-            CLEAR_ALL_STATE_ENTRY_MESSAGE_TYPE => Ok(MessageType::ClearAllStateEntry),
-            SLEEP_ENTRY_MESSAGE_TYPE => Ok(MessageType::SleepEntry),
-            INVOKE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CallEntry),
-            BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE => Ok(MessageType::OneWayCallEntry),
-            AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::AwakeableEntry),
-            COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompleteAwakeableEntry),
-            GET_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::GetPromiseEntry),
-            PEEK_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::PeekPromiseEntry),
-            COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompletePromiseEntry),
-            SIDE_EFFECT_ENTRY_MESSAGE_TYPE => Ok(MessageType::RunEntry),
-            COMBINATOR_ENTRY_MESSAGE_TYPE => Ok(MessageType::CombinatorEntry),
-            v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::CustomEntry(v)),
-            v => Err(UnknownMessageType(v)),
-        }
     }
 }
 
@@ -263,11 +205,6 @@ impl MessageHeader {
     }
 
     #[inline]
-    pub fn message_kind(&self) -> MessageKind {
-        self.ty.kind()
-    }
-
-    #[inline]
     pub fn message_type(&self) -> MessageType {
         self.ty
     }
@@ -308,7 +245,7 @@ impl TryFrom<u64> for MessageHeader {
         let ty: MessageType = ty_code.try_into()?;
 
         let completed_flag = read_flag_if!(ty.has_completed_flag(), value, COMPLETED_MASK);
-        let requires_ack_flag = read_flag_if!(ty.has_requires_ack_flag(), value, REQUIRES_ACK_MASK);
+        let requires_ack_flag = read_flag_if!(ty.is_entry(), value, REQUIRES_ACK_MASK);
         let length = value as u32;
 
         Ok(MessageHeader::_new(
@@ -349,7 +286,7 @@ impl From<MessageHeader> for u64 {
 #[cfg(test)]
 mod tests {
 
-    use super::{MessageKind::*, MessageType::*, *};
+    use super::{MessageType::*, *};
 
     impl MessageHeader {
         fn new_completable_entry(ty: MessageType, completed: bool, length: u32) -> Self {
@@ -358,65 +295,52 @@ mod tests {
     }
 
     macro_rules! roundtrip_test {
-        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr) => {
-            roundtrip_test!($test_name, $header, $ty, $kind, $len, None, None, None);
+        ($test_name:ident, $header:expr, $ty:expr, $len:expr) => {
+            roundtrip_test!($test_name, $header, $ty, $len, None, None, None);
         };
-        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, version: $protocol_version:expr) => {
+        ($test_name:ident, $header:expr, $ty:expr, $len:expr, version: $protocol_version:expr) => {
             roundtrip_test!(
                 $test_name,
                 $header,
                 $ty,
-                $kind,
                 $len,
                 None,
                 Some($protocol_version),
                 None
             );
         };
-        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, completed: $completed:expr) => {
-            roundtrip_test!(
-                $test_name,
-                $header,
-                $ty,
-                $kind,
-                $len,
-                Some($completed),
-                None,
-                None
-            );
+        ($test_name:ident, $header:expr, $ty:expr, $len:expr, completed: $completed:expr) => {
+            roundtrip_test!($test_name, $header, $ty, $len, Some($completed), None, None);
         };
-        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, requires_ack: $requires_ack:expr) => {
+        ($test_name:ident, $header:expr, $ty:expr, $len:expr, requires_ack: $requires_ack:expr) => {
             roundtrip_test!(
                 $test_name,
                 $header,
                 $ty,
-                $kind,
                 $len,
                 None,
                 None,
                 Some($requires_ack)
             );
         };
-        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, requires_ack: $requires_ack:expr, completed: $completed:expr) => {
+        ($test_name:ident, $header:expr, $ty:expr, $len:expr, requires_ack: $requires_ack:expr, completed: $completed:expr) => {
             roundtrip_test!(
                 $test_name,
                 $header,
                 $ty,
-                $kind,
                 $len,
                 Some($completed),
                 None,
                 Some($requires_ack)
             );
         };
-        ($test_name:ident, $header:expr, $ty:expr, $kind:expr, $len:expr, $completed:expr, $protocol_version:expr, $requires_ack:expr) => {
+        ($test_name:ident, $header:expr, $ty:expr, $len:expr, $completed:expr, $protocol_version:expr, $requires_ack:expr) => {
             #[test]
             fn $test_name() {
                 let serialized: u64 = $header.into();
                 let header: MessageHeader = serialized.try_into().unwrap();
 
                 assert_eq!(header.message_type(), $ty);
-                assert_eq!(header.message_kind(), $kind);
                 assert_eq!(header.completed(), $completed);
                 assert_eq!(header.requires_ack(), $requires_ack);
                 assert_eq!(header.frame_length(), $len);
@@ -428,7 +352,6 @@ mod tests {
         completion,
         MessageHeader::new(Completion, 22),
         Completion,
-        Core,
         22
     );
 
@@ -436,7 +359,6 @@ mod tests {
         completed_get_state,
         MessageHeader::new_completable_entry(GetStateEntry, true, 0),
         GetStateEntry,
-        State,
         0,
         requires_ack: false,
         completed: true
@@ -446,7 +368,6 @@ mod tests {
         not_completed_get_state,
         MessageHeader::new_completable_entry(GetStateEntry, false, 0),
         GetStateEntry,
-        State,
         0,
         requires_ack: false,
         completed: false
@@ -456,7 +377,6 @@ mod tests {
         completed_get_state_with_len,
         MessageHeader::new_completable_entry(GetStateEntry, true, 10341),
         GetStateEntry,
-        State,
         10341,
         requires_ack: false,
         completed: true
@@ -466,7 +386,6 @@ mod tests {
         set_state_with_requires_ack,
         MessageHeader::_new(SetStateEntry, None, Some(true), 10341),
         SetStateEntry,
-        State,
         10341,
         requires_ack: true
     );
@@ -475,7 +394,6 @@ mod tests {
         custom_entry,
         MessageHeader::new(MessageType::CustomEntry(0xFC00), 10341),
         MessageType::CustomEntry(0xFC00),
-        MessageKind::CustomEntry,
         10341,
         requires_ack: false
     );
@@ -484,7 +402,6 @@ mod tests {
         custom_entry_with_requires_ack,
         MessageHeader::_new(MessageType::CustomEntry(0xFC00), None, Some(true), 10341),
         MessageType::CustomEntry(0xFC00),
-        MessageKind::CustomEntry,
         10341,
         requires_ack: true
     );

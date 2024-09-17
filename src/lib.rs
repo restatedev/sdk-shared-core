@@ -139,6 +139,21 @@ impl From<AsyncResultHandle> for u32 {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SendHandle(u32);
+
+impl From<u32> for SendHandle {
+    fn from(value: u32) -> Self {
+        SendHandle(value)
+    }
+}
+
+impl From<SendHandle> for u32 {
+    fn from(value: SendHandle) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum Value {
     /// a void/None/undefined success
@@ -147,6 +162,8 @@ pub enum Value {
     Failure(TerminalFailure),
     /// Only returned for get_state_keys
     StateKeys(Vec<String>),
+    /// Only returned for get_call_invocation_id
+    InvocationId(String),
     CombinatorResult(Vec<AsyncResultHandle>),
 }
 
@@ -194,6 +211,19 @@ impl From<NonEmptyValue> for Value {
             NonEmptyValue::Failure(f) => Value::Failure(f),
         }
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum GetInvocationIdTarget {
+    CallEntry(AsyncResultHandle),
+    SendEntry(SendHandle),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum CancelInvocationTarget {
+    InvocationId(String),
+    CallEntry(AsyncResultHandle),
+    SendEntry(SendHandle),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -274,7 +304,7 @@ pub trait VM: Sized {
         target: Target,
         input: Bytes,
         execution_time_since_unix_epoch: Option<Duration>,
-    ) -> VMResult<()>;
+    ) -> VMResult<SendHandle>;
 
     fn sys_awakeable(&mut self) -> VMResult<(String, AsyncResultHandle)>;
 
@@ -297,6 +327,13 @@ pub trait VM: Sized {
         value: RunExitResult,
         retry_policy: RetryPolicy,
     ) -> VMResult<AsyncResultHandle>;
+
+    fn sys_get_call_invocation_id(
+        &mut self,
+        call: GetInvocationIdTarget,
+    ) -> VMResult<AsyncResultHandle>;
+
+    fn sys_cancel_invocation(&mut self, target: CancelInvocationTarget) -> VMResult<()>;
 
     fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()>;
 

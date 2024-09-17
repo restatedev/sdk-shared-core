@@ -193,6 +193,7 @@ impl AsyncResultsState {
                         Value::Void
                         | Value::Success(_)
                         | Value::StateKeys(_)
+                        | Value::InvocationId(_)
                         | Value::CombinatorResult(_) => AsyncResultState::Success,
                         Value::Failure(_) => AsyncResultState::Failure,
                     },

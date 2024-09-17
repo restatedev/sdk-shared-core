@@ -1,21 +1,22 @@
 use crate::headers::HeaderMap;
 use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
 use crate::service_protocol::messages::{
-    complete_awakeable_entry_message, complete_promise_entry_message, get_state_entry_message,
-    get_state_keys_entry_message, output_entry_message, AwakeableEntryMessage, CallEntryMessage,
+    cancel_invocation_entry_message, complete_awakeable_entry_message,
+    complete_promise_entry_message, get_state_entry_message, get_state_keys_entry_message,
+    output_entry_message, AwakeableEntryMessage, CallEntryMessage, CancelInvocationEntryMessage,
     ClearAllStateEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage,
-    CompletePromiseEntryMessage, Empty, GetPromiseEntryMessage, GetStateEntryMessage,
-    GetStateKeysEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, PeekPromiseEntryMessage,
-    SetStateEntryMessage, SleepEntryMessage,
+    CompletePromiseEntryMessage, Empty, GetCallInvocationIdEntryMessage, GetPromiseEntryMessage,
+    GetStateEntryMessage, GetStateKeysEntryMessage, OneWayCallEntryMessage, OutputEntryMessage,
+    PeekPromiseEntryMessage, SetStateEntryMessage, SleepEntryMessage,
 };
 use crate::service_protocol::{Decoder, RawMessage, Version};
 use crate::vm::context::{EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::*;
 use crate::{
-    AsyncResultCombinator, AsyncResultHandle, Error, Header, Input, NonEmptyValue, ResponseHead,
+    AsyncResultCombinator, AsyncResultHandle, Error, Header, Input, NonEmptyValue, ResponseHead, CancelInvocationTarget, GetInvocationIdTarget,
     RetryPolicy, RunEnterResult, RunExitResult, SuspendedOrVMError, TakeOutputResult, Target,
-    VMOptions, VMResult, Value,
+    VMOptions, VMResult, Value,     SendHandle,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -431,7 +432,12 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_send(&mut self, target: Target, input: Bytes, delay: Option<Duration>) -> VMResult<()> {
+    fn sys_send(
+        &mut self,
+        target: Target,
+        input: Bytes,
+        delay: Option<Duration>,
+    ) -> VMResult<SendHandle> {
         self.do_transition(SysNonCompletableEntry(
             "SysOneWayCall",
             OneWayCallEntryMessage {
@@ -448,6 +454,7 @@ impl super::VM for CoreVM {
                 ..Default::default()
             },
         ))
+        .map(|_| SendHandle(self.context.journal.expect_index()))
     }
 
     #[instrument(
@@ -576,6 +583,44 @@ impl super::VM for CoreVM {
         retry_policy: RetryPolicy,
     ) -> Result<AsyncResultHandle, Error> {
         self.do_transition(SysRunExit(value, retry_policy))
+    }
+
+    #[instrument(level = "debug", ret)]
+    fn sys_get_call_invocation_id(
+        &mut self,
+        call: GetInvocationIdTarget,
+    ) -> VMResult<AsyncResultHandle> {
+        self.do_transition(SysCompletableEntry(
+            "SysGetCallInvocationId",
+            GetCallInvocationIdEntryMessage {
+                call_entry_index: match call {
+                    GetInvocationIdTarget::CallEntry(h) => h.0,
+                    GetInvocationIdTarget::SendEntry(h) => h.0,
+                },
+                ..Default::default()
+            },
+        ))
+    }
+
+    #[instrument(level = "debug", ret)]
+    fn sys_cancel_invocation(&mut self, target: CancelInvocationTarget) -> VMResult<()> {
+        self.do_transition(SysNonCompletableEntry(
+            "SysCancelInvocation",
+            CancelInvocationEntryMessage {
+                target: Some(match target {
+                    CancelInvocationTarget::InvocationId(id) => {
+                        cancel_invocation_entry_message::Target::InvocationId(id)
+                    }
+                    CancelInvocationTarget::CallEntry(handle) => {
+                        cancel_invocation_entry_message::Target::CallEntryIndex(handle.0)
+                    }
+                    CancelInvocationTarget::SendEntry(handle) => {
+                        cancel_invocation_entry_message::Target::CallEntryIndex(handle.0)
+                    }
+                }),
+                ..Default::default()
+            },
+        ))
     }
 
     #[instrument(
