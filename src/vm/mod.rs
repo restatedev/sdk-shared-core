@@ -13,8 +13,9 @@ use crate::vm::context::{EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::*;
 use crate::{
-    AsyncResultHandle, Header, Input, NonEmptyValue, ResponseHead, RetryPolicy, RunEnterResult,
-    RunExitResult, SuspendedOrVMError, TakeOutputResult, Target, VMError, VMResult, Value,
+    AsyncResultCombinator, AsyncResultHandle, Header, Input, NonEmptyValue, ResponseHead,
+    RetryPolicy, RunEnterResult, RunExitResult, SuspendedOrVMError, TakeOutputResult, Target,
+    VMError, VMResult, Value,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -31,6 +32,8 @@ use tracing::instrument;
 mod context;
 pub(crate) mod errors;
 mod transitions;
+
+pub(crate) use transitions::AsyncResultAccessTrackerInner;
 
 const CONTENT_TYPE: &str = "content-type";
 
@@ -474,6 +477,13 @@ impl super::VM for CoreVM {
                 ..
             })
         )
+    }
+
+    fn sys_try_complete_combinator(
+        &mut self,
+        combinator: impl AsyncResultCombinator,
+    ) -> VMResult<Option<AsyncResultHandle>> {
+        self.do_transition(SysTryCompleteCombinator(combinator))
     }
 }
 

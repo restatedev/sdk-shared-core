@@ -13,8 +13,14 @@ fn bootstrap() {
         .protoc_arg("--experimental_allow_proto3_optional")
         .out_dir(out_dir.clone())
         .compile_protos(
-            &[root_dir.join("service-protocol/dev/restate/service/protocol.proto")],
-            &[root_dir.join("service-protocol")],
+            &[
+                root_dir.join("service-protocol/dev/restate/service/protocol.proto"),
+                root_dir.join("service-protocol-ext/combinators.proto"),
+            ],
+            &[
+                root_dir.join("service-protocol"),
+                root_dir.join("service-protocol-ext"),
+            ],
         )
     {
         panic!("failed to compile `console-api` protobuf: {}", error);

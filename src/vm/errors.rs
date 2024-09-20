@@ -118,6 +118,11 @@ pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: VMError = VMError::new_const(
     "The input was closed while still waiting to receive all the `known_entries`",
 );
 
+pub const BAD_COMBINATOR_ENTRY: VMError = VMError::new_const(
+    codes::PROTOCOL_VIOLATION,
+    "The combinator cannot be replayed. This is most likely caused by non deterministic code.",
+);
+
 // Other errors
 
 #[derive(Debug, Clone, thiserror::Error)]

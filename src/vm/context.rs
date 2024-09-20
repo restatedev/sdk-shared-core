@@ -3,7 +3,7 @@ use crate::service_protocol::messages::{
     WriteableRestateMessage,
 };
 use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{EntryRetryInfo, VMError, Value};
+use crate::{AsyncResultHandle, AsyncResultState, EntryRetryInfo, VMError, Value};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, VecDeque};
@@ -181,6 +181,24 @@ impl AsyncResultsState {
             let (idx, value) = self.waiting_ack_results.pop_front().unwrap();
             self.ready_results.insert(idx, value);
         }
+    }
+
+    pub(crate) fn get_ready_results_state(&self) -> HashMap<AsyncResultHandle, AsyncResultState> {
+        self.ready_results
+            .iter()
+            .map(|(idx, val)| {
+                (
+                    AsyncResultHandle(*idx),
+                    match val {
+                        Value::Void
+                        | Value::Success(_)
+                        | Value::StateKeys(_)
+                        | Value::CombinatorResult(_) => AsyncResultState::Success,
+                        Value::Failure(_) => AsyncResultState::Failure,
+                    },
+                )
+            })
+            .collect()
     }
 }
 
