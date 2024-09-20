@@ -24,7 +24,7 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fmt;
 use std::mem::size_of;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use strum::IntoStaticStr;
 use tracing::instrument;
 
@@ -316,7 +316,8 @@ impl super::VM for CoreVM {
         self.do_transition(SysCompletableEntry(
             "SysSleep",
             SleepEntryMessage {
-                wake_up_time: duration_to_wakeup_time(duration),
+                wake_up_time: u64::try_from(duration.as_millis())
+                    .expect("millis since Unix epoch should fit in u64"),
                 ..Default::default()
             },
         ))
@@ -343,7 +344,12 @@ impl super::VM for CoreVM {
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
                 parameter: input,
-                invoke_time: delay.map(duration_to_wakeup_time).unwrap_or_default(),
+                invoke_time: delay
+                    .map(|d| {
+                        u64::try_from(d.as_millis())
+                            .expect("millis since Unix epoch should fit in u64")
+                    })
+                    .unwrap_or_default(),
                 ..Default::default()
             },
         ))
@@ -455,16 +461,6 @@ impl super::VM for CoreVM {
     fn sys_end(&mut self) -> Result<(), VMError> {
         self.do_transition(SysEnd)
     }
-}
-
-fn duration_to_wakeup_time(duration: Duration) -> u64 {
-    u64::try_from(
-        (SystemTime::now() + duration)
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("duration since Unix epoch should be well-defined")
-            .as_millis(),
-    )
-    .expect("millis since Unix epoch should fit in u64")
 }
 
 const INDIFFERENT_PAD: GeneralPurposeConfig = GeneralPurposeConfig::new()

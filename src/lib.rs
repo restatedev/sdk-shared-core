@@ -214,11 +214,17 @@ pub trait VM: Sized {
 
     fn sys_state_clear_all(&mut self) -> VMResult<()>;
 
-    fn sys_sleep(&mut self, duration: Duration) -> VMResult<AsyncResultHandle>;
+    fn sys_sleep(&mut self, wake_up_time_since_unix_epoch: Duration)
+        -> VMResult<AsyncResultHandle>;
 
     fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle>;
 
-    fn sys_send(&mut self, target: Target, input: Bytes, delay: Option<Duration>) -> VMResult<()>;
+    fn sys_send(
+        &mut self,
+        target: Target,
+        input: Bytes,
+        execution_time_since_unix_epoch: Option<Duration>,
+    ) -> VMResult<()>;
 
     fn sys_awakeable(&mut self) -> VMResult<(String, AsyncResultHandle)>;
 
