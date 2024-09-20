@@ -251,6 +251,12 @@ pub trait VM: Sized {
     fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()>;
 
     fn sys_end(&mut self) -> VMResult<()>;
+
+    /// Returns true if the state machine is in processing state
+    fn is_processing(&self) -> bool;
+
+    /// Returns true if the state machine is between a sys_run_enter and sys_run_exit
+    fn is_inside_run(&self) -> bool;
 }
 
 // HOW TO USE THIS API
