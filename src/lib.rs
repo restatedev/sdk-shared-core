@@ -6,6 +6,7 @@ mod vm;
 
 use bytes::Bytes;
 use std::borrow::Cow;
+use std::fmt;
 use std::time::Duration;
 
 pub use crate::retries::RetryPolicy;
@@ -263,7 +264,7 @@ pub trait VM: Sized {
     /// Returns false if the combinator can't be completed yet.
     fn sys_try_complete_combinator(
         &mut self,
-        combinator: impl AsyncResultCombinator,
+        combinator: impl AsyncResultCombinator + fmt::Debug,
     ) -> VMResult<Option<AsyncResultHandle>>;
 }
 

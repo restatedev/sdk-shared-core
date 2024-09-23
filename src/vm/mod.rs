@@ -315,6 +315,7 @@ impl super::VM for CoreVM {
         ))
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_sleep(&mut self, duration: Duration) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysSleep",
@@ -326,6 +327,7 @@ impl super::VM for CoreVM {
         ))
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysCall",
@@ -339,6 +341,7 @@ impl super::VM for CoreVM {
         ))
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_send(&mut self, target: Target, input: Bytes, delay: Option<Duration>) -> VMResult<()> {
         self.do_transition(SysNonCompletableEntry(
             "SysOneWayCall",
@@ -358,6 +361,7 @@ impl super::VM for CoreVM {
         ))
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_awakeable(&mut self) -> VMResult<(String, AsyncResultHandle)> {
         self.do_transition(SysCompletableEntry(
             "SysAwakeable",
@@ -374,6 +378,7 @@ impl super::VM for CoreVM {
         })
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()> {
         self.do_transition(SysNonCompletableEntry(
             "SysCompleteAwakeable",
@@ -390,6 +395,7 @@ impl super::VM for CoreVM {
         ))
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_get_promise(&mut self, key: String) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysGetPromise",
@@ -400,6 +406,7 @@ impl super::VM for CoreVM {
         ))
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_peek_promise(&mut self, key: String) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysPeekPromise",
@@ -410,6 +417,7 @@ impl super::VM for CoreVM {
         ))
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_complete_promise(
         &mut self,
         key: String,
@@ -460,7 +468,6 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
     fn sys_end(&mut self) -> Result<(), VMError> {
         self.do_transition(SysEnd)
     }
@@ -469,6 +476,7 @@ impl super::VM for CoreVM {
         matches!(&self.last_transition, Ok(State::Processing { .. }))
     }
 
+    #[instrument(level = "debug", ret)]
     fn is_inside_run(&self) -> bool {
         matches!(
             &self.last_transition,
@@ -479,9 +487,10 @@ impl super::VM for CoreVM {
         )
     }
 
+    #[instrument(level = "debug", ret)]
     fn sys_try_complete_combinator(
         &mut self,
-        combinator: impl AsyncResultCombinator,
+        combinator: impl AsyncResultCombinator + fmt::Debug,
     ) -> VMResult<Option<AsyncResultHandle>> {
         self.do_transition(SysTryCompleteCombinator(combinator))
     }
