@@ -75,6 +75,17 @@ pub struct CoreVM {
     last_transition: Result<State, VMError>,
 }
 
+impl CoreVM {
+    // Returns empty string if the invocation id is not present
+    fn debug_invocation_id(&self) -> &str {
+        if let Some(start_info) = self.context.start_info() {
+            &start_info.debug_id
+        } else {
+            ""
+        }
+    }
+}
+
 impl fmt::Debug for CoreVM {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = f.debug_struct("CoreVM");
@@ -135,7 +146,12 @@ impl super::VM for CoreVM {
         })
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn get_response_head(&self) -> ResponseHead {
         ResponseHead {
             status_code: 200,
@@ -146,7 +162,12 @@ impl super::VM for CoreVM {
         }
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn notify_input(&mut self, buffer: Bytes) {
         self.decoder.push(buffer);
         loop {
@@ -174,13 +195,23 @@ impl super::VM for CoreVM {
         }
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn notify_input_closed(&mut self) {
         self.context.input_is_closed = true;
         let _ = self.do_transition(NotifyInputClosed);
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn notify_error(
         &mut self,
         message: Cow<'static, str>,
@@ -197,7 +228,12 @@ impl super::VM for CoreVM {
         });
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn take_output(&mut self) -> TakeOutputResult {
         if self.context.output.buffer.has_remaining() {
             TakeOutputResult::Buffer(
@@ -213,7 +249,12 @@ impl super::VM for CoreVM {
         }
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn is_ready_to_execute(&self) -> Result<bool, VMError> {
         match &self.last_transition {
             Ok(State::WaitingStart) | Ok(State::WaitingReplayEntries { .. }) => Ok(false),
@@ -223,12 +264,22 @@ impl super::VM for CoreVM {
         }
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn notify_await_point(&mut self, AsyncResultHandle(await_point): AsyncResultHandle) {
         let _ = self.do_transition(NotifyAwaitPoint(await_point));
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn take_async_result(
         &mut self,
         handle: AsyncResultHandle,
@@ -240,12 +291,22 @@ impl super::VM for CoreVM {
         }
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_input(&mut self) -> Result<Input, VMError> {
         self.do_transition(SysInput)
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_state_get(&mut self, key: String) -> Result<AsyncResultHandle, VMError> {
         let result = match self.context.eager_state.get(&key) {
             EagerGetState::Unknown => None,
@@ -262,7 +323,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_state_get_keys(&mut self) -> VMResult<AsyncResultHandle> {
         let result = match self.context.eager_state.get_keys() {
             EagerGetStateKeys::Unknown => None,
@@ -281,7 +347,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self, value),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_state_set(&mut self, key: String, value: Bytes) -> Result<(), VMError> {
         self.context.eager_state.set(key.clone(), value.clone());
         self.do_transition(SysNonCompletableEntry(
@@ -294,7 +365,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_state_clear(&mut self, key: String) -> Result<(), VMError> {
         self.context.eager_state.clear(key.clone());
         self.do_transition(SysNonCompletableEntry(
@@ -306,7 +382,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_state_clear_all(&mut self) -> Result<(), VMError> {
         self.context.eager_state.clear_all();
         self.do_transition(SysNonCompletableEntry(
@@ -315,7 +396,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_sleep(&mut self, duration: Duration) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysSleep",
@@ -327,7 +413,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self, input),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysCall",
@@ -341,7 +432,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self, input),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_send(&mut self, target: Target, input: Bytes, delay: Option<Duration>) -> VMResult<()> {
         self.do_transition(SysNonCompletableEntry(
             "SysOneWayCall",
@@ -361,7 +457,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_awakeable(&mut self) -> VMResult<(String, AsyncResultHandle)> {
         self.do_transition(SysCompletableEntry(
             "SysAwakeable",
@@ -378,7 +479,12 @@ impl super::VM for CoreVM {
         })
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self, value),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()> {
         self.do_transition(SysNonCompletableEntry(
             "SysCompleteAwakeable",
@@ -395,7 +501,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_get_promise(&mut self, key: String) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysGetPromise",
@@ -406,7 +517,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_peek_promise(&mut self, key: String) -> VMResult<AsyncResultHandle> {
         self.do_transition(SysCompletableEntry(
             "SysPeekPromise",
@@ -417,7 +533,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self, value),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_complete_promise(
         &mut self,
         key: String,
@@ -440,12 +561,22 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_run_enter(&mut self, name: String) -> Result<RunEnterResult, VMError> {
         self.do_transition(SysRunEnter(name))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self, value, retry_policy),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_run_exit(
         &mut self,
         value: RunExitResult,
@@ -454,7 +585,12 @@ impl super::VM for CoreVM {
         self.do_transition(SysRunExit(value, retry_policy))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self, value),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_write_output(&mut self, value: NonEmptyValue) -> Result<(), VMError> {
         self.do_transition(SysNonCompletableEntry(
             "SysWriteOutput",
@@ -468,6 +604,12 @@ impl super::VM for CoreVM {
         ))
     }
 
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_end(&mut self) -> Result<(), VMError> {
         self.do_transition(SysEnd)
     }
@@ -476,7 +618,6 @@ impl super::VM for CoreVM {
         matches!(&self.last_transition, Ok(State::Processing { .. }))
     }
 
-    #[instrument(level = "debug", ret)]
     fn is_inside_run(&self) -> bool {
         matches!(
             &self.last_transition,
@@ -487,7 +628,12 @@ impl super::VM for CoreVM {
         )
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_try_complete_combinator(
         &mut self,
         combinator: impl AsyncResultCombinator + fmt::Debug,
