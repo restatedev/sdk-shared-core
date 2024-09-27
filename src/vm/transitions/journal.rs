@@ -15,8 +15,6 @@ use crate::{
     AsyncResultHandle, Header, Input, NonEmptyValue, RetryPolicy, RunEnterResult, RunExitResult,
     VMError,
 };
-use bytes::Buf;
-use sha2::{Digest, Sha256};
 use std::{fmt, mem};
 
 impl State {
@@ -137,10 +135,23 @@ impl TransitionAndReturn<Context, SysInput> for State {
     }
 }
 
+#[cfg(feature = "sha2_random_seed")]
 fn compute_random_seed(id: &[u8]) -> u64 {
+    use bytes::Buf;
+    use sha2::{Digest, Sha256};
+
     let id_hash = Sha256::digest(id);
     let mut b = id_hash.as_slice();
     b.get_u64()
+}
+
+#[cfg(not(feature = "sha2_random_seed"))]
+fn compute_random_seed(id: &[u8]) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub(crate) struct SysNonCompletableEntry<M>(pub(crate) &'static str, pub(crate) M);
