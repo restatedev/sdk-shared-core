@@ -61,6 +61,7 @@ pub mod codes {
     pub const UNSUPPORTED_MEDIA_TYPE: InvocationErrorCode = InvocationErrorCode(415);
     pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
     pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
+    pub const AWAITING_TWO_ASYNC_RESULTS: InvocationErrorCode = InvocationErrorCode(572);
 }
 
 // Const errors
@@ -116,6 +117,11 @@ pub const INVOKED_RUN_EXIT_WITHOUT_ENTER: VMError = VMError::new_const(
 pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: VMError = VMError::new_const(
     codes::PROTOCOL_VIOLATION,
     "The input was closed while still waiting to receive all the `known_entries`",
+);
+
+pub const BAD_COMBINATOR_ENTRY: VMError = VMError::new_const(
+    codes::PROTOCOL_VIOLATION,
+    "The combinator cannot be replayed. This is most likely caused by non deterministic code.",
 );
 
 // Other errors
@@ -223,7 +229,7 @@ impl WithInvocationErrorCode for DecodingError {
 }
 impl_error_code!(UnavailableEntryError, JOURNAL_MISMATCH);
 impl_error_code!(UnexpectedStateError, PROTOCOL_VIOLATION);
-impl_error_code!(AwaitingTwoAsyncResultError, INTERNAL);
+impl_error_code!(AwaitingTwoAsyncResultError, AWAITING_TWO_ASYNC_RESULTS);
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
 impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);

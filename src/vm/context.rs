@@ -3,7 +3,7 @@ use crate::service_protocol::messages::{
     WriteableRestateMessage,
 };
 use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{EntryRetryInfo, VMError, Value};
+use crate::{AsyncResultHandle, AsyncResultState, EntryRetryInfo, VMError, VMOptions, Value};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, VecDeque};
@@ -182,6 +182,24 @@ impl AsyncResultsState {
             self.ready_results.insert(idx, value);
         }
     }
+
+    pub(crate) fn get_ready_results_state(&self) -> HashMap<AsyncResultHandle, AsyncResultState> {
+        self.ready_results
+            .iter()
+            .map(|(idx, val)| {
+                (
+                    AsyncResultHandle(*idx),
+                    match val {
+                        Value::Void
+                        | Value::Success(_)
+                        | Value::StateKeys(_)
+                        | Value::CombinatorResult(_) => AsyncResultState::Success,
+                        Value::Failure(_) => AsyncResultState::Failure,
+                    },
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug)]
@@ -286,6 +304,8 @@ pub(crate) struct Context {
 
     // Used by the error handler to set ErrorMessage.next_retry_delay
     pub(crate) next_retry_delay: Option<Duration>,
+
+    pub(crate) options: VMOptions,
 }
 
 impl Context {

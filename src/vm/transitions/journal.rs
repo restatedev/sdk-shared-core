@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use std::{fmt, mem};
 
 impl State {
-    fn check_side_effect_guard(&self) -> Result<(), VMError> {
+    pub(crate) fn check_side_effect_guard(&self) -> Result<(), VMError> {
         if let State::Processing { run_state, .. } = self {
             if run_state.is_running() {
                 return Err(INSIDE_RUN);
@@ -30,7 +30,7 @@ impl State {
     }
 }
 
-struct PopJournalEntry<M>(&'static str, M);
+pub(crate) struct PopJournalEntry<M>(pub(crate) &'static str, pub(crate) M);
 
 impl<M: RestateMessage + EntryMessageHeaderEq + EntryMessage + Clone>
     TransitionAndReturn<Context, PopJournalEntry<M>> for State

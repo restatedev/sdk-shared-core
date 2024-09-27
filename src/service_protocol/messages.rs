@@ -40,6 +40,7 @@ impl<M: CompletableEntryMessage> WriteableRestateMessage for M {
 }
 
 include!("./generated/dev.restate.service.protocol.rs");
+include!("./generated/dev.restate.service.protocol.extensions.rs");
 
 macro_rules! impl_message_traits {
     ($name:ident: core) => {
@@ -230,6 +231,24 @@ impl WriteableRestateMessage for RunEntryMessage {
 impl EntryMessageHeaderEq for RunEntryMessage {
     fn header_eq(&self, other: &Self) -> bool {
         self.name == other.name
+    }
+}
+
+impl_message_traits!(CombinatorEntry: message);
+impl_message_traits!(CombinatorEntry: entry);
+impl WriteableRestateMessage for CombinatorEntryMessage {
+    fn generate_header(&self, never_ack: bool) -> MessageHeader {
+        MessageHeader::new_ackable_entry_header(
+            MessageType::CombinatorEntry,
+            None,
+            if never_ack { Some(false) } else { Some(true) },
+            self.encoded_len() as u32,
+        )
+    }
+}
+impl EntryMessageHeaderEq for CombinatorEntryMessage {
+    fn header_eq(&self, _: &Self) -> bool {
+        true
     }
 }
 

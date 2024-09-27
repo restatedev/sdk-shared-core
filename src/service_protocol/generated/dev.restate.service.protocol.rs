@@ -509,9 +509,9 @@ impl ServiceProtocolVersion {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            ServiceProtocolVersion::Unspecified => "SERVICE_PROTOCOL_VERSION_UNSPECIFIED",
-            ServiceProtocolVersion::V1 => "V1",
-            ServiceProtocolVersion::V2 => "V2",
+            Self::Unspecified => "SERVICE_PROTOCOL_VERSION_UNSPECIFIED",
+            Self::V1 => "V1",
+            Self::V2 => "V2",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.

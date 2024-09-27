@@ -1,4 +1,5 @@
 mod async_results;
+mod combinators;
 mod input;
 mod journal;
 mod terminal;
@@ -8,6 +9,7 @@ use crate::vm::context::Context;
 use crate::vm::State;
 use crate::{CoreVM, VMError};
 pub(crate) use async_results::*;
+pub(crate) use combinators::*;
 pub(crate) use input::*;
 pub(crate) use journal::*;
 use std::mem;

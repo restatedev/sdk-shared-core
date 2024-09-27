@@ -6,9 +6,11 @@ mod vm;
 
 use bytes::Bytes;
 use std::borrow::Cow;
+use std::fmt;
 use std::time::Duration;
 
 pub use crate::retries::RetryPolicy;
+use crate::vm::AsyncResultAccessTrackerInner;
 pub use headers::HeaderMap;
 pub use request_identity::*;
 pub use vm::CoreVM;
@@ -83,7 +85,7 @@ pub struct Target {
     pub key: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq)]
 pub struct AsyncResultHandle(u32);
 
 impl From<u32> for AsyncResultHandle {
@@ -106,6 +108,7 @@ pub enum Value {
     Failure(Failure),
     /// Only returned for get_state_keys
     StateKeys(Vec<String>),
+    CombinatorResult(Vec<AsyncResultHandle>),
 }
 
 /// Terminal failure
@@ -162,8 +165,21 @@ pub enum TakeOutputResult {
 
 pub type VMResult<T> = Result<T, VMError>;
 
+pub struct VMOptions {
+    /// If true, false when two concurrent async results are awaited at the same time. If false, just log it.
+    pub fail_on_wait_concurrent_async_result: bool,
+}
+
+impl Default for VMOptions {
+    fn default() -> Self {
+        Self {
+            fail_on_wait_concurrent_async_result: true,
+        }
+    }
+}
+
 pub trait VM: Sized {
-    fn new(request_headers: impl HeaderMap) -> VMResult<Self>;
+    fn new(request_headers: impl HeaderMap, options: VMOptions) -> VMResult<Self>;
 
     fn get_response_head(&self) -> ResponseHead;
 
@@ -257,6 +273,12 @@ pub trait VM: Sized {
 
     /// Returns true if the state machine is between a sys_run_enter and sys_run_exit
     fn is_inside_run(&self) -> bool;
+
+    /// Returns false if the combinator can't be completed yet.
+    fn sys_try_complete_combinator(
+        &mut self,
+        combinator: impl AsyncResultCombinator + fmt::Debug,
+    ) -> VMResult<Option<AsyncResultHandle>>;
 }
 
 // HOW TO USE THIS API
@@ -299,6 +321,28 @@ pub trait VM: Sized {
 //         io.write_out(buffer)
 //     }
 //     io.close()
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsyncResultState {
+    Success,
+    Failure,
+    NotReady,
+}
+
+pub struct AsyncResultAccessTracker(AsyncResultAccessTrackerInner);
+
+impl AsyncResultAccessTracker {
+    pub fn get_state(&mut self, handle: AsyncResultHandle) -> AsyncResultState {
+        self.0.get_state(handle)
+    }
+}
+
+pub trait AsyncResultCombinator {
+    fn try_complete(
+        &self,
+        tracker: &mut AsyncResultAccessTracker,
+    ) -> Option<Vec<AsyncResultHandle>>;
+}
 
 #[cfg(test)]
 mod tests;

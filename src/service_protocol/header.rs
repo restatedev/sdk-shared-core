@@ -47,6 +47,7 @@ pub enum MessageType {
     GetPromiseEntry,
     PeekPromiseEntry,
     CompletePromiseEntry,
+    CombinatorEntry,
     CustomEntry(u16),
 }
 
@@ -75,6 +76,7 @@ impl MessageType {
             MessageType::GetPromiseEntry => MessageKind::State,
             MessageType::PeekPromiseEntry => MessageKind::State,
             MessageType::CompletePromiseEntry => MessageKind::State,
+            MessageType::CombinatorEntry => MessageKind::Syscall,
             MessageType::CustomEntry(_) => MessageKind::CustomEntry,
         }
     }
@@ -127,6 +129,7 @@ const BACKGROUND_INVOKE_ENTRY_MESSAGE_TYPE: u16 = 0x0C02;
 const AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C03;
 const COMPLETE_AWAKEABLE_ENTRY_MESSAGE_TYPE: u16 = 0x0C04;
 const SIDE_EFFECT_ENTRY_MESSAGE_TYPE: u16 = 0x0C05;
+const COMBINATOR_ENTRY_MESSAGE_TYPE: u16 = 0xFC02;
 
 impl From<MessageType> for MessageTypeId {
     fn from(mt: MessageType) -> Self {
@@ -153,6 +156,7 @@ impl From<MessageType> for MessageTypeId {
             MessageType::GetPromiseEntry => GET_PROMISE_ENTRY_MESSAGE_TYPE,
             MessageType::PeekPromiseEntry => PEEK_PROMISE_ENTRY_MESSAGE_TYPE,
             MessageType::CompletePromiseEntry => COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE,
+            MessageType::CombinatorEntry => COMBINATOR_ENTRY_MESSAGE_TYPE,
             MessageType::CustomEntry(id) => id,
         }
     }
@@ -189,6 +193,7 @@ impl TryFrom<MessageTypeId> for MessageType {
             PEEK_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::PeekPromiseEntry),
             COMPLETE_PROMISE_ENTRY_MESSAGE_TYPE => Ok(MessageType::CompletePromiseEntry),
             SIDE_EFFECT_ENTRY_MESSAGE_TYPE => Ok(MessageType::RunEntry),
+            COMBINATOR_ENTRY_MESSAGE_TYPE => Ok(MessageType::CombinatorEntry),
             v if ((v & CUSTOM_MESSAGE_MASK) != 0) => Ok(MessageType::CustomEntry(v)),
             v => Err(UnknownMessageType(v)),
         }
