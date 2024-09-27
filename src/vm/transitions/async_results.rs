@@ -5,6 +5,7 @@ use crate::vm::errors::{
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{SuspendedError, VMError, Value};
+use tracing::warn;
 
 pub(crate) struct NotifyInputClosed;
 
@@ -52,11 +53,21 @@ impl Transition<Context, NotifyAwaitPoint> for State {
             } => {
                 if let Some(previous) = current_await_point {
                     if *previous != await_point {
-                        return Err(AwaitingTwoAsyncResultError {
-                            previous: *previous,
-                            current: await_point,
+                        if context.options.fail_on_wait_concurrent_async_result {
+                            return Err(AwaitingTwoAsyncResultError {
+                                previous: *previous,
+                                current: await_point,
+                            }
+                            .into());
+                        } else {
+                            warn!(
+                                "{}",
+                                AwaitingTwoAsyncResultError {
+                                    previous: *previous,
+                                    current: await_point,
+                                }
+                            )
                         }
-                        .into());
                     }
                 }
                 if context.input_is_closed && !async_results.has_ready_result(await_point) {

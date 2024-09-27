@@ -15,7 +15,7 @@ use crate::vm::transitions::*;
 use crate::{
     AsyncResultCombinator, AsyncResultHandle, Header, Input, NonEmptyValue, ResponseHead,
     RetryPolicy, RunEnterResult, RunExitResult, SuspendedOrVMError, TakeOutputResult, Target,
-    VMError, VMResult, Value,
+    VMError, VMOptions, VMResult, Value,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -112,7 +112,7 @@ const _: () = is_send::<CoreVM>();
 
 impl super::VM for CoreVM {
     #[instrument(level = "debug", skip_all, ret)]
-    fn new(request_headers: impl HeaderMap) -> Result<Self, VMError> {
+    fn new(request_headers: impl HeaderMap, options: VMOptions) -> Result<Self, VMError> {
         let version = request_headers
             .extract(CONTENT_TYPE)
             .map_err(|e| {
@@ -141,6 +141,7 @@ impl super::VM for CoreVM {
                 journal: Default::default(),
                 eager_state: Default::default(),
                 next_retry_delay: None,
+                options,
             },
             last_transition: Ok(State::WaitingStart),
         })

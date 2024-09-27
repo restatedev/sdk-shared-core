@@ -3,7 +3,7 @@ use crate::service_protocol::messages::{
     WriteableRestateMessage,
 };
 use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{AsyncResultHandle, AsyncResultState, EntryRetryInfo, VMError, Value};
+use crate::{AsyncResultHandle, AsyncResultState, EntryRetryInfo, VMError, VMOptions, Value};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, VecDeque};
@@ -304,6 +304,8 @@ pub(crate) struct Context {
 
     // Used by the error handler to set ErrorMessage.next_retry_delay
     pub(crate) next_retry_delay: Option<Duration>,
+
+    pub(crate) options: VMOptions,
 }
 
 impl Context {

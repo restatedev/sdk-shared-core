@@ -165,8 +165,21 @@ pub enum TakeOutputResult {
 
 pub type VMResult<T> = Result<T, VMError>;
 
+pub struct VMOptions {
+    /// If true, false when two concurrent async results are awaited at the same time. If false, just log it.
+    pub fail_on_wait_concurrent_async_result: bool,
+}
+
+impl Default for VMOptions {
+    fn default() -> Self {
+        Self {
+            fail_on_wait_concurrent_async_result: true,
+        }
+    }
+}
+
 pub trait VM: Sized {
-    fn new(request_headers: impl HeaderMap) -> VMResult<Self>;
+    fn new(request_headers: impl HeaderMap, options: VMOptions) -> VMResult<Self>;
 
     fn get_response_head(&self) -> ResponseHead;
 

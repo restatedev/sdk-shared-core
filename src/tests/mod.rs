@@ -24,7 +24,11 @@ use test_log::test;
 
 impl CoreVM {
     fn mock_init(version: Version) -> CoreVM {
-        let vm = CoreVM::new(vec![("content-type".to_owned(), version.to_string())]).unwrap();
+        let vm = CoreVM::new(
+            vec![("content-type".to_owned(), version.to_string())],
+            VMOptions::default(),
+        )
+        .unwrap();
 
         assert_that!(
             vm.get_response_head().headers,
