@@ -137,10 +137,23 @@ impl IdentityVerifier {
                     .map_err(|e| VerifyError::ExtractHeader(SIGNATURE_JWT_V1_HEADER, Box::new(e)))?
                     .ok_or(VerifyError::MissingHeader(SIGNATURE_JWT_V1_HEADER))?;
 
-                self.check_v1_keys(jwt, path)
+                self.check_v1_keys(jwt, Self::normalise_path(path))
             }
             SIGNATURE_SCHEME_UNSIGNED => Err(VerifyError::UnsignedRequest),
             scheme => Err(VerifyError::BadSchemeHeader(scheme.to_owned())),
+        }
+    }
+
+    fn normalise_path<'a>(path: &'a str) -> &'a str {
+        let slashes: Vec<usize> = path.match_indices('/').map(|(index, _)| index).collect();
+        if slashes.len() >= 3
+            && &path[slashes[slashes.len() - 3]..slashes[slashes.len() - 2]] == "/invoke"
+        {
+            &path[slashes[slashes.len() - 3]..]
+        } else if !slashes.is_empty() && &path[slashes[slashes.len() - 1]..] == "/discover" {
+            &path[slashes[slashes.len() - 1]..]
+        } else {
+            path
         }
     }
 }
@@ -193,6 +206,31 @@ mod tests {
         ].into_iter().collect();
 
         assert!(verifier.verify_identity(&headers, "/invoke/foo").is_err())
+    }
+
+    #[test]
+    fn normalise_path() {
+        let paths = vec![
+            ("/invoke/a/b", "/invoke/a/b"),
+            ("/foo/invoke/a/b", "/invoke/a/b"),
+            ("/foo/bar/invoke/a/b", "/invoke/a/b"),
+            ("/discover", "/discover"),
+            ("/foo/discover", "/discover"),
+            ("/foo/bar/discover", "/discover"),
+            ("/foo", "/foo"),
+            ("/invoke", "/invoke"),
+            ("/foo/invoke", "/foo/invoke"),
+            ("/invoke/a", "/invoke/a"),
+            ("/foo/invoke/a", "/foo/invoke/a"),
+            ("", ""),
+            ("/", "/"),
+            ("discover", "discover"),
+        ];
+
+        for (path, expected_path) in paths {
+            let actual_path = IdentityVerifier::normalise_path(path);
+            assert_eq!(expected_path, actual_path)
+        }
     }
 
     fn mock_token_and_key() -> (String, String) {
