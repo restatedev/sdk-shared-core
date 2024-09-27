@@ -1,4 +1,5 @@
 mod headers;
+#[cfg(feature = "request_identity")]
 mod request_identity;
 mod retries;
 mod service_protocol;
@@ -12,6 +13,7 @@ use std::time::Duration;
 pub use crate::retries::RetryPolicy;
 use crate::vm::AsyncResultAccessTrackerInner;
 pub use headers::HeaderMap;
+#[cfg(feature = "request_identity")]
 pub use request_identity::*;
 pub use vm::CoreVM;
 

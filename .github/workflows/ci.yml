@@ -10,13 +10,14 @@ on:
 
 jobs:
   build-and-test:
-    name: Build and test (${{ matrix.os }})
+    name: Build and test with features '${{ matrix.features }}' (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04]
+        os: [ ubuntu-22.04 ]
+        features: [ "all", "" ]
     env:
       RUST_BACKTRACE: full
     steps:
@@ -40,7 +41,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run tests
-        run: just verify
+        run: just --set features "${{ matrix.features }}" verify
 
   build-smoke-test:
     name: Build only (${{ matrix.os }} / ${{ matrix.target }})

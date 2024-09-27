@@ -52,7 +52,7 @@ check-fmt:
     cargo fmt --all -- --check
 
 clippy: (_target-installed target)
-    cargo clippy {{ _target-option }} --all-targets --workspace -- -D warnings
+    cargo clippy {{ _target-option }} {{ _features }} --all-targets --workspace -- -D warnings
 
 # Runs all lints (fmt, clippy, deny)
 lint: check-fmt clippy
@@ -64,7 +64,7 @@ print-target:
     @echo {{ _resolved_target }}
 
 test: (_target-installed target)
-    cargo nextest run {{ _target-option }} --all-features
+    cargo nextest run {{ _target-option }} {{ _features }}
 
 # Runs lints and tests
 verify: lint test
