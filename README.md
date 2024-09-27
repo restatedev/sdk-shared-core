@@ -3,6 +3,7 @@
 Shared core to build SDKs in various languages. Currently used by:
 
 * [Python SDK](https://github.com/restatedev/sdk-python)
+* [Rust SDK](https://github.com/restatedev/sdk-rust)
 
 ## Versions
 
