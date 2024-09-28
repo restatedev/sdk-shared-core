@@ -144,7 +144,7 @@ impl IdentityVerifier {
         }
     }
 
-    fn normalise_path<'a>(path: &'a str) -> &'a str {
+    fn normalise_path(path: &str) -> &str {
         let slashes: Vec<usize> = path.match_indices('/').map(|(index, _)| index).collect();
         if slashes.len() >= 3
             && &path[slashes[slashes.len() - 3]..slashes[slashes.len() - 2]] == "/invoke"
@@ -224,7 +224,12 @@ mod tests {
             ("/foo/invoke/a", "/foo/invoke/a"),
             ("", ""),
             ("/", "/"),
+            ("//", "//"),
+            ("///", "///"),
+            ("////", "////"),
             ("discover", "discover"),
+            ("foo/discover", "/discover"),
+            ("foo/invoke/a/b", "/invoke/a/b"),
         ];
 
         for (path, expected_path) in paths {
