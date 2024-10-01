@@ -1,4 +1,5 @@
 mod async_result;
+mod calls;
 mod failures;
 mod get_state;
 mod input_output;

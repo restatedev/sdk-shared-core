@@ -10,6 +10,7 @@ fn greeter_target() -> Target {
         service: "Greeter".to_string(),
         handler: "greeter".to_string(),
         key: None,
+        idempotency_key: None,
     }
 }
 

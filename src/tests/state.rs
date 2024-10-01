@@ -25,7 +25,7 @@ fn get_state_handler(vm: &mut CoreVM) {
             vm.sys_end().unwrap();
             return;
         }
-        _ => panic!("Unexpected variant"),
+        _ => panic!("Unexpected variants"),
     };
 
     vm.sys_write_output(NonEmptyValue::Success(Bytes::copy_from_slice(
@@ -374,7 +374,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
-            _ => panic!("Unexpected variant"),
+            _ => panic!("Unexpected variants"),
         };
 
         vm.sys_write_output(NonEmptyValue::Success(Bytes::copy_from_slice(
@@ -619,7 +619,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
-            _ => panic!("Unexpected variant"),
+            _ => panic!("Unexpected variants"),
         };
 
         vm.sys_state_set(
@@ -644,7 +644,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
-            _ => panic!("Unexpected variant"),
+            _ => panic!("Unexpected variants"),
         };
 
         vm.sys_write_output(NonEmptyValue::Success(second_get_result))
@@ -799,7 +799,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
-            _ => panic!("Unexpected variant"),
+            _ => panic!("Unexpected variants"),
         };
 
         vm.sys_state_clear("STATE".to_owned()).unwrap();
@@ -958,7 +958,7 @@ mod eager {
                 vm.sys_end().unwrap();
                 return;
             }
-            _ => panic!("Unexpected variant"),
+            _ => panic!("Unexpected variants"),
         };
 
         vm.sys_state_clear_all().unwrap();

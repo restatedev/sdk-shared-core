@@ -1,6 +1,9 @@
 use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
 use crate::service_protocol::{MessageHeader, MessageType};
-use crate::vm::errors::{DecodeStateKeysProst, DecodeStateKeysUtf8, EmptyStateKeys};
+use crate::vm::errors::{
+    DecodeGetCallInvocationIdUtf8, DecodeStateKeysProst, DecodeStateKeysUtf8,
+    EmptyGetCallInvocationId, EmptyStateKeys,
+};
 use crate::{Error, NonEmptyValue, Value};
 use paste::paste;
 use prost::Message;
@@ -234,6 +237,29 @@ impl EntryMessageHeaderEq for RunEntryMessage {
     }
 }
 
+impl_message_traits!(CancelInvocationEntry: non_completable_entry);
+
+impl_message_traits!(GetCallInvocationIdEntry: message);
+impl_message_traits!(GetCallInvocationIdEntry: entry);
+impl CompletableEntryMessage for GetCallInvocationIdEntryMessage {
+    fn is_completed(&self) -> bool {
+        self.result.is_some()
+    }
+
+    fn into_completion(self) -> Result<Option<Value>, Error> {
+        self.result.map(TryInto::try_into).transpose()
+    }
+
+    fn completion_parsing_hint() -> CompletionParsingHint {
+        CompletionParsingHint::GetCompletionId
+    }
+}
+impl EntryMessageHeaderEq for GetCallInvocationIdEntryMessage {
+    fn header_eq(&self, other: &Self) -> bool {
+        self.call_entry_index == other.call_entry_index
+    }
+}
+
 impl_message_traits!(CombinatorEntry: message);
 impl_message_traits!(CombinatorEntry: entry);
 impl WriteableRestateMessage for CombinatorEntryMessage {
@@ -361,6 +387,17 @@ impl From<run_entry_message::Result> for NonEmptyValue {
     }
 }
 
+impl TryFrom<get_call_invocation_id_entry_message::Result> for Value {
+    type Error = Error;
+
+    fn try_from(value: get_call_invocation_id_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
+            get_call_invocation_id_entry_message::Result::Value(id) => Value::InvocationId(id),
+            get_call_invocation_id_entry_message::Result::Failure(f) => Value::Failure(f.into()),
+        })
+    }
+}
+
 // --- Other conversions
 
 impl From<crate::TerminalFailure> for Failure {
@@ -386,6 +423,7 @@ impl From<Failure> for crate::TerminalFailure {
 #[derive(Debug)]
 pub(crate) enum CompletionParsingHint {
     StateKeys,
+    GetCompletionId,
     /// The normal case
     EmptyOrSuccessOrValue,
 }
@@ -406,6 +444,13 @@ impl CompletionParsingHint {
 
                     Ok(Value::StateKeys(state_keys))
                 }
+                completion_message::Result::Failure(f) => Ok(Value::Failure(f.into())),
+            },
+            CompletionParsingHint::GetCompletionId => match result {
+                completion_message::Result::Empty(_) => Err(EmptyGetCallInvocationId.into()),
+                completion_message::Result::Value(b) => Ok(Value::InvocationId(
+                    String::from_utf8(b.to_vec()).map_err(DecodeGetCallInvocationIdUtf8)?,
+                )),
                 completion_message::Result::Failure(f) => Ok(Value::Failure(f.into())),
             },
             CompletionParsingHint::EmptyOrSuccessOrValue => Ok(match result {

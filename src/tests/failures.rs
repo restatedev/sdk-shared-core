@@ -75,6 +75,7 @@ fn one_way_call_entry_mismatch() {
                     service: "greeter".to_owned(),
                     handler: "greet".to_owned(),
                     key: Some("my-key".to_owned()),
+                    idempotency_key: None,
                 },
                 Bytes::from_static(b"456"),
                 None,

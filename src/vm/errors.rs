@@ -1,5 +1,5 @@
 use crate::service_protocol::{DecodingError, MessageType, UnsupportedVersionError};
-use crate::Error;
+use crate::{Error, Version};
 use std::borrow::Cow;
 use std::fmt;
 
@@ -62,6 +62,7 @@ pub mod codes {
     pub const JOURNAL_MISMATCH: InvocationErrorCode = InvocationErrorCode(570);
     pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
     pub const AWAITING_TWO_ASYNC_RESULTS: InvocationErrorCode = InvocationErrorCode(572);
+    pub const UNSUPPORTED_FEATURE: InvocationErrorCode = InvocationErrorCode(573);
 }
 
 // Const errors
@@ -196,6 +197,36 @@ pub struct DecodeStateKeysUtf8(#[from] pub(crate) std::string::FromUtf8Error);
 #[error("Unexpected empty value variant for state keys")]
 pub struct EmptyStateKeys;
 
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Unexpected empty variant for get call invocation id")]
+pub struct EmptyGetCallInvocationId;
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Cannot decode get call invocation id: {0}")]
+pub struct DecodeGetCallInvocationIdUtf8(#[from] pub(crate) std::string::FromUtf8Error);
+
+#[derive(Debug, thiserror::Error)]
+#[error("Feature {feature} is not supported by the negotiated protocol version '{current_version}', the minimum required version is '{minimum_required_version}'")]
+pub struct UnsupportedFeatureForNegotiatedVersion {
+    feature: &'static str,
+    current_version: Version,
+    minimum_required_version: Version,
+}
+
+impl UnsupportedFeatureForNegotiatedVersion {
+    pub fn new(
+        feature: &'static str,
+        current_version: Version,
+        minimum_required_version: Version,
+    ) -> Self {
+        Self {
+            feature,
+            current_version,
+            minimum_required_version,
+        }
+    }
+}
+
 // Conversions to VMError
 
 trait WithInvocationErrorCode {
@@ -234,3 +265,6 @@ impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
 impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);
 impl_error_code!(EmptyStateKeys, PROTOCOL_VIOLATION);
+impl_error_code!(EmptyGetCallInvocationId, PROTOCOL_VIOLATION);
+impl_error_code!(DecodeGetCallInvocationIdUtf8, PROTOCOL_VIOLATION);
+impl_error_code!(UnsupportedFeatureForNegotiatedVersion, UNSUPPORTED_FEATURE);

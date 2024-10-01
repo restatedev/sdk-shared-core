@@ -1,21 +1,22 @@
 use crate::headers::HeaderMap;
 use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
 use crate::service_protocol::messages::{
-    complete_awakeable_entry_message, complete_promise_entry_message, get_state_entry_message,
-    get_state_keys_entry_message, output_entry_message, AwakeableEntryMessage, CallEntryMessage,
+    cancel_invocation_entry_message, complete_awakeable_entry_message,
+    complete_promise_entry_message, get_state_entry_message, get_state_keys_entry_message,
+    output_entry_message, AwakeableEntryMessage, CallEntryMessage, CancelInvocationEntryMessage,
     ClearAllStateEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage,
-    CompletePromiseEntryMessage, Empty, GetPromiseEntryMessage, GetStateEntryMessage,
-    GetStateKeysEntryMessage, OneWayCallEntryMessage, OutputEntryMessage, PeekPromiseEntryMessage,
-    SetStateEntryMessage, SleepEntryMessage,
+    CompletePromiseEntryMessage, Empty, GetCallInvocationIdEntryMessage, GetPromiseEntryMessage,
+    GetStateEntryMessage, GetStateKeysEntryMessage, OneWayCallEntryMessage, OutputEntryMessage,
+    PeekPromiseEntryMessage, SetStateEntryMessage, SleepEntryMessage,
 };
 use crate::service_protocol::{Decoder, RawMessage, Version};
 use crate::vm::context::{EagerGetState, EagerGetStateKeys};
-use crate::vm::errors::UnexpectedStateError;
+use crate::vm::errors::{UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion};
 use crate::vm::transitions::*;
 use crate::{
-    AsyncResultCombinator, AsyncResultHandle, Error, Header, Input, NonEmptyValue, ResponseHead,
-    RetryPolicy, RunEnterResult, RunExitResult, SuspendedOrVMError, TakeOutputResult, Target,
-    VMOptions, VMResult, Value,
+    AsyncResultCombinator, AsyncResultHandle, CancelInvocationTarget, Error, GetInvocationIdTarget,
+    Header, Input, NonEmptyValue, ResponseHead, RetryPolicy, RunEnterResult, RunExitResult,
+    SendHandle, SuspendedOrVMError, TakeOutputResult, Target, VMOptions, VMResult, Value,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -83,6 +84,25 @@ impl CoreVM {
         } else {
             ""
         }
+    }
+
+    fn verify_feature_support(
+        &mut self,
+        feature: &'static str,
+        minimum_required_protocol: Version,
+    ) -> VMResult<()> {
+        if self.version < minimum_required_protocol {
+            return self.do_transition(HitError {
+                error: UnsupportedFeatureForNegotiatedVersion::new(
+                    feature,
+                    self.version,
+                    minimum_required_protocol,
+                )
+                .into(),
+                next_retry_delay: None,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -413,12 +433,16 @@ impl super::VM for CoreVM {
         ret
     )]
     fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle> {
+        if target.idempotency_key.is_some() {
+            self.verify_feature_support("attach idempotency key to one way call", Version::V3)?;
+        }
         self.do_transition(SysCompletableEntry(
             "SysCall",
             CallEntryMessage {
                 service_name: target.service,
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
+                idempotency_key: target.idempotency_key.unwrap_or_default(),
                 parameter: input,
                 ..Default::default()
             },
@@ -431,13 +455,22 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_send(&mut self, target: Target, input: Bytes, delay: Option<Duration>) -> VMResult<()> {
+    fn sys_send(
+        &mut self,
+        target: Target,
+        input: Bytes,
+        delay: Option<Duration>,
+    ) -> VMResult<SendHandle> {
+        if target.idempotency_key.is_some() {
+            self.verify_feature_support("attach idempotency key to one way call", Version::V3)?;
+        }
         self.do_transition(SysNonCompletableEntry(
             "SysOneWayCall",
             OneWayCallEntryMessage {
                 service_name: target.service,
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
+                idempotency_key: target.idempotency_key.unwrap_or_default(),
                 parameter: input,
                 invoke_time: delay
                     .map(|d| {
@@ -448,6 +481,7 @@ impl super::VM for CoreVM {
                 ..Default::default()
             },
         ))
+        .map(|_| SendHandle(self.context.journal.expect_index()))
     }
 
     #[instrument(
@@ -576,6 +610,46 @@ impl super::VM for CoreVM {
         retry_policy: RetryPolicy,
     ) -> Result<AsyncResultHandle, Error> {
         self.do_transition(SysRunExit(value, retry_policy))
+    }
+
+    #[instrument(level = "debug", ret)]
+    fn sys_get_call_invocation_id(
+        &mut self,
+        call: GetInvocationIdTarget,
+    ) -> VMResult<AsyncResultHandle> {
+        self.verify_feature_support("get call invocation id", Version::V3)?;
+        self.do_transition(SysCompletableEntry(
+            "SysGetCallInvocationId",
+            GetCallInvocationIdEntryMessage {
+                call_entry_index: match call {
+                    GetInvocationIdTarget::CallEntry(h) => h.0,
+                    GetInvocationIdTarget::SendEntry(h) => h.0,
+                },
+                ..Default::default()
+            },
+        ))
+    }
+
+    #[instrument(level = "debug", ret)]
+    fn sys_cancel_invocation(&mut self, target: CancelInvocationTarget) -> VMResult<()> {
+        self.verify_feature_support("cancel invocation", Version::V3)?;
+        self.do_transition(SysNonCompletableEntry(
+            "SysCancelInvocation",
+            CancelInvocationEntryMessage {
+                target: Some(match target {
+                    CancelInvocationTarget::InvocationId(id) => {
+                        cancel_invocation_entry_message::Target::InvocationId(id)
+                    }
+                    CancelInvocationTarget::CallEntry(handle) => {
+                        cancel_invocation_entry_message::Target::CallEntryIndex(handle.0)
+                    }
+                    CancelInvocationTarget::SendEntry(handle) => {
+                        cancel_invocation_entry_message::Target::CallEntryIndex(handle.0)
+                    }
+                }),
+                ..Default::default()
+            },
+        ))
     }
 
     #[instrument(
