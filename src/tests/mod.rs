@@ -50,8 +50,8 @@ struct VMTestCase {
 impl VMTestCase {
     fn new() -> Self {
         Self {
-            encoder: Encoder::new(Version::latest()),
-            vm: CoreVM::mock_init(Version::latest()),
+            encoder: Encoder::new(Version::maximum_supported_version()),
+            vm: CoreVM::mock_init(Version::maximum_supported_version()),
         }
     }
 
@@ -85,7 +85,7 @@ struct OutputIterator(Decoder);
 
 impl OutputIterator {
     fn collect_vm(vm: &mut impl VM) -> Self {
-        let mut decoder = Decoder::new(Version::latest());
+        let mut decoder = Decoder::new(Version::maximum_supported_version());
         while let TakeOutputResult::Buffer(b) = vm.take_output() {
             decoder.push(b);
         }
@@ -113,8 +113,8 @@ impl Iterator for OutputIterator {
 // --- Matchers
 
 /// Matcher for VMError
-pub fn eq_vm_error(vm_error: VMError) -> impl Matcher<ActualT = VMError> {
-    pat!(VMError {
+pub fn eq_vm_error(vm_error: Error) -> impl Matcher<ActualT = Error> {
+    pat!(Error {
         code: eq(vm_error.code),
         message: eq(vm_error.message),
         description: eq(vm_error.description)
@@ -122,7 +122,7 @@ pub fn eq_vm_error(vm_error: VMError) -> impl Matcher<ActualT = VMError> {
 }
 
 /// Matcher for ErrorMessage to equal VMError
-pub fn error_message_as_vm_error(vm_error: VMError) -> impl Matcher<ActualT = ErrorMessage> {
+pub fn error_message_as_vm_error(vm_error: Error) -> impl Matcher<ActualT = ErrorMessage> {
     pat!(ErrorMessage {
         code: eq(vm_error.code as u32),
         message: eq(vm_error.message),
@@ -210,7 +210,7 @@ pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputEntryMessage {
 
 #[test]
 fn take_output_on_newly_initialized_vm() {
-    let mut vm = CoreVM::mock_init(Version::latest());
+    let mut vm = CoreVM::mock_init(Version::maximum_supported_version());
     assert_that!(
         vm.take_output(),
         eq(TakeOutputResult::Buffer(Bytes::default()))

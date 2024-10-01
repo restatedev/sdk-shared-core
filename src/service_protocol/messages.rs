@@ -1,7 +1,7 @@
 use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
 use crate::service_protocol::{MessageHeader, MessageType};
 use crate::vm::errors::{DecodeStateKeysProst, DecodeStateKeysUtf8, EmptyStateKeys};
-use crate::{NonEmptyValue, VMError, Value};
+use crate::{Error, NonEmptyValue, Value};
 use paste::paste;
 use prost::Message;
 
@@ -25,7 +25,7 @@ pub trait EntryMessageHeaderEq {
 
 pub trait CompletableEntryMessage: RestateMessage + EntryMessage + EntryMessageHeaderEq {
     fn is_completed(&self) -> bool;
-    fn into_completion(self) -> Result<Option<Value>, VMError>;
+    fn into_completion(self) -> Result<Option<Value>, Error>;
     fn completion_parsing_hint() -> CompletionParsingHint;
 }
 
@@ -74,7 +74,7 @@ macro_rules! impl_message_traits {
                 self.result.is_some()
             }
 
-            fn into_completion(self) -> Result<Option<Value>, VMError> {
+            fn into_completion(self) -> Result<Option<Value>, Error> {
                 self.result.map(TryInto::try_into).transpose()
             }
 
@@ -133,7 +133,7 @@ impl CompletableEntryMessage for GetStateKeysEntryMessage {
         self.result.is_some()
     }
 
-    fn into_completion(self) -> Result<Option<Value>, VMError> {
+    fn into_completion(self) -> Result<Option<Value>, Error> {
         self.result.map(TryInto::try_into).transpose()
     }
 
@@ -255,7 +255,7 @@ impl EntryMessageHeaderEq for CombinatorEntryMessage {
 // --- Completion extraction
 
 impl TryFrom<get_state_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: get_state_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -267,7 +267,7 @@ impl TryFrom<get_state_entry_message::Result> for Value {
 }
 
 impl TryFrom<get_state_keys_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: get_state_keys_entry_message::Result) -> Result<Self, Self::Error> {
         match value {
@@ -286,7 +286,7 @@ impl TryFrom<get_state_keys_entry_message::Result> for Value {
 }
 
 impl TryFrom<sleep_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: sleep_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -297,7 +297,7 @@ impl TryFrom<sleep_entry_message::Result> for Value {
 }
 
 impl TryFrom<call_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: call_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -308,7 +308,7 @@ impl TryFrom<call_entry_message::Result> for Value {
 }
 
 impl TryFrom<awakeable_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: awakeable_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -319,7 +319,7 @@ impl TryFrom<awakeable_entry_message::Result> for Value {
 }
 
 impl TryFrom<get_promise_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: get_promise_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -330,7 +330,7 @@ impl TryFrom<get_promise_entry_message::Result> for Value {
 }
 
 impl TryFrom<peek_promise_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: peek_promise_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -342,7 +342,7 @@ impl TryFrom<peek_promise_entry_message::Result> for Value {
 }
 
 impl TryFrom<complete_promise_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: complete_promise_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
@@ -363,8 +363,8 @@ impl From<run_entry_message::Result> for NonEmptyValue {
 
 // --- Other conversions
 
-impl From<crate::Failure> for Failure {
-    fn from(value: crate::Failure) -> Self {
+impl From<crate::TerminalFailure> for Failure {
+    fn from(value: crate::TerminalFailure) -> Self {
         Self {
             code: value.code as u32,
             message: value.message,
@@ -372,7 +372,7 @@ impl From<crate::Failure> for Failure {
     }
 }
 
-impl From<Failure> for crate::Failure {
+impl From<Failure> for crate::TerminalFailure {
     fn from(value: Failure) -> Self {
         Self {
             code: value.code as u16,
@@ -391,7 +391,7 @@ pub(crate) enum CompletionParsingHint {
 }
 
 impl CompletionParsingHint {
-    pub(crate) fn parse(self, result: completion_message::Result) -> Result<Value, VMError> {
+    pub(crate) fn parse(self, result: completion_message::Result) -> Result<Value, Error> {
         match self {
             CompletionParsingHint::StateKeys => match result {
                 completion_message::Result::Empty(_) => Err(EmptyStateKeys.into()),

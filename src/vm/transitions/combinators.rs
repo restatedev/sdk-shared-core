@@ -4,7 +4,7 @@ use crate::vm::errors::{UnexpectedStateError, BAD_COMBINATOR_ENTRY};
 use crate::vm::transitions::{PopJournalEntry, TransitionAndReturn};
 use crate::vm::State;
 use crate::{
-    AsyncResultAccessTracker, AsyncResultCombinator, AsyncResultHandle, AsyncResultState, VMError,
+    AsyncResultAccessTracker, AsyncResultCombinator, AsyncResultHandle, AsyncResultState, Error,
     Value,
 };
 use std::collections::HashMap;
@@ -67,7 +67,7 @@ where
         mut self,
         context: &mut Context,
         SysTryCompleteCombinator(combinator): SysTryCompleteCombinator<C>,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         self.check_side_effect_guard()?;
         match self {
             State::Processing {

@@ -209,7 +209,7 @@ fn enter_then_exit_then_ack_with_failure() {
             );
             let handle = vm
                 .sys_run_exit(
-                    RunExitResult::TerminalFailure(Failure {
+                    RunExitResult::TerminalFailure(TerminalFailure {
                         code: 500,
                         message: "my-failure".to_string(),
                     }),
@@ -291,15 +291,15 @@ fn enter_then_notify_error() {
                     vm.sys_run_enter("my-side-effect".to_owned()).unwrap()
             );
             vm.notify_error(
-                Cow::Borrowed("my-error"),
-                Cow::Borrowed("my-error-description"),
+                Error::internal(Cow::Borrowed("my-error"))
+                    .with_description(Cow::Borrowed("my-error-description")),
                 None,
             );
         });
 
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
-        error_message_as_vm_error(VMError {
+        error_message_as_vm_error(Error {
             code: 500,
             message: Cow::Borrowed("my-error"),
             description: Cow::Borrowed("my-error-description"),
@@ -515,10 +515,7 @@ mod retry_policy {
                 let handle = vm
                     .sys_run_exit(
                         RunExitResult::RetryableFailure {
-                            failure: Failure {
-                                code: 500,
-                                message: "my-error".to_string(),
-                            },
+                            error: Error::internal("my-error"),
                             attempt_duration,
                         },
                         retry_policy,
@@ -581,10 +578,7 @@ mod retry_policy {
                 assert!(vm
                     .sys_run_exit(
                         RunExitResult::RetryableFailure {
-                            failure: Failure {
-                                code: 500,
-                                message: "my-error".to_string(),
-                            },
+                            error: Error::internal("my-error"),
                             attempt_duration
                         },
                         retry_policy
@@ -691,10 +685,7 @@ mod retry_policy {
                 assert!(vm
                     .sys_run_exit(
                         RunExitResult::RetryableFailure {
-                            failure: Failure {
-                                code: 500,
-                                message: "my-error".to_string(),
-                            },
+                            error: Error::internal("my-error"),
                             attempt_duration: Duration::from_millis(99)
                         },
                         RetryPolicy::FixedDelay {
