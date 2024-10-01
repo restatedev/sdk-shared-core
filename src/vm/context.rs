@@ -3,7 +3,7 @@ use crate::service_protocol::messages::{
     WriteableRestateMessage,
 };
 use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{AsyncResultHandle, AsyncResultState, EntryRetryInfo, VMError, VMOptions, Value};
+use crate::{AsyncResultHandle, AsyncResultState, EntryRetryInfo, Error, VMOptions, Value};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, VecDeque};
@@ -108,7 +108,7 @@ impl AsyncResultsState {
         &mut self,
         index: u32,
         completion_parsing_hint: CompletionParsingHint,
-    ) -> Result<(), VMError> {
+    ) -> Result<(), Error> {
         if let Some(unparsed_completion_or_parsing_hint) =
             self.unparsed_completions_or_parsing_hints.remove(&index)
         {
@@ -134,7 +134,7 @@ impl AsyncResultsState {
         &mut self,
         index: u32,
         result: completion_message::Result,
-    ) -> Result<(), VMError> {
+    ) -> Result<(), Error> {
         if let Some(unparsed_completion_or_parsing_hint) =
             self.unparsed_completions_or_parsing_hints.remove(&index)
         {

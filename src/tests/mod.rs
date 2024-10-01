@@ -113,8 +113,8 @@ impl Iterator for OutputIterator {
 // --- Matchers
 
 /// Matcher for VMError
-pub fn eq_vm_error(vm_error: VMError) -> impl Matcher<ActualT = VMError> {
-    pat!(VMError {
+pub fn eq_vm_error(vm_error: Error) -> impl Matcher<ActualT = Error> {
+    pat!(Error {
         code: eq(vm_error.code),
         message: eq(vm_error.message),
         description: eq(vm_error.description)
@@ -122,7 +122,7 @@ pub fn eq_vm_error(vm_error: VMError) -> impl Matcher<ActualT = VMError> {
 }
 
 /// Matcher for ErrorMessage to equal VMError
-pub fn error_message_as_vm_error(vm_error: VMError) -> impl Matcher<ActualT = ErrorMessage> {
+pub fn error_message_as_vm_error(vm_error: Error) -> impl Matcher<ActualT = ErrorMessage> {
     pat!(ErrorMessage {
         code: eq(vm_error.code as u32),
         message: eq(vm_error.message),

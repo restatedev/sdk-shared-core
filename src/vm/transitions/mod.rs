@@ -7,7 +7,7 @@ mod terminal;
 use crate::service_protocol::messages::ErrorMessage;
 use crate::vm::context::Context;
 use crate::vm::State;
-use crate::{CoreVM, VMError};
+use crate::{CoreVM, Error};
 pub(crate) use async_results::*;
 pub(crate) use combinators::*;
 pub(crate) use input::*;
@@ -19,7 +19,7 @@ trait Transition<CTX, E>
 where
     Self: Sized,
 {
-    fn transition(self, context: &mut CTX, event: E) -> Result<Self, VMError>;
+    fn transition(self, context: &mut CTX, event: E) -> Result<Self, Error>;
 }
 
 pub(crate) trait TransitionAndReturn<CTX, E>
@@ -31,7 +31,7 @@ where
         self,
         context: &mut CTX,
         event: E,
-    ) -> Result<(Self, Self::Output), VMError>;
+    ) -> Result<(Self, Self::Output), Error>;
 }
 
 impl<STATE, CTX, E> TransitionAndReturn<CTX, E> for STATE
@@ -44,13 +44,13 @@ where
         self,
         context: &mut CTX,
         event: E,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         Transition::transition(self, context, event).map(|s| (s, ()))
     }
 }
 
 impl CoreVM {
-    pub(super) fn do_transition<E, O>(&mut self, event: E) -> Result<O, VMError>
+    pub(super) fn do_transition<E, O>(&mut self, event: E) -> Result<O, Error>
     where
         State: TransitionAndReturn<Context, E, Output = O>,
     {

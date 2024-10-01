@@ -11,12 +11,19 @@ use std::fmt;
 use std::time::Duration;
 
 pub use crate::retries::RetryPolicy;
-use crate::vm::AsyncResultAccessTrackerInner;
 pub use headers::HeaderMap;
 #[cfg(feature = "request_identity")]
 pub use request_identity::*;
 pub use service_protocol::Version;
 pub use vm::CoreVM;
+
+// Re-export only some stuff from vm::errors
+pub mod error {
+    pub use crate::vm::errors::codes;
+    pub use crate::vm::errors::InvocationErrorCode;
+}
+
+use crate::vm::AsyncResultAccessTrackerInner;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Header {
@@ -37,19 +44,23 @@ pub struct SuspendedError;
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("VM Error [{code}]: {message}. Description: {description}")]
-pub struct VMError {
+pub struct Error {
     code: u16,
     message: Cow<'static, str>,
     description: Cow<'static, str>,
 }
 
-impl VMError {
+impl Error {
     pub fn new(code: impl Into<u16>, message: impl Into<Cow<'static, str>>) -> Self {
-        VMError {
+        Error {
             code: code.into(),
             message: message.into(),
             description: Default::default(),
         }
+    }
+
+    pub fn internal(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(error::codes::INTERNAL, message)
     }
 
     pub fn code(&self) -> u16 {
@@ -63,6 +74,30 @@ impl VMError {
     pub fn description(&self) -> &str {
         &self.description
     }
+
+    pub fn with_description(mut self, description: impl Into<Cow<'static, str>>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Append the given description to the original one, in case the code is the same
+    pub fn append_description_for_code(
+        mut self,
+        code: impl Into<u16>,
+        description: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        let c = code.into();
+        if self.code == c {
+            if self.description.is_empty() {
+                self.description = description.into();
+            } else {
+                self.description = format!("{}. {}", self.description, description.into()).into();
+            }
+            self
+        } else {
+            self
+        }
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -70,7 +105,7 @@ pub enum SuspendedOrVMError {
     #[error(transparent)]
     Suspended(SuspendedError),
     #[error(transparent)]
-    VM(VMError),
+    VM(Error),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -109,7 +144,7 @@ pub enum Value {
     /// a void/None/undefined success
     Void,
     Success(Bytes),
-    Failure(Failure),
+    Failure(TerminalFailure),
     /// Only returned for get_state_keys
     StateKeys(Vec<String>),
     CombinatorResult(Vec<AsyncResultHandle>),
@@ -117,7 +152,7 @@ pub enum Value {
 
 /// Terminal failure
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Failure {
+pub struct TerminalFailure {
     pub code: u16,
     pub message: String,
 }
@@ -139,17 +174,17 @@ pub enum RunEnterResult {
 #[derive(Debug, Clone)]
 pub enum RunExitResult {
     Success(Bytes),
-    TerminalFailure(Failure),
+    TerminalFailure(TerminalFailure),
     RetryableFailure {
         attempt_duration: Duration,
-        failure: Failure,
+        error: Error,
     },
 }
 
 #[derive(Debug, Clone)]
 pub enum NonEmptyValue {
     Success(Bytes),
-    Failure(Failure),
+    Failure(TerminalFailure),
 }
 
 impl From<NonEmptyValue> for Value {
@@ -167,7 +202,7 @@ pub enum TakeOutputResult {
     EOF,
 }
 
-pub type VMResult<T> = Result<T, VMError>;
+pub type VMResult<T> = Result<T, Error>;
 
 pub struct VMOptions {
     /// If true, false when two concurrent async results are awaited at the same time. If false, just log it.
@@ -195,12 +230,7 @@ pub trait VM: Sized {
 
     // --- Errors
 
-    fn notify_error(
-        &mut self,
-        message: Cow<'static, str>,
-        description: Cow<'static, str>,
-        next_retry_delay: Option<Duration>,
-    );
+    fn notify_error(&mut self, error: Error, next_retry_delay: Option<Duration>);
 
     // --- Output stream
 
@@ -208,7 +238,7 @@ pub trait VM: Sized {
 
     // --- Execution start waiting point
 
-    fn is_ready_to_execute(&self) -> Result<bool, VMError>;
+    fn is_ready_to_execute(&self) -> VMResult<bool>;
 
     // --- Async results
 

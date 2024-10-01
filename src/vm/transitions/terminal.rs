@@ -3,11 +3,11 @@ use crate::vm::context::Context;
 use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::Transition;
 use crate::vm::State;
-use crate::VMError;
+use crate::Error;
 use std::time::Duration;
 
 pub(crate) struct HitError {
-    pub(crate) error: VMError,
+    pub(crate) error: Error,
     pub(crate) next_retry_delay: Option<Duration>,
 }
 
@@ -19,7 +19,7 @@ impl Transition<Context, HitError> for State {
             error,
             next_retry_delay,
         }: HitError,
-    ) -> Result<Self, VMError> {
+    ) -> Result<Self, Error> {
         ctx.next_retry_delay = next_retry_delay;
 
         // We let CoreVM::do_transition handle this
@@ -34,7 +34,7 @@ impl Transition<Context, HitSuspensionPoint> for State {
         self,
         context: &mut Context,
         HitSuspensionPoint(await_point): HitSuspensionPoint,
-    ) -> Result<Self, VMError> {
+    ) -> Result<Self, Error> {
         if matches!(self, State::Suspended | State::Ended) {
             // Nothing to do
             return Ok(self);
@@ -51,7 +51,7 @@ impl Transition<Context, HitSuspensionPoint> for State {
 pub(crate) struct SysEnd;
 
 impl Transition<Context, SysEnd> for State {
-    fn transition(self, context: &mut Context, _: SysEnd) -> Result<Self, VMError> {
+    fn transition(self, context: &mut Context, _: SysEnd) -> Result<Self, Error> {
         match self {
             State::Processing { .. } => {
                 context.output.send(&EndMessage {});

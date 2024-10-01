@@ -86,7 +86,7 @@ fn one_way_call_entry_mismatch() {
 fn test_entry_mismatch<M: WriteableRestateMessage + Clone, T: fmt::Debug>(
     expected: M,
     actual: M,
-    user_code: impl FnOnce(&mut CoreVM) -> Result<T, VMError>,
+    user_code: impl FnOnce(&mut CoreVM) -> Result<T, Error>,
 ) {
     let mut output = VMTestCase::new()
         .input(StartMessage {

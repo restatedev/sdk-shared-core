@@ -412,13 +412,10 @@ mod complete_promise {
                 entry_index: 1,
                 result: Some(completion_message::Result::Empty(Empty::default())),
             })
-            .run(handler(NonEmptyValue::Failure(
-                Failure {
-                    code: 500,
-                    message: "my failure".to_owned(),
-                }
-                .into(),
-            )));
+            .run(handler(NonEmptyValue::Failure(TerminalFailure {
+                code: 500,
+                message: "my failure".to_owned(),
+            })));
 
         assert_eq!(
             output
@@ -467,13 +464,10 @@ mod complete_promise {
                     message: "cannot write promise".to_owned(),
                 })),
             })
-            .run(handler(NonEmptyValue::Failure(
-                Failure {
-                    code: 500,
-                    message: "my failure".to_owned(),
-                }
-                .into(),
-            )));
+            .run(handler(NonEmptyValue::Failure(TerminalFailure {
+                code: 500,
+                message: "my failure".to_owned(),
+            })));
 
         assert_eq!(
             output

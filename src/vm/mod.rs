@@ -13,9 +13,9 @@ use crate::vm::context::{EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::*;
 use crate::{
-    AsyncResultCombinator, AsyncResultHandle, Header, Input, NonEmptyValue, ResponseHead,
+    AsyncResultCombinator, AsyncResultHandle, Error, Header, Input, NonEmptyValue, ResponseHead,
     RetryPolicy, RunEnterResult, RunExitResult, SuspendedOrVMError, TakeOutputResult, Target,
-    VMError, VMOptions, VMResult, Value,
+    VMOptions, VMResult, Value,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -59,7 +59,7 @@ pub(crate) enum State {
 }
 
 impl State {
-    fn as_unexpected_state(&self, event: &'static str) -> VMError {
+    fn as_unexpected_state(&self, event: &'static str) -> Error {
         UnexpectedStateError::new(self.into(), event).into()
     }
 }
@@ -72,7 +72,7 @@ pub struct CoreVM {
 
     // State machine
     context: Context,
-    last_transition: Result<State, VMError>,
+    last_transition: Result<State, Error>,
 }
 
 impl CoreVM {
@@ -112,11 +112,11 @@ const _: () = is_send::<CoreVM>();
 
 impl super::VM for CoreVM {
     #[instrument(level = "debug", skip_all, ret)]
-    fn new(request_headers: impl HeaderMap, options: VMOptions) -> Result<Self, VMError> {
+    fn new(request_headers: impl HeaderMap, options: VMOptions) -> Result<Self, Error> {
         let version = request_headers
             .extract(CONTENT_TYPE)
             .map_err(|e| {
-                VMError::new(
+                Error::new(
                     errors::codes::BAD_REQUEST,
                     format!("cannot read '{CONTENT_TYPE}' header: {e:?}"),
                 )
@@ -125,7 +125,7 @@ impl super::VM for CoreVM {
             .parse::<Version>()?;
 
         if version != Version::maximum_supported_version() {
-            return Err(VMError::new(
+            return Err(Error::new(
                 errors::codes::UNSUPPORTED_MEDIA_TYPE,
                 format!("Unsupported protocol version {:?}", version),
             ));
@@ -214,18 +214,9 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn notify_error(
-        &mut self,
-        message: Cow<'static, str>,
-        description: Cow<'static, str>,
-        next_retry_delay: Option<Duration>,
-    ) {
+    fn notify_error(&mut self, error: Error, next_retry_delay: Option<Duration>) {
         let _ = self.do_transition(HitError {
-            error: VMError {
-                code: errors::codes::INTERNAL.into(),
-                message,
-                description,
-            },
+            error,
             next_retry_delay,
         });
     }
@@ -257,7 +248,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn is_ready_to_execute(&self) -> Result<bool, VMError> {
+    fn is_ready_to_execute(&self) -> Result<bool, Error> {
         match &self.last_transition {
             Ok(State::WaitingStart) | Ok(State::WaitingReplayEntries { .. }) => Ok(false),
             Ok(State::Processing { .. }) | Ok(State::Replaying { .. }) => Ok(true),
@@ -299,7 +290,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_input(&mut self) -> Result<Input, VMError> {
+    fn sys_input(&mut self) -> Result<Input, Error> {
         self.do_transition(SysInput)
     }
 
@@ -309,7 +300,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_state_get(&mut self, key: String) -> Result<AsyncResultHandle, VMError> {
+    fn sys_state_get(&mut self, key: String) -> Result<AsyncResultHandle, Error> {
         let result = match self.context.eager_state.get(&key) {
             EagerGetState::Unknown => None,
             EagerGetState::Empty => Some(get_state_entry_message::Result::Empty(Empty::default())),
@@ -355,7 +346,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_state_set(&mut self, key: String, value: Bytes) -> Result<(), VMError> {
+    fn sys_state_set(&mut self, key: String, value: Bytes) -> Result<(), Error> {
         self.context.eager_state.set(key.clone(), value.clone());
         self.do_transition(SysNonCompletableEntry(
             "SysStateSet",
@@ -373,7 +364,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_state_clear(&mut self, key: String) -> Result<(), VMError> {
+    fn sys_state_clear(&mut self, key: String) -> Result<(), Error> {
         self.context.eager_state.clear(key.clone());
         self.do_transition(SysNonCompletableEntry(
             "SysStateClear",
@@ -390,7 +381,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_state_clear_all(&mut self) -> Result<(), VMError> {
+    fn sys_state_clear_all(&mut self) -> Result<(), Error> {
         self.context.eager_state.clear_all();
         self.do_transition(SysNonCompletableEntry(
             "SysStateClearAll",
@@ -569,7 +560,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_run_enter(&mut self, name: String) -> Result<RunEnterResult, VMError> {
+    fn sys_run_enter(&mut self, name: String) -> Result<RunEnterResult, Error> {
         self.do_transition(SysRunEnter(name))
     }
 
@@ -583,7 +574,7 @@ impl super::VM for CoreVM {
         &mut self,
         value: RunExitResult,
         retry_policy: RetryPolicy,
-    ) -> Result<AsyncResultHandle, VMError> {
+    ) -> Result<AsyncResultHandle, Error> {
         self.do_transition(SysRunExit(value, retry_policy))
     }
 
@@ -593,7 +584,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_write_output(&mut self, value: NonEmptyValue) -> Result<(), VMError> {
+    fn sys_write_output(&mut self, value: NonEmptyValue) -> Result<(), Error> {
         self.do_transition(SysNonCompletableEntry(
             "SysWriteOutput",
             OutputEntryMessage {
@@ -612,7 +603,7 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_end(&mut self) -> Result<(), VMError> {
+    fn sys_end(&mut self) -> Result<(), Error> {
         self.do_transition(SysEnd)
     }
 

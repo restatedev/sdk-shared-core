@@ -4,18 +4,14 @@ use crate::vm::context::{Context, EagerState, StartInfo};
 use crate::vm::errors::{BadEagerStateKeyError, KNOWN_ENTRIES_IS_ZERO, UNEXPECTED_INPUT_MESSAGE};
 use crate::vm::transitions::Transition;
 use crate::vm::{errors, State};
-use crate::VMError;
+use crate::Error;
 use bytes::Bytes;
 use tracing::debug;
 
 pub(crate) struct NewMessage(pub(crate) RawMessage);
 
 impl Transition<Context, NewMessage> for State {
-    fn transition(
-        self,
-        context: &mut Context,
-        NewMessage(msg): NewMessage,
-    ) -> Result<Self, VMError> {
+    fn transition(self, context: &mut Context, NewMessage(msg): NewMessage) -> Result<Self, Error> {
         match msg.ty() {
             MessageType::Start => {
                 self.transition(context, NewStartMessage(msg.decode_to::<StartMessage>()?))
@@ -41,7 +37,7 @@ impl Transition<Context, NewStartMessage> for State {
         self,
         context: &mut Context,
         NewStartMessage(msg): NewStartMessage,
-    ) -> Result<Self, VMError> {
+    ) -> Result<Self, Error> {
         context.start_info = Some(StartInfo {
             id: msg.id,
             debug_id: msg.debug_id,
@@ -83,7 +79,7 @@ impl Transition<Context, NewCompletionMessage> for State {
         mut self,
         _: &mut Context,
         NewCompletionMessage(msg): NewCompletionMessage,
-    ) -> Result<Self, VMError> {
+    ) -> Result<Self, Error> {
         // Add completion to completions buffer
         let CompletionMessage {
             entry_index,
@@ -124,7 +120,7 @@ impl Transition<Context, NewEntryAckMessage> for State {
         mut self,
         _: &mut Context,
         NewEntryAckMessage(msg): NewEntryAckMessage,
-    ) -> Result<Self, VMError> {
+    ) -> Result<Self, Error> {
         match self {
             State::WaitingReplayEntries {
                 ref mut async_results,
@@ -156,7 +152,7 @@ impl Transition<Context, NewEntryMessage> for State {
         self,
         context: &mut Context,
         NewEntryMessage(msg): NewEntryMessage,
-    ) -> Result<Self, VMError> {
+    ) -> Result<Self, Error> {
         match self {
             State::WaitingReplayEntries {
                 mut entries,

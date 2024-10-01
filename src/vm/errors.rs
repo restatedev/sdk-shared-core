@@ -1,5 +1,5 @@
 use crate::service_protocol::{DecodingError, MessageType, UnsupportedVersionError};
-use crate::VMError;
+use crate::Error;
 use std::borrow::Cow;
 use std::fmt;
 
@@ -66,9 +66,9 @@ pub mod codes {
 
 // Const errors
 
-impl VMError {
+impl Error {
     const fn new_const(code: InvocationErrorCode, message: &'static str) -> Self {
-        VMError {
+        Error {
             code: code.0,
             message: Cow::Borrowed(message),
             description: Cow::Borrowed(""),
@@ -76,50 +76,50 @@ impl VMError {
     }
 }
 
-pub const MISSING_CONTENT_TYPE: VMError = VMError::new_const(
+pub const MISSING_CONTENT_TYPE: Error = Error::new_const(
     codes::UNSUPPORTED_MEDIA_TYPE,
     "Missing content type when invoking",
 );
 
-pub const UNEXPECTED_INPUT_MESSAGE: VMError = VMError::new_const(
+pub const UNEXPECTED_INPUT_MESSAGE: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
     "Expected input message to be entry",
 );
 
-pub const KNOWN_ENTRIES_IS_ZERO: VMError =
-    VMError::new_const(codes::INTERNAL, "Known entries is zero, expected >= 1");
+pub const KNOWN_ENTRIES_IS_ZERO: Error =
+    Error::new_const(codes::INTERNAL, "Known entries is zero, expected >= 1");
 
-pub const UNEXPECTED_ENTRY_MESSAGE: VMError = VMError::new_const(
+pub const UNEXPECTED_ENTRY_MESSAGE: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
     "Expected entry messages only when waiting replay entries",
 );
 
-pub const UNEXPECTED_NONE_RUN_RESULT: VMError = VMError::new_const(
+pub const UNEXPECTED_NONE_RUN_RESULT: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
     "Expected RunEntryMessage to contain a result",
 );
 
-pub const EXPECTED_COMPLETION_RESULT: VMError = VMError::new_const(
+pub const EXPECTED_COMPLETION_RESULT: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
     "The completion message MUST contain a result",
 );
 
-pub const INSIDE_RUN: VMError = VMError::new_const(
+pub const INSIDE_RUN: Error = Error::new_const(
     codes::INTERNAL,
     "A syscall was invoked from within a run operation",
 );
 
-pub const INVOKED_RUN_EXIT_WITHOUT_ENTER: VMError = VMError::new_const(
+pub const INVOKED_RUN_EXIT_WITHOUT_ENTER: Error = Error::new_const(
     codes::INTERNAL,
     "Invoked sys_run_exit without invoking sys_run_enter before",
 );
 
-pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: VMError = VMError::new_const(
+pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
     "The input was closed while still waiting to receive all the `known_entries`",
 );
 
-pub const BAD_COMBINATOR_ENTRY: VMError = VMError::new_const(
+pub const BAD_COMBINATOR_ENTRY: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
     "The combinator cannot be replayed. This is most likely caused by non deterministic code.",
 );
@@ -202,9 +202,9 @@ trait WithInvocationErrorCode {
     fn code(&self) -> InvocationErrorCode;
 }
 
-impl<T: WithInvocationErrorCode + fmt::Display> From<T> for VMError {
+impl<T: WithInvocationErrorCode + fmt::Display> From<T> for Error {
     fn from(value: T) -> Self {
-        VMError::new(value.code().0, value.to_string())
+        Error::new(value.code().0, value.to_string())
     }
 }
 

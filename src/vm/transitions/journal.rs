@@ -12,13 +12,13 @@ use crate::vm::errors::{
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{
-    AsyncResultHandle, Header, Input, NonEmptyValue, RetryPolicy, RunEnterResult, RunExitResult,
-    VMError,
+    AsyncResultHandle, Error, Header, Input, NonEmptyValue, RetryPolicy, RunEnterResult,
+    RunExitResult, TerminalFailure,
 };
 use std::{fmt, mem};
 
 impl State {
-    pub(crate) fn check_side_effect_guard(&self) -> Result<(), VMError> {
+    pub(crate) fn check_side_effect_guard(&self) -> Result<(), Error> {
         if let State::Processing { run_state, .. } = self {
             if run_state.is_running() {
                 return Err(INSIDE_RUN);
@@ -39,7 +39,7 @@ impl<M: RestateMessage + EntryMessageHeaderEq + EntryMessage + Clone>
         self,
         context: &mut Context,
         PopJournalEntry(sys_name, expected): PopJournalEntry<M>,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Replaying {
                 mut entries,
@@ -85,7 +85,7 @@ impl<M: RestateMessage + EntryMessageHeaderEq + EntryMessage + Clone + Writeable
         self,
         context: &mut Context,
         PopOrWriteJournalEntry(sys_name, expected): PopOrWriteJournalEntry<M>,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Processing { .. } => {
                 context.output.send(&expected);
@@ -105,7 +105,7 @@ impl TransitionAndReturn<Context, SysInput> for State {
         self,
         context: &mut Context,
         _: SysInput,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         context.journal.transition(&InputEntryMessage::default());
         self.check_side_effect_guard()?;
         let (s, msg) = TransitionAndReturn::transition_and_return(
@@ -163,7 +163,7 @@ impl<M: RestateMessage + EntryMessageHeaderEq + EntryMessage + Clone + Writeable
         self,
         context: &mut Context,
         SysNonCompletableEntry(sys_name, expected): SysNonCompletableEntry<M>,
-    ) -> Result<Self, VMError> {
+    ) -> Result<Self, Error> {
         context.journal.transition(&expected);
         self.check_side_effect_guard()?;
         let (s, _) =
@@ -189,7 +189,7 @@ impl<
         self,
         context: &mut Context,
         SysCompletableEntry(sys_name, expected): SysCompletableEntry<M>,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         context.journal.transition(&expected);
         self.check_side_effect_guard()?;
         let (mut s, actual) = TransitionAndReturn::transition_and_return(
@@ -232,7 +232,7 @@ impl TransitionAndReturn<Context, SysRunEnter> for State {
         mut self,
         context: &mut Context,
         SysRunEnter(name): SysRunEnter,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         let expected = RunEntryMessage {
             name: name.clone(),
             ..RunEntryMessage::default()
@@ -271,7 +271,7 @@ impl TransitionAndReturn<Context, SysRunExit> for State {
         mut self,
         context: &mut Context,
         SysRunExit(run_exit_result, retry_policy): SysRunExit,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Processing {
                 ref mut async_results,
@@ -290,7 +290,7 @@ impl TransitionAndReturn<Context, SysRunExit> for State {
                     RunExitResult::Success(s) => NonEmptyValue::Success(s),
                     RunExitResult::TerminalFailure(f) => NonEmptyValue::Failure(f),
                     RunExitResult::RetryableFailure {
-                        failure,
+                        error: failure,
                         attempt_duration,
                     } => {
                         let mut retry_info = context.infer_entry_retry_info();
@@ -301,11 +301,14 @@ impl TransitionAndReturn<Context, SysRunExit> for State {
                             NextRetry::Retry(next_retry_interval) => {
                                 // We need to retry!
                                 context.next_retry_delay = next_retry_interval;
-                                return Err(VMError::new(failure.code, failure.message));
+                                return Err(Error::new(failure.code, failure.message));
                             }
                             NextRetry::DoNotRetry => {
                                 // We don't retry, but convert the retryable error to actual error
-                                NonEmptyValue::Failure(failure)
+                                NonEmptyValue::Failure(TerminalFailure {
+                                    code: failure.code,
+                                    message: failure.message.to_string(),
+                                })
                             }
                         }
                     }
@@ -333,7 +336,7 @@ impl TransitionAndReturn<Context, SysRunExit> for State {
 fn check_entry_header_match<M: EntryMessageHeaderEq + Clone + fmt::Debug>(
     actual: &M,
     expected: &M,
-) -> Result<(), VMError> {
+) -> Result<(), Error> {
     if !actual.header_eq(expected) {
         return Err(EntryMismatchError::new(actual.clone(), expected.clone()).into());
     }

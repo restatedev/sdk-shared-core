@@ -12,7 +12,7 @@ request_identity = ["dep:ring", "dep:sha2", "dep:jsonwebtoken", "dep:bs58"]
 sha2_random_seed = ["dep:sha2"]
 
 [dependencies]
-thiserror = "1.0.61"
+thiserror = "1.0.64"
 prost = "0.13.2"
 bytes = "1.6"
 bytes-utils = "0.1.4"

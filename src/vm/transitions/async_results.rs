@@ -4,13 +4,13 @@ use crate::vm::errors::{
 };
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::State;
-use crate::{SuspendedError, VMError, Value};
+use crate::{Error, SuspendedError, Value};
 use tracing::warn;
 
 pub(crate) struct NotifyInputClosed;
 
 impl Transition<Context, NotifyInputClosed> for State {
-    fn transition(self, context: &mut Context, _: NotifyInputClosed) -> Result<Self, VMError> {
+    fn transition(self, context: &mut Context, _: NotifyInputClosed) -> Result<Self, Error> {
         match self {
             State::Replaying {
                 current_await_point: Some(await_point),
@@ -39,7 +39,7 @@ impl Transition<Context, NotifyAwaitPoint> for State {
         mut self,
         context: &mut Context,
         NotifyAwaitPoint(await_point): NotifyAwaitPoint,
-    ) -> Result<Self, VMError> {
+    ) -> Result<Self, Error> {
         match self {
             State::Replaying {
                 ref mut current_await_point,
@@ -92,7 +92,7 @@ impl TransitionAndReturn<Context, TakeAsyncResult> for State {
         mut self,
         _: &mut Context,
         TakeAsyncResult(async_result): TakeAsyncResult,
-    ) -> Result<(Self, Self::Output), VMError> {
+    ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Processing {
                 ref mut current_await_point,
