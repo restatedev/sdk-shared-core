@@ -3,8 +3,8 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Version {
-    V1,
-    V2,
+    V1 = 1,
+    V2 = 2,
 }
 
 const CONTENT_TYPE_V1: &str = "application/vnd.restate.invocation.v1";
@@ -18,7 +18,11 @@ impl Version {
         }
     }
 
-    pub const fn latest() -> Self {
+    pub const fn minimum_supported_version() -> Self {
+        Version::V2
+    }
+
+    pub const fn maximum_supported_version() -> Self {
         Version::V2
     }
 }

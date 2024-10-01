@@ -8,8 +8,8 @@ use test_log::test;
 
 #[test]
 fn got_closed_stream_before_end_of_replay() {
-    let mut vm = CoreVM::mock_init(Version::latest());
-    let encoder = Encoder::new(Version::latest());
+    let mut vm = CoreVM::mock_init(Version::maximum_supported_version());
+    let encoder = Encoder::new(Version::maximum_supported_version());
 
     vm.notify_input(encoder.encode(&StartMessage {
         id: Bytes::from_static(b"123"),

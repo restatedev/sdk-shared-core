@@ -50,8 +50,8 @@ struct VMTestCase {
 impl VMTestCase {
     fn new() -> Self {
         Self {
-            encoder: Encoder::new(Version::latest()),
-            vm: CoreVM::mock_init(Version::latest()),
+            encoder: Encoder::new(Version::maximum_supported_version()),
+            vm: CoreVM::mock_init(Version::maximum_supported_version()),
         }
     }
 
@@ -85,7 +85,7 @@ struct OutputIterator(Decoder);
 
 impl OutputIterator {
     fn collect_vm(vm: &mut impl VM) -> Self {
-        let mut decoder = Decoder::new(Version::latest());
+        let mut decoder = Decoder::new(Version::maximum_supported_version());
         while let TakeOutputResult::Buffer(b) = vm.take_output() {
             decoder.push(b);
         }
@@ -210,7 +210,7 @@ pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputEntryMessage {
 
 #[test]
 fn take_output_on_newly_initialized_vm() {
-    let mut vm = CoreVM::mock_init(Version::latest());
+    let mut vm = CoreVM::mock_init(Version::maximum_supported_version());
     assert_that!(
         vm.take_output(),
         eq(TakeOutputResult::Buffer(Bytes::default()))

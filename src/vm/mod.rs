@@ -124,7 +124,7 @@ impl super::VM for CoreVM {
             .ok_or(errors::MISSING_CONTENT_TYPE)?
             .parse::<Version>()?;
 
-        if version != Version::latest() {
+        if version != Version::maximum_supported_version() {
             return Err(VMError::new(
                 errors::codes::UNSUPPORTED_MEDIA_TYPE,
                 format!("Unsupported protocol version {:?}", version),
@@ -160,6 +160,7 @@ impl super::VM for CoreVM {
                 key: Cow::Borrowed(CONTENT_TYPE),
                 value: Cow::Borrowed(self.version.content_type()),
             }],
+            version: self.version,
         }
     }
 

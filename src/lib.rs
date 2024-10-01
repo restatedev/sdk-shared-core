@@ -15,6 +15,7 @@ use crate::vm::AsyncResultAccessTrackerInner;
 pub use headers::HeaderMap;
 #[cfg(feature = "request_identity")]
 pub use request_identity::*;
+pub use service_protocol::Version;
 pub use vm::CoreVM;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -27,6 +28,7 @@ pub struct Header {
 pub struct ResponseHead {
     pub status_code: u16,
     pub headers: Vec<Header>,
+    pub version: Version,
 }
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]
