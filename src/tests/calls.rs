@@ -25,6 +25,7 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
                         service: "MySvc".to_string(),
                         handler: "MyHandler".to_string(),
                         key: None,
+                        idempotency_key: None,
                     },
                     Bytes::new(),
                 )
@@ -111,6 +112,7 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
                         service: "MySvc".to_string(),
                         handler: "MyHandler".to_string(),
                         key: None,
+                        idempotency_key: None,
                     },
                     Bytes::new(),
                     None,

@@ -122,6 +122,7 @@ pub struct Target {
     pub service: String,
     pub handler: String,
     pub key: Option<String>,
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Eq, PartialEq)]

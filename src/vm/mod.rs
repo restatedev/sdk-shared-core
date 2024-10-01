@@ -14,9 +14,9 @@ use crate::vm::context::{EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::*;
 use crate::{
-    AsyncResultCombinator, AsyncResultHandle, Error, Header, Input, NonEmptyValue, ResponseHead, CancelInvocationTarget, GetInvocationIdTarget,
-    RetryPolicy, RunEnterResult, RunExitResult, SuspendedOrVMError, TakeOutputResult, Target,
-    VMOptions, VMResult, Value,     SendHandle,
+    AsyncResultCombinator, AsyncResultHandle, CancelInvocationTarget, Error, GetInvocationIdTarget,
+    Header, Input, NonEmptyValue, ResponseHead, RetryPolicy, RunEnterResult, RunExitResult,
+    SendHandle, SuspendedOrVMError, TakeOutputResult, Target, VMOptions, VMResult, Value,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -420,6 +420,7 @@ impl super::VM for CoreVM {
                 service_name: target.service,
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
+                idempotency_key: target.idempotency_key.unwrap_or_default(),
                 parameter: input,
                 ..Default::default()
             },
@@ -444,6 +445,7 @@ impl super::VM for CoreVM {
                 service_name: target.service,
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
+                idempotency_key: target.idempotency_key.unwrap_or_default(),
                 parameter: input,
                 invoke_time: delay
                     .map(|d| {

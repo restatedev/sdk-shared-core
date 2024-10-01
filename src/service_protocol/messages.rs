@@ -246,7 +246,7 @@ impl CompletableEntryMessage for GetCallInvocationIdEntryMessage {
         self.result.is_some()
     }
 
-    fn into_completion(self) -> Result<Option<Value>, VMError> {
+    fn into_completion(self) -> Result<Option<Value>, Error> {
         self.result.map(TryInto::try_into).transpose()
     }
 
@@ -388,7 +388,7 @@ impl From<run_entry_message::Result> for NonEmptyValue {
 }
 
 impl TryFrom<get_call_invocation_id_entry_message::Result> for Value {
-    type Error = VMError;
+    type Error = Error;
 
     fn try_from(value: get_call_invocation_id_entry_message::Result) -> Result<Self, Self::Error> {
         Ok(match value {
