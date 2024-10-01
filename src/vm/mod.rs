@@ -11,7 +11,7 @@ use crate::service_protocol::messages::{
 };
 use crate::service_protocol::{Decoder, RawMessage, Version};
 use crate::vm::context::{EagerGetState, EagerGetStateKeys};
-use crate::vm::errors::UnexpectedStateError;
+use crate::vm::errors::{UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion};
 use crate::vm::transitions::*;
 use crate::{
     AsyncResultCombinator, AsyncResultHandle, CancelInvocationTarget, Error, GetInvocationIdTarget,
@@ -84,6 +84,25 @@ impl CoreVM {
         } else {
             ""
         }
+    }
+
+    fn verify_feature_support(
+        &mut self,
+        feature: &'static str,
+        minimum_required_protocol: Version,
+    ) -> VMResult<()> {
+        if self.version < minimum_required_protocol {
+            return self.do_transition(HitError {
+                error: UnsupportedFeatureForNegotiatedVersion::new(
+                    feature,
+                    self.version,
+                    minimum_required_protocol,
+                )
+                .into(),
+                next_retry_delay: None,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -414,6 +433,9 @@ impl super::VM for CoreVM {
         ret
     )]
     fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle> {
+        if target.idempotency_key.is_some() {
+            self.verify_feature_support("attach idempotency key to one way call", Version::V3)?;
+        }
         self.do_transition(SysCompletableEntry(
             "SysCall",
             CallEntryMessage {
@@ -439,6 +461,9 @@ impl super::VM for CoreVM {
         input: Bytes,
         delay: Option<Duration>,
     ) -> VMResult<SendHandle> {
+        if target.idempotency_key.is_some() {
+            self.verify_feature_support("attach idempotency key to one way call", Version::V3)?;
+        }
         self.do_transition(SysNonCompletableEntry(
             "SysOneWayCall",
             OneWayCallEntryMessage {
@@ -592,6 +617,7 @@ impl super::VM for CoreVM {
         &mut self,
         call: GetInvocationIdTarget,
     ) -> VMResult<AsyncResultHandle> {
+        self.verify_feature_support("get call invocation id", Version::V3)?;
         self.do_transition(SysCompletableEntry(
             "SysGetCallInvocationId",
             GetCallInvocationIdEntryMessage {
@@ -606,6 +632,7 @@ impl super::VM for CoreVM {
 
     #[instrument(level = "debug", ret)]
     fn sys_cancel_invocation(&mut self, target: CancelInvocationTarget) -> VMResult<()> {
+        self.verify_feature_support("cancel invocation", Version::V3)?;
         self.do_transition(SysNonCompletableEntry(
             "SysCancelInvocation",
             CancelInvocationEntryMessage {
