@@ -318,7 +318,8 @@ message CallEntryMessage {
   // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
   string key = 5;
 
-  string idempotency_key = 6;
+  // If present, it must be non empty.
+  optional string idempotency_key = 6;
 
   oneof result {
     bytes value = 14;
@@ -349,7 +350,8 @@ message OneWayCallEntryMessage {
   // If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
   string key = 6;
 
-  string idempotency_key = 7;
+  // If present, it must be non empty.
+  optional string idempotency_key = 7;
 
   // Entry name
   string name = 12;
