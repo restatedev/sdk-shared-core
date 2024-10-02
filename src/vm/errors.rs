@@ -125,6 +125,11 @@ pub const BAD_COMBINATOR_ENTRY: Error = Error::new_const(
     "The combinator cannot be replayed. This is most likely caused by non deterministic code.",
 );
 
+pub const EMPTY_IDEMPOTENCY_KEY: Error = Error::new_const(
+    codes::INTERNAL,
+    "Trying to execute an idempotent request with an empty idempotency key, this is not supported",
+);
+
 // Other errors
 
 #[derive(Debug, Clone, thiserror::Error)]

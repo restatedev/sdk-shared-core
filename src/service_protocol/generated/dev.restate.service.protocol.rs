@@ -361,8 +361,9 @@ pub struct CallEntryMessage {
     /// If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
     #[prost(string, tag = "5")]
     pub key: ::prost::alloc::string::String,
-    #[prost(string, tag = "6")]
-    pub idempotency_key: ::prost::alloc::string::String,
+    /// If present, it must be non empty.
+    #[prost(string, optional, tag = "6")]
+    pub idempotency_key: ::core::option::Option<::prost::alloc::string::String>,
     /// Entry name
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
@@ -401,8 +402,9 @@ pub struct OneWayCallEntryMessage {
     /// If this invocation has a key associated (e.g. for objects and workflows), then this key is filled in. Empty otherwise.
     #[prost(string, tag = "6")]
     pub key: ::prost::alloc::string::String,
-    #[prost(string, tag = "7")]
-    pub idempotency_key: ::prost::alloc::string::String,
+    /// If present, it must be non empty.
+    #[prost(string, optional, tag = "7")]
+    pub idempotency_key: ::core::option::Option<::prost::alloc::string::String>,
     /// Entry name
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,

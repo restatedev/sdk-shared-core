@@ -11,7 +11,9 @@ use crate::service_protocol::messages::{
 };
 use crate::service_protocol::{Decoder, RawMessage, Version};
 use crate::vm::context::{EagerGetState, EagerGetStateKeys};
-use crate::vm::errors::{UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion};
+use crate::vm::errors::{
+    UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion, EMPTY_IDEMPOTENCY_KEY,
+};
 use crate::vm::transitions::*;
 use crate::{
     AsyncResultCombinator, AsyncResultHandle, CancelInvocationTarget, Error, GetInvocationIdTarget,
@@ -433,8 +435,15 @@ impl super::VM for CoreVM {
         ret
     )]
     fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle> {
-        if target.idempotency_key.is_some() {
-            self.verify_feature_support("attach idempotency key to one way call", Version::V3)?;
+        if let Some(idempotency_key) = &target.idempotency_key {
+            self.verify_feature_support("attach idempotency key to call", Version::V3)?;
+            if idempotency_key.is_empty() {
+                self.do_transition(HitError {
+                    error: EMPTY_IDEMPOTENCY_KEY,
+                    next_retry_delay: None,
+                })?;
+                unreachable!();
+            }
         }
         self.do_transition(SysCompletableEntry(
             "SysCall",
@@ -442,7 +451,7 @@ impl super::VM for CoreVM {
                 service_name: target.service,
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
-                idempotency_key: target.idempotency_key.unwrap_or_default(),
+                idempotency_key: target.idempotency_key,
                 parameter: input,
                 ..Default::default()
             },
@@ -461,8 +470,15 @@ impl super::VM for CoreVM {
         input: Bytes,
         delay: Option<Duration>,
     ) -> VMResult<SendHandle> {
-        if target.idempotency_key.is_some() {
+        if let Some(idempotency_key) = &target.idempotency_key {
             self.verify_feature_support("attach idempotency key to one way call", Version::V3)?;
+            if idempotency_key.is_empty() {
+                self.do_transition(HitError {
+                    error: EMPTY_IDEMPOTENCY_KEY,
+                    next_retry_delay: None,
+                })?;
+                unreachable!();
+            }
         }
         self.do_transition(SysNonCompletableEntry(
             "SysOneWayCall",
@@ -470,7 +486,7 @@ impl super::VM for CoreVM {
                 service_name: target.service,
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
-                idempotency_key: target.idempotency_key.unwrap_or_default(),
+                idempotency_key: target.idempotency_key,
                 parameter: input,
                 invoke_time: delay
                     .map(|d| {
