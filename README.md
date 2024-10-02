@@ -1,30 +1,13 @@
-# SDK Shared core
+# Restate Service Protocol
 
-Shared core to build SDKs in various languages. Currently used by:
+This repo contains specification documents and Protobuf schemas of the Restate Service Protocol.
 
-* [Python SDK](https://github.com/restatedev/sdk-python)
-
-## Versions
-
-This library follows [Semantic Versioning](https://semver.org/).
-
-The compatibility with Restate is described in the following table:
-
-| Restate Server\sdk-shared-core | 0.0/0.1 |
-|--------------------------------|---------|
-| 1.0                            | ✅       |
+* [Service invocation protocol specification](./service-invocation-protocol.md)
 
 ## Development
 
-You need the [Rust toolchain](https://rustup.rs/). To verify:
+To format the spec document:
 
+```shell
+npx prettier -w service-invocation-protocol.md
 ```
-just verify
-```
-
-To release we use [cargo-release](https://github.com/crate-ci/cargo-release):
-
-```
-cargo release <VERSION>
-```
-
