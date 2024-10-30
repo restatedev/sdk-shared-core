@@ -64,6 +64,29 @@ impl CoreVM {
                 let was_closed = matches!(s, State::Ended | State::Suspended);
                 match TransitionAndReturn::transition_and_return(s, &mut self.context, event) {
                     Ok((new_state, output)) => {
+                        match new_state {
+                            State::Replaying {
+                                current_await_point,
+                                ..
+                            } => {
+                                // Replay record is not yet set in the span
+                                if self.tracing_replaying_flag && current_await_point.is_some() {
+                                    tracing::Span::current().record("replaying", true);
+                                    self.tracing_replaying_flag = false;
+                                }
+                            }
+                            State::Processing {
+                                current_await_point,
+                                ..
+                            } => {
+                                // Replay record is not yet reset in the span
+                                if !self.tracing_replaying_flag && current_await_point.is_some() {
+                                    tracing::Span::current().record("replaying", false);
+                                    self.tracing_replaying_flag = true;
+                                }
+                            }
+                            _ => {}
+                        }
                         self.last_transition = Ok(new_state);
                         Ok(output)
                     }

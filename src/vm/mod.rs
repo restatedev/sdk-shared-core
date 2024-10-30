@@ -76,6 +76,11 @@ pub struct CoreVM {
     // State machine
     context: Context,
     last_transition: Result<State, Error>,
+
+    // Flag to indicate whether span replay attribute should be set
+    // When replaying this is set on the sys call
+    // When not replaying this is reset on the sys call that transitioned the state
+    tracing_replaying_flag: bool,
 }
 
 impl CoreVM {
@@ -166,6 +171,7 @@ impl super::VM for CoreVM {
                 options,
             },
             last_transition: Ok(State::WaitingStart),
+            tracing_replaying_flag: true,
         })
     }
 
