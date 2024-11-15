@@ -122,6 +122,8 @@ gen_message_type_enum!(
     Run Entry = 0x0C05,
     CancelInvocation Entry = 0x0C06,
     GetCallInvocationId Entry = 0x0C07,
+    AttachInvocation Entry = 0x0C08,
+    GetInvocationOutput Entry = 0x0C09,
     Combinator Entry = 0xFC02,
 );
 
@@ -138,6 +140,8 @@ impl MessageType {
                 | MessageType::PeekPromiseEntry
                 | MessageType::CompletePromiseEntry
                 | MessageType::GetCallInvocationIdEntry
+                | MessageType::AttachInvocationEntry
+                | MessageType::GetInvocationOutputEntry
         )
     }
 }

@@ -260,6 +260,20 @@ impl EntryMessageHeaderEq for GetCallInvocationIdEntryMessage {
     }
 }
 
+impl_message_traits!(AttachInvocationEntry: completable_entry);
+impl EntryMessageHeaderEq for AttachInvocationEntryMessage {
+    fn header_eq(&self, other: &Self) -> bool {
+        self.target == other.target && self.name == other.name
+    }
+}
+
+impl_message_traits!(GetInvocationOutputEntry: completable_entry);
+impl EntryMessageHeaderEq for GetInvocationOutputEntryMessage {
+    fn header_eq(&self, other: &Self) -> bool {
+        self.target == other.target && self.name == other.name
+    }
+}
+
 impl_message_traits!(CombinatorEntry: message);
 impl_message_traits!(CombinatorEntry: entry);
 impl WriteableRestateMessage for CombinatorEntryMessage {
@@ -394,6 +408,29 @@ impl TryFrom<get_call_invocation_id_entry_message::Result> for Value {
         Ok(match value {
             get_call_invocation_id_entry_message::Result::Value(id) => Value::InvocationId(id),
             get_call_invocation_id_entry_message::Result::Failure(f) => Value::Failure(f.into()),
+        })
+    }
+}
+
+impl TryFrom<attach_invocation_entry_message::Result> for Value {
+    type Error = Error;
+
+    fn try_from(value: attach_invocation_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
+            attach_invocation_entry_message::Result::Value(b) => Value::Success(b),
+            attach_invocation_entry_message::Result::Failure(f) => Value::Failure(f.into()),
+        })
+    }
+}
+
+impl TryFrom<get_invocation_output_entry_message::Result> for Value {
+    type Error = Error;
+
+    fn try_from(value: get_invocation_output_entry_message::Result) -> Result<Self, Self::Error> {
+        Ok(match value {
+            get_invocation_output_entry_message::Result::Empty(_) => Value::Void,
+            get_invocation_output_entry_message::Result::Value(b) => Value::Success(b),
+            get_invocation_output_entry_message::Result::Failure(f) => Value::Failure(f.into()),
         })
     }
 }
