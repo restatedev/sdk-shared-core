@@ -228,6 +228,23 @@ pub enum CancelInvocationTarget {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub enum AttachInvocationTarget {
+    InvocationId(String),
+    CallEntry(AsyncResultHandle),
+    SendEntry(SendHandle),
+    WorkflowId {
+        name: String,
+        key: String,
+    },
+    IdempotencyId {
+        service_name: String,
+        service_key: Option<String>,
+        handler_name: String,
+        idempotency_key: String,
+    },
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum TakeOutputResult {
     Buffer(Bytes),
     EOF,
@@ -335,6 +352,10 @@ pub trait VM: Sized {
     ) -> VMResult<AsyncResultHandle>;
 
     fn sys_cancel_invocation(&mut self, target: CancelInvocationTarget) -> VMResult<()>;
+
+    fn sys_attach_invocation(&mut self, target: AttachInvocationTarget) -> VMResult<()>;
+
+    fn sys_get_invocation_output(&mut self, target: AttachInvocationTarget) -> VMResult<()>;
 
     fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()>;
 

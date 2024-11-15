@@ -1,13 +1,16 @@
 use crate::headers::HeaderMap;
 use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
 use crate::service_protocol::messages::{
-    cancel_invocation_entry_message, complete_awakeable_entry_message,
-    complete_promise_entry_message, get_state_entry_message, get_state_keys_entry_message,
-    output_entry_message, AwakeableEntryMessage, CallEntryMessage, CancelInvocationEntryMessage,
-    ClearAllStateEntryMessage, ClearStateEntryMessage, CompleteAwakeableEntryMessage,
-    CompletePromiseEntryMessage, Empty, GetCallInvocationIdEntryMessage, GetPromiseEntryMessage,
-    GetStateEntryMessage, GetStateKeysEntryMessage, OneWayCallEntryMessage, OutputEntryMessage,
-    PeekPromiseEntryMessage, SetStateEntryMessage, SleepEntryMessage,
+    attach_invocation_entry_message, cancel_invocation_entry_message,
+    complete_awakeable_entry_message, complete_promise_entry_message,
+    get_invocation_output_entry_message, get_state_entry_message, get_state_keys_entry_message,
+    output_entry_message, AttachInvocationEntryMessage, AwakeableEntryMessage, CallEntryMessage,
+    CancelInvocationEntryMessage, ClearAllStateEntryMessage, ClearStateEntryMessage,
+    CompleteAwakeableEntryMessage, CompletePromiseEntryMessage, Empty,
+    GetCallInvocationIdEntryMessage, GetInvocationOutputEntryMessage, GetPromiseEntryMessage,
+    GetStateEntryMessage, GetStateKeysEntryMessage, IdempotentRequestTarget,
+    OneWayCallEntryMessage, OutputEntryMessage, PeekPromiseEntryMessage, SetStateEntryMessage,
+    SleepEntryMessage, WorkflowTarget,
 };
 use crate::service_protocol::{Decoder, RawMessage, Version};
 use crate::vm::context::{EagerGetState, EagerGetStateKeys};
@@ -16,9 +19,10 @@ use crate::vm::errors::{
 };
 use crate::vm::transitions::*;
 use crate::{
-    AsyncResultCombinator, AsyncResultHandle, CancelInvocationTarget, Error, GetInvocationIdTarget,
-    Header, Input, NonEmptyValue, ResponseHead, RetryPolicy, RunEnterResult, RunExitResult,
-    SendHandle, SuspendedOrVMError, TakeOutputResult, Target, VMOptions, VMResult, Value,
+    AsyncResultCombinator, AsyncResultHandle, AttachInvocationTarget, CancelInvocationTarget,
+    Error, GetInvocationIdTarget, Header, Input, NonEmptyValue, ResponseHead, RetryPolicy,
+    RunEnterResult, RunExitResult, SendHandle, SuspendedOrVMError, TakeOutputResult, Target,
+    VMOptions, VMResult, Value,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -628,16 +632,21 @@ impl super::VM for CoreVM {
         self.do_transition(SysRunExit(value, retry_policy))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_get_call_invocation_id(
         &mut self,
-        call: GetInvocationIdTarget,
+        target: GetInvocationIdTarget,
     ) -> VMResult<AsyncResultHandle> {
         self.verify_feature_support("get call invocation id", Version::V3)?;
         self.do_transition(SysCompletableEntry(
             "SysGetCallInvocationId",
             GetCallInvocationIdEntryMessage {
-                call_entry_index: match call {
+                call_entry_index: match target {
                     GetInvocationIdTarget::CallEntry(h) => h.0,
                     GetInvocationIdTarget::SendEntry(h) => h.0,
                 },
@@ -646,7 +655,12 @@ impl super::VM for CoreVM {
         ))
     }
 
-    #[instrument(level = "debug", ret)]
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
     fn sys_cancel_invocation(&mut self, target: CancelInvocationTarget) -> VMResult<()> {
         self.verify_feature_support("cancel invocation", Version::V3)?;
         self.do_transition(SysNonCompletableEntry(
@@ -662,6 +676,100 @@ impl super::VM for CoreVM {
                     CancelInvocationTarget::SendEntry(handle) => {
                         cancel_invocation_entry_message::Target::CallEntryIndex(handle.0)
                     }
+                }),
+                ..Default::default()
+            },
+        ))
+    }
+
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
+    fn sys_attach_invocation(&mut self, target: AttachInvocationTarget) -> VMResult<()> {
+        self.verify_feature_support("attach invocation", Version::V3)?;
+        self.do_transition(SysNonCompletableEntry(
+            "SysAttachInvocation",
+            AttachInvocationEntryMessage {
+                target: Some(match target {
+                    AttachInvocationTarget::InvocationId(id) => {
+                        attach_invocation_entry_message::Target::InvocationId(id)
+                    }
+                    AttachInvocationTarget::CallEntry(handle) => {
+                        attach_invocation_entry_message::Target::CallEntryIndex(handle.0)
+                    }
+                    AttachInvocationTarget::SendEntry(handle) => {
+                        attach_invocation_entry_message::Target::CallEntryIndex(handle.0)
+                    }
+                    AttachInvocationTarget::WorkflowId { name, key } => {
+                        attach_invocation_entry_message::Target::WorkflowTarget(WorkflowTarget {
+                            workflow_name: name,
+                            workflow_key: key,
+                        })
+                    }
+                    AttachInvocationTarget::IdempotencyId {
+                        service_name,
+                        service_key,
+                        handler_name,
+                        idempotency_key,
+                    } => attach_invocation_entry_message::Target::IdempotentRequestTarget(
+                        IdempotentRequestTarget {
+                            service_name,
+                            service_key,
+                            handler_name,
+                            idempotency_key,
+                        },
+                    ),
+                }),
+                ..Default::default()
+            },
+        ))
+    }
+
+    #[instrument(
+        level = "debug",
+        skip(self),
+        fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
+        ret
+    )]
+    fn sys_get_invocation_output(&mut self, target: AttachInvocationTarget) -> VMResult<()> {
+        self.verify_feature_support("get invocation output", Version::V3)?;
+        self.do_transition(SysNonCompletableEntry(
+            "SysGetInvocationOutput",
+            GetInvocationOutputEntryMessage {
+                target: Some(match target {
+                    AttachInvocationTarget::InvocationId(id) => {
+                        get_invocation_output_entry_message::Target::InvocationId(id)
+                    }
+                    AttachInvocationTarget::CallEntry(handle) => {
+                        get_invocation_output_entry_message::Target::CallEntryIndex(handle.0)
+                    }
+                    AttachInvocationTarget::SendEntry(handle) => {
+                        get_invocation_output_entry_message::Target::CallEntryIndex(handle.0)
+                    }
+                    AttachInvocationTarget::WorkflowId { name, key } => {
+                        get_invocation_output_entry_message::Target::WorkflowTarget(
+                            WorkflowTarget {
+                                workflow_name: name,
+                                workflow_key: key,
+                            },
+                        )
+                    }
+                    AttachInvocationTarget::IdempotencyId {
+                        service_name,
+                        service_key,
+                        handler_name,
+                        idempotency_key,
+                    } => get_invocation_output_entry_message::Target::IdempotentRequestTarget(
+                        IdempotentRequestTarget {
+                            service_name,
+                            service_key,
+                            handler_name,
+                            idempotency_key,
+                        },
+                    ),
                 }),
                 ..Default::default()
             },
