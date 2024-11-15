@@ -11,6 +11,7 @@ fn bootstrap() {
     if let Err(error) = prost_build::Config::new()
         .bytes(["."])
         .protoc_arg("--experimental_allow_proto3_optional")
+        .enum_attribute(".", "#[allow(clippy::enum_variant_names)]")
         .out_dir(out_dir.clone())
         .compile_protos(
             &[

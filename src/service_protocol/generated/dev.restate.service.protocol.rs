@@ -54,6 +54,7 @@ pub struct CompletionMessage {
 }
 /// Nested message and enum types in `CompletionMessage`.
 pub mod completion_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "13")]
@@ -144,6 +145,7 @@ pub struct OutputEntryMessage {
 }
 /// Nested message and enum types in `OutputEntryMessage`.
 pub mod output_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(bytes, tag = "14")]
@@ -167,6 +169,7 @@ pub struct GetStateEntryMessage {
 }
 /// Nested message and enum types in `GetStateEntryMessage`.
 pub mod get_state_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "13")]
@@ -228,6 +231,7 @@ pub mod get_state_keys_entry_message {
         #[prost(bytes = "bytes", repeated, tag = "1")]
         pub keys: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
     }
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "14")]
@@ -251,6 +255,7 @@ pub struct GetPromiseEntryMessage {
 }
 /// Nested message and enum types in `GetPromiseEntryMessage`.
 pub mod get_promise_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(bytes, tag = "14")]
@@ -274,6 +279,7 @@ pub struct PeekPromiseEntryMessage {
 }
 /// Nested message and enum types in `PeekPromiseEntryMessage`.
 pub mod peek_promise_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "13")]
@@ -303,6 +309,7 @@ pub struct CompletePromiseEntryMessage {
 /// Nested message and enum types in `CompletePromiseEntryMessage`.
 pub mod complete_promise_entry_message {
     /// The value to use to complete the promise
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Completion {
         #[prost(bytes, tag = "2")]
@@ -310,6 +317,7 @@ pub mod complete_promise_entry_message {
         #[prost(message, tag = "3")]
         CompletionFailure(super::Failure),
     }
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         /// Returns empty if value was set successfully
@@ -337,6 +345,7 @@ pub struct SleepEntryMessage {
 }
 /// Nested message and enum types in `SleepEntryMessage`.
 pub mod sleep_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "13")]
@@ -372,6 +381,7 @@ pub struct CallEntryMessage {
 }
 /// Nested message and enum types in `CallEntryMessage`.
 pub mod call_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(bytes, tag = "14")]
@@ -423,6 +433,7 @@ pub struct AwakeableEntryMessage {
 }
 /// Nested message and enum types in `AwakeableEntryMessage`.
 pub mod awakeable_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(bytes, tag = "14")]
@@ -447,6 +458,7 @@ pub struct CompleteAwakeableEntryMessage {
 }
 /// Nested message and enum types in `CompleteAwakeableEntryMessage`.
 pub mod complete_awakeable_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(bytes, tag = "14")]
@@ -469,6 +481,7 @@ pub struct RunEntryMessage {
 }
 /// Nested message and enum types in `RunEntryMessage`.
 pub mod run_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(bytes, tag = "14")]
@@ -490,6 +503,7 @@ pub struct CancelInvocationEntryMessage {
 }
 /// Nested message and enum types in `CancelInvocationEntryMessage`.
 pub mod cancel_invocation_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Target {
         /// Target invocation id to cancel
@@ -515,10 +529,92 @@ pub struct GetCallInvocationIdEntryMessage {
 }
 /// Nested message and enum types in `GetCallInvocationIdEntryMessage`.
 pub mod get_call_invocation_id_entry_message {
+    #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(string, tag = "14")]
         Value(::prost::alloc::string::String),
+        #[prost(message, tag = "15")]
+        Failure(super::Failure),
+    }
+}
+/// Completable: Yes
+/// Fallible: Yes
+/// Type: 0x0C00 + 8
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AttachInvocationEntryMessage {
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(oneof = "attach_invocation_entry_message::Target", tags = "1, 2, 3, 4")]
+    pub target: ::core::option::Option<attach_invocation_entry_message::Target>,
+    #[prost(oneof = "attach_invocation_entry_message::Result", tags = "14, 15")]
+    pub result: ::core::option::Option<attach_invocation_entry_message::Result>,
+}
+/// Nested message and enum types in `AttachInvocationEntryMessage`.
+pub mod attach_invocation_entry_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Target {
+        /// Target invocation id
+        #[prost(string, tag = "1")]
+        InvocationId(::prost::alloc::string::String),
+        /// Target index of the call/one way call journal entry in this journal.
+        #[prost(uint32, tag = "2")]
+        CallEntryIndex(u32),
+        /// Target idempotent request
+        #[prost(message, tag = "3")]
+        IdempotentRequestTarget(super::IdempotentRequestTarget),
+        /// Target workflow target
+        #[prost(message, tag = "4")]
+        WorkflowTarget(super::WorkflowTarget),
+    }
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(bytes, tag = "14")]
+        Value(::prost::bytes::Bytes),
+        #[prost(message, tag = "15")]
+        Failure(super::Failure),
+    }
+}
+/// Completable: Yes
+/// Fallible: Yes
+/// Type: 0x0C00 + 9
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetInvocationOutputEntryMessage {
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(oneof = "get_invocation_output_entry_message::Target", tags = "1, 2, 3, 4")]
+    pub target: ::core::option::Option<get_invocation_output_entry_message::Target>,
+    #[prost(oneof = "get_invocation_output_entry_message::Result", tags = "13, 14, 15")]
+    pub result: ::core::option::Option<get_invocation_output_entry_message::Result>,
+}
+/// Nested message and enum types in `GetInvocationOutputEntryMessage`.
+pub mod get_invocation_output_entry_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Target {
+        /// Target invocation id
+        #[prost(string, tag = "1")]
+        InvocationId(::prost::alloc::string::String),
+        /// Target index of the call/one way call journal entry in this journal.
+        #[prost(uint32, tag = "2")]
+        CallEntryIndex(u32),
+        /// Target idempotent request
+        #[prost(message, tag = "3")]
+        IdempotentRequestTarget(super::IdempotentRequestTarget),
+        /// Target workflow target
+        #[prost(message, tag = "4")]
+        WorkflowTarget(super::WorkflowTarget),
+    }
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        /// Empty if no result is still available
+        #[prost(message, tag = "13")]
+        Empty(super::Empty),
+        #[prost(bytes, tag = "14")]
+        Value(::prost::bytes::Bytes),
         #[prost(message, tag = "15")]
         Failure(super::Failure),
     }
@@ -541,9 +637,28 @@ pub struct Header {
     #[prost(string, tag = "2")]
     pub value: ::prost::alloc::string::String,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WorkflowTarget {
+    #[prost(string, tag = "1")]
+    pub workflow_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub workflow_key: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IdempotentRequestTarget {
+    #[prost(string, tag = "1")]
+    pub service_name: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "2")]
+    pub service_key: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag = "3")]
+    pub handler_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub idempotency_key: ::prost::alloc::string::String,
+}
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct Empty {}
 /// Service protocol version.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ServiceProtocolVersion {
@@ -557,6 +672,8 @@ pub enum ServiceProtocolVersion {
     /// * New entry to cancel invocations: CancelInvocationEntryMessage
     /// * New entry to retrieve the invocation id: GetCallInvocationIdEntryMessage
     /// * New field to set idempotency key for Call entries
+    /// * New entry to attach to existing invocation: AttachInvocationEntryMessage
+    /// * New entry to get output of existing invocation: GetInvocationOutputEntryMessage
     V3 = 3,
 }
 impl ServiceProtocolVersion {
