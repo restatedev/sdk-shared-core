@@ -350,6 +350,8 @@ descriptions in [`protocol.proto`](dev/restate/service/protocol.proto).
 | `CompletePromiseEntryMessage`     | `0x080A` | Yes         | No       | Complete the given promise. If the promise was completed already, this entry completes with a failure.                                                           |
 | `CancelInvocationEntryMessage`    | `0x0C06` | No          | Yes      | Cancel the target invocation id or the target journal entry.                                                                                                     |
 | `GetCallInvocationIdEntryMessage` | `0x0C07` | Yes         | Yes      | Get the invocation id of a previously created call/one way call.                                                                                                 |
+| `AttachInvocationEntryMessage`    | `0x0C08` | Yes         | Yes      | Attach to an existing invocation. If the invocation is still in-flight, this entry will be completed when the target invocation completes.                       |
+| `GetInvocationOutputEntryMessage` | `0x0C09` | Yes         | Yes      | Get output of an existing invocation. If the invocation is still in-flight, this entry will be completed with `empty` value.                                     |
 
 #### Awakeable identifier
 
