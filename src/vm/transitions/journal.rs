@@ -1,5 +1,4 @@
 use crate::retries::NextRetry;
-use crate::service_protocol::messages;
 use crate::service_protocol::messages::{
     run_entry_message, CompletableEntryMessage, EntryMessage, EntryMessageHeaderEq,
     InputEntryMessage, RestateMessage, RunEntryMessage, WriteableRestateMessage,
@@ -121,14 +120,7 @@ impl TransitionAndReturn<Context, SysInput> for State {
                 invocation_id: start_info.debug_id.clone(),
                 random_seed: compute_random_seed(&start_info.id),
                 key: start_info.key.clone(),
-                headers: msg
-                    .headers
-                    .into_iter()
-                    .map(|messages::Header { key, value }| Header {
-                        key: key.into(),
-                        value: value.into(),
-                    })
-                    .collect(),
+                headers: msg.headers.into_iter().map(Header::from).collect(),
                 input: msg.value,
             },
         ))

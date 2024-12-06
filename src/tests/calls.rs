@@ -26,6 +26,7 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
                         handler: "MyHandler".to_string(),
                         key: None,
                         idempotency_key: None,
+                        headers: Vec::new(),
                     },
                     Bytes::new(),
                 )
@@ -113,6 +114,7 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
                         handler: "MyHandler".to_string(),
                         key: None,
                         idempotency_key: None,
+                        headers: Vec::new(),
                     },
                     Bytes::new(),
                     None,

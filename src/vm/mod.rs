@@ -456,6 +456,11 @@ impl super::VM for CoreVM {
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
                 idempotency_key: target.idempotency_key,
+                headers: target
+                    .headers
+                    .into_iter()
+                    .map(crate::service_protocol::messages::Header::from)
+                    .collect(),
                 parameter: input,
                 ..Default::default()
             },
@@ -491,6 +496,11 @@ impl super::VM for CoreVM {
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
                 idempotency_key: target.idempotency_key,
+                headers: target
+                    .headers
+                    .into_iter()
+                    .map(crate::service_protocol::messages::Header::from)
+                    .collect(),
                 parameter: input,
                 invoke_time: delay
                     .map(|d| {
