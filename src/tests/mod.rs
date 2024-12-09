@@ -217,3 +217,8 @@ fn take_output_on_newly_initialized_vm() {
         eq(TakeOutputResult::Buffer(Bytes::default()))
     );
 }
+
+#[test]
+fn instantiate_core_vm_minimum_supported_version() {
+    CoreVM::mock_init(Version::minimum_supported_version());
+}
