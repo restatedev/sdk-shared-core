@@ -123,6 +123,7 @@ pub struct Target {
     pub handler: String,
     pub key: Option<String>,
     pub idempotency_key: Option<String>,
+    pub headers: Vec<Header>,
 }
 
 #[derive(Debug, Hash, Clone, Copy, Eq, PartialEq)]

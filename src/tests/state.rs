@@ -5,7 +5,6 @@ use assert2::let_assert;
 use bytes::Bytes;
 
 /// Normal state
-
 fn get_state_handler(vm: &mut CoreVM) {
     vm.sys_input().unwrap();
 
@@ -349,7 +348,6 @@ mod only_lazy_state {
 }
 
 /// Eager state
-
 mod eager {
     use super::*;
 
