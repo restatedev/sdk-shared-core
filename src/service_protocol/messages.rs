@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
 use crate::service_protocol::{MessageHeader, MessageType};
 use crate::vm::errors::{
@@ -451,6 +453,24 @@ impl From<Failure> for crate::TerminalFailure {
         Self {
             code: value.code as u16,
             message: value.message,
+        }
+    }
+}
+
+impl From<Header> for crate::Header {
+    fn from(header: Header) -> Self {
+        Self {
+            key: Cow::Owned(header.key),
+            value: Cow::Owned(header.value),
+        }
+    }
+}
+
+impl From<crate::Header> for Header {
+    fn from(header: crate::Header) -> Self {
+        Self {
+            key: header.key.into(),
+            value: header.value.into(),
         }
     }
 }

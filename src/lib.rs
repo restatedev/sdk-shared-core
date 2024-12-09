@@ -31,24 +31,6 @@ pub struct Header {
     pub value: Cow<'static, str>,
 }
 
-impl From<service_protocol::messages::Header> for Header {
-    fn from(header: service_protocol::messages::Header) -> Self {
-        Self {
-            key: Cow::Owned(header.key),
-            value: Cow::Owned(header.value),
-        }
-    }
-}
-
-impl From<Header> for service_protocol::messages::Header {
-    fn from(header: Header) -> Self {
-        Self {
-            key: header.key.into(),
-            value: header.value.into(),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct ResponseHead {
     pub status_code: u16,
