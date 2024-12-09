@@ -72,6 +72,9 @@ impl CoreVM {
                             // Do nothing, it was already closed!
                             return Err(e);
                         }
+
+                        tracing::debug!("Failed with error {e}");
+
                         // We need to handle this error and register it!
                         self.last_transition = Err(e.clone());
                         let msg = ErrorMessage {

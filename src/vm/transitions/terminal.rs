@@ -39,6 +39,7 @@ impl Transition<Context, HitSuspensionPoint> for State {
             // Nothing to do
             return Ok(self);
         }
+        tracing::debug!("Suspending");
         context.output.send(&SuspensionMessage {
             entry_indexes: vec![await_point],
         });
