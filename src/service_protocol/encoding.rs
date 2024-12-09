@@ -36,10 +36,10 @@ pub struct Encoder {}
 
 impl Encoder {
     pub fn new(service_protocol_version: Version) -> Self {
-        assert_eq!(
-            service_protocol_version,
-            Version::maximum_supported_version(),
-            "Encoder only supports service protocol version {:?}",
+        assert!(
+            service_protocol_version >= Version::minimum_supported_version(),
+            "Encoder only supports service protocol version {:?} <= x <= {:?}",
+            Version::minimum_supported_version(),
             Version::maximum_supported_version()
         );
         Self {}
@@ -105,10 +105,10 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn new(service_protocol_version: Version) -> Self {
-        assert_eq!(
-            service_protocol_version,
-            Version::maximum_supported_version(),
-            "Decoder only supports service protocol version {:?}",
+        assert!(
+            service_protocol_version >= Version::minimum_supported_version(),
+            "Decoder only supports service protocol version {:?} <= x <= {:?}",
+            Version::minimum_supported_version(),
             Version::maximum_supported_version()
         );
         Self {
