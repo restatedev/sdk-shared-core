@@ -34,7 +34,7 @@ use std::fmt;
 use std::mem::size_of;
 use std::time::Duration;
 use strum::IntoStaticStr;
-use tracing::instrument;
+use tracing::{enabled, instrument, Level};
 
 mod context;
 pub(crate) mod errors;
@@ -428,7 +428,7 @@ impl super::VM for CoreVM {
         ret
     )]
     fn sys_state_clear_all(&mut self) -> Result<(), Error> {
-        invocation_debug_logs!(self, "Executing 'Clear all state keys'");
+        invocation_debug_logs!(self, "Executing 'Clear all state'");
         self.context.eager_state.clear_all();
         self.do_transition(SysNonCompletableEntry(
             "SysStateClearAll",
@@ -442,12 +442,12 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_sleep(&mut self, duration: Duration) -> VMResult<AsyncResultHandle> {
-        invocation_debug_logs!(self, "Executing 'Sleep for {duration:?}'");
+    fn sys_sleep(&mut self, wake_up_time: Duration) -> VMResult<AsyncResultHandle> {
+        invocation_debug_logs!(self, "Executing 'Sleep for {wake_up_time:?}'");
         self.do_transition(SysCompletableEntry(
             "SysSleep",
             SleepEntryMessage {
-                wake_up_time: u64::try_from(duration.as_millis())
+                wake_up_time: u64::try_from(wake_up_time.as_millis())
                     .expect("millis since Unix epoch should fit in u64"),
                 ..Default::default()
             },
@@ -555,7 +555,7 @@ impl super::VM for CoreVM {
         ret
     )]
     fn sys_awakeable(&mut self) -> VMResult<(String, AsyncResultHandle)> {
-        invocation_debug_logs!(self, "Executing 'Awakeable'");
+        invocation_debug_logs!(self, "Executing 'Create awakeable'");
         self.do_transition(SysCompletableEntry(
             "SysAwakeable",
             AwakeableEntryMessage::default(),
@@ -678,17 +678,29 @@ impl super::VM for CoreVM {
         value: RunExitResult,
         retry_policy: RetryPolicy,
     ) -> Result<AsyncResultHandle, Error> {
-        match &value {
-            RunExitResult::Success(_) => {
-                invocation_debug_logs!(self, "Storing side effect completed with success");
+        if enabled!(Level::DEBUG) {
+            let name = if let Ok(State::Processing { run_state, .. }) = &self.last_transition {
+                run_state.name()
+            } else {
+                None
             }
-            RunExitResult::TerminalFailure(_) => {
-                invocation_debug_logs!(self, "Storing side effect completed with terminal failure");
-            }
-            RunExitResult::RetryableFailure { .. } => {
-                invocation_debug_logs!(self, "Propagating side effect failure");
+            .unwrap_or_default();
+            match &value {
+                RunExitResult::Success(_) => {
+                    invocation_debug_logs!(self, "Journaling 'run' success result named '{name}'");
+                }
+                RunExitResult::TerminalFailure(_) => {
+                    invocation_debug_logs!(
+                        self,
+                        "Journaling 'run' terminal failure result named '{name}'"
+                    );
+                }
+                RunExitResult::RetryableFailure { .. } => {
+                    invocation_debug_logs!(self, "Propagating 'run' failure named '{name}'");
+                }
             }
         }
+
         self.do_transition(SysRunExit(value, retry_policy))
     }
 
