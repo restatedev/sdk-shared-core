@@ -22,7 +22,7 @@ fn sleep_suspends() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let h1 = vm.sys_sleep(Duration::from_secs(1)).unwrap();
+            let h1 = vm.sys_sleep(Duration::from_secs(1), None).unwrap();
             vm.notify_await_point(h1);
             let h1_result = vm.take_async_result(h1);
             if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
@@ -67,7 +67,7 @@ fn sleep_completed() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let h1 = vm.sys_sleep(Duration::from_secs(1)).unwrap();
+            let h1 = vm.sys_sleep(Duration::from_secs(1), None).unwrap();
             vm.notify_await_point(h1);
             let h1_result = vm.take_async_result(h1);
             if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
@@ -115,7 +115,7 @@ fn sleep_still_sleeping() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let h1 = vm.sys_sleep(Duration::from_secs(1)).unwrap();
+            let h1 = vm.sys_sleep(Duration::from_secs(1), None).unwrap();
             vm.notify_await_point(h1);
             let h1_result = vm.take_async_result(h1);
             if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {

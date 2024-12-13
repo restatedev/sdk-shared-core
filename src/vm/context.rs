@@ -213,6 +213,13 @@ impl RunState {
     pub(crate) fn is_running(&self) -> bool {
         matches!(self, RunState::Running(_))
     }
+
+    pub(crate) fn name(&self) -> Option<&str> {
+        match self {
+            RunState::Running(n) => Some(n),
+            RunState::NotRunning => None,
+        }
+    }
 }
 
 pub(crate) enum EagerGetState {
