@@ -150,10 +150,17 @@ impl super::VM for CoreVM {
             .ok_or(errors::MISSING_CONTENT_TYPE)?
             .parse::<Version>()?;
 
-        if version < Version::minimum_supported_version() {
+        if version < Version::minimum_supported_version()
+            || version > Version::maximum_supported_version()
+        {
             return Err(Error::new(
                 errors::codes::UNSUPPORTED_MEDIA_TYPE,
-                format!("Unsupported protocol version {:?}", version),
+                format!(
+                    "Unsupported protocol version {:?}. Supported versions: {:?} to {:?}",
+                    version,
+                    Version::minimum_supported_version(),
+                    Version::maximum_supported_version()
+                ),
             ));
         }
 
