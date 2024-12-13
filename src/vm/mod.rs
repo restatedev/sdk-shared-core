@@ -34,7 +34,7 @@ use std::fmt;
 use std::mem::size_of;
 use std::time::Duration;
 use strum::IntoStaticStr;
-use tracing::{enabled, instrument, Level};
+use tracing::{debug, enabled, instrument, Level};
 
 mod context;
 pub(crate) mod errors;
@@ -442,12 +442,26 @@ impl super::VM for CoreVM {
         fields(restate.invocation.id = self.debug_invocation_id(), restate.journal.index = self.context.journal.index(), restate.protocol.version = %self.version),
         ret
     )]
-    fn sys_sleep(&mut self, wake_up_time: Duration) -> VMResult<AsyncResultHandle> {
-        invocation_debug_logs!(self, "Executing 'Sleep for {wake_up_time:?}'");
+    fn sys_sleep(
+        &mut self,
+        wake_up_time_since_unix_epoch: Duration,
+        now_since_unix_epoch: Option<Duration>,
+    ) -> VMResult<AsyncResultHandle> {
+        if self.is_processing() {
+            if let Some(now_since_unix_epoch) = now_since_unix_epoch {
+                debug!(
+                    "Executing 'Sleeping for {:?}'",
+                    wake_up_time_since_unix_epoch - now_since_unix_epoch
+                );
+            } else {
+                debug!("Executing 'Sleeping");
+            }
+        }
+
         self.do_transition(SysCompletableEntry(
             "SysSleep",
             SleepEntryMessage {
-                wake_up_time: u64::try_from(wake_up_time.as_millis())
+                wake_up_time: u64::try_from(wake_up_time_since_unix_epoch.as_millis())
                     .expect("millis since Unix epoch should fit in u64"),
                 ..Default::default()
             },

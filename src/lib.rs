@@ -313,8 +313,12 @@ pub trait VM: Sized {
 
     fn sys_state_clear_all(&mut self) -> VMResult<()>;
 
-    fn sys_sleep(&mut self, wake_up_time_since_unix_epoch: Duration)
-        -> VMResult<AsyncResultHandle>;
+    /// Note: `now_since_unix_epoch` is only used for debugging purposes
+    fn sys_sleep(
+        &mut self,
+        wake_up_time_since_unix_epoch: Duration,
+        now_since_unix_epoch: Option<Duration>,
+    ) -> VMResult<AsyncResultHandle>;
 
     fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle>;
 
