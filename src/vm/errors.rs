@@ -95,34 +95,9 @@ pub const UNEXPECTED_ENTRY_MESSAGE: Error = Error::new_const(
     "Expected entry messages only when waiting replay entries",
 );
 
-pub const UNEXPECTED_NONE_RUN_RESULT: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "Expected RunEntryMessage to contain a result",
-);
-
-pub const EXPECTED_COMPLETION_RESULT: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "The completion message MUST contain a result",
-);
-
-pub const INSIDE_RUN: Error = Error::new_const(
-    codes::INTERNAL,
-    "A syscall was invoked from within a run operation",
-);
-
-pub const INVOKED_RUN_EXIT_WITHOUT_ENTER: Error = Error::new_const(
-    codes::INTERNAL,
-    "Invoked sys_run_exit without invoking sys_run_enter before",
-);
-
 pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
     "The input was closed while still waiting to receive all the `known_entries`",
-);
-
-pub const BAD_COMBINATOR_ENTRY: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "The combinator cannot be replayed. This is most likely caused by non deterministic code.",
 );
 
 pub const EMPTY_IDEMPOTENCY_KEY: Error = Error::new_const(
@@ -199,16 +174,12 @@ pub struct DecodeStateKeysProst(#[from] pub(crate) prost::DecodeError);
 pub struct DecodeStateKeysUtf8(#[from] pub(crate) std::string::FromUtf8Error);
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[error("Unexpected empty value variant for get eager state")]
+pub struct EmptyGetEagerState;
+
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("Unexpected empty value variant for state keys")]
-pub struct EmptyStateKeys;
-
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Unexpected empty variant for get call invocation id")]
-pub struct EmptyGetCallInvocationId;
-
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Cannot decode get call invocation id: {0}")]
-pub struct DecodeGetCallInvocationIdUtf8(#[from] pub(crate) std::string::FromUtf8Error);
+pub struct EmptyGetEagerStateKeys;
 
 #[derive(Debug, thiserror::Error)]
 #[error("Feature {feature} is not supported by the negotiated protocol version '{current_version}', the minimum required version is '{minimum_required_version}'")]
@@ -230,6 +201,18 @@ impl UnsupportedFeatureForNegotiatedVersion {
             minimum_required_version,
         }
     }
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Expecting entry to be either lazy or eager get state command, but was {actual:?}")]
+pub struct UnexpectedGetState {
+    pub(crate) actual: MessageType,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Expecting entry to be either lazy or eager get state keys command, but was {actual:?}")]
+pub struct UnexpectedGetStateKeys {
+    pub(crate) actual: MessageType,
 }
 
 // Conversions to VMError
@@ -269,7 +252,8 @@ impl_error_code!(AwaitingTwoAsyncResultError, AWAITING_TWO_ASYNC_RESULTS);
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
 impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);
-impl_error_code!(EmptyStateKeys, PROTOCOL_VIOLATION);
-impl_error_code!(EmptyGetCallInvocationId, PROTOCOL_VIOLATION);
-impl_error_code!(DecodeGetCallInvocationIdUtf8, PROTOCOL_VIOLATION);
+impl_error_code!(EmptyGetEagerState, PROTOCOL_VIOLATION);
+impl_error_code!(EmptyGetEagerStateKeys, PROTOCOL_VIOLATION);
 impl_error_code!(UnsupportedFeatureForNegotiatedVersion, UNSUPPORTED_FEATURE);
+impl_error_code!(UnexpectedGetState, JOURNAL_MISMATCH);
+impl_error_code!(UnexpectedGetStateKeys, JOURNAL_MISMATCH);

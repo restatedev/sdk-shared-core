@@ -1,7 +1,10 @@
-use crate::service_protocol::messages::{CompletionMessage, EntryAckMessage, StartMessage};
+use crate::service_protocol::messages::StartMessage;
 use crate::service_protocol::{MessageType, RawMessage};
 use crate::vm::context::{Context, EagerState, StartInfo};
-use crate::vm::errors::{BadEagerStateKeyError, KNOWN_ENTRIES_IS_ZERO, UNEXPECTED_INPUT_MESSAGE};
+use crate::vm::errors::{
+    BadEagerStateKeyError, INPUT_CLOSED_WHILE_WAITING_ENTRIES, KNOWN_ENTRIES_IS_ZERO,
+    UNEXPECTED_INPUT_MESSAGE,
+};
 use crate::vm::transitions::Transition;
 use crate::vm::{errors, State};
 use crate::Error;
@@ -16,15 +19,8 @@ impl Transition<Context, NewMessage> for State {
             MessageType::Start => {
                 self.transition(context, NewStartMessage(msg.decode_to::<StartMessage>()?))
             }
-            MessageType::Completion => self.transition(
-                context,
-                NewCompletionMessage(msg.decode_to::<CompletionMessage>()?),
-            ),
-            MessageType::EntryAck => self.transition(
-                context,
-                NewEntryAckMessage(msg.decode_to::<EntryAckMessage>()?),
-            ),
-            ty if ty.is_entry() => self.transition(context, NewEntryMessage(msg)),
+            ty if ty.is_command() => self.transition(context, NewCommandMessage(msg)),
+            ty if ty.is_notification() => self.transition(context, NewNotificationMessage(msg)),
             _ => Err(UNEXPECTED_INPUT_MESSAGE)?,
         }
     }
@@ -66,114 +62,95 @@ impl Transition<Context, NewStartMessage> for State {
         }
 
         Ok(State::WaitingReplayEntries {
+            received_entries: 0,
             entries: Default::default(),
             async_results: Default::default(),
         })
     }
 }
 
-struct NewCompletionMessage(CompletionMessage);
+struct NewNotificationMessage(RawMessage);
 
-impl Transition<Context, NewCompletionMessage> for State {
+impl Transition<Context, NewNotificationMessage> for State {
     fn transition(
         mut self,
-        _: &mut Context,
-        NewCompletionMessage(msg): NewCompletionMessage,
-    ) -> Result<Self, Error> {
-        // Add completion to completions buffer
-        let CompletionMessage {
-            entry_index,
-            result,
-        } = msg;
-        match &mut self {
-            State::WaitingReplayEntries {
-                ref mut async_results,
-                ..
-            }
-            | State::Replaying {
-                ref mut async_results,
-                ..
-            }
-            | State::Processing {
-                ref mut async_results,
-                ..
-            } => {
-                async_results.insert_unparsed_completion(
-                    entry_index,
-                    result.ok_or(errors::EXPECTED_COMPLETION_RESULT)?,
-                )?;
-            }
-            State::Ended | State::Suspended => {
-                // Can ignore
-            }
-            s => return Err(s.as_unexpected_state("NewCompletionMessage")),
-        }
-
-        Ok(self)
-    }
-}
-
-struct NewEntryAckMessage(EntryAckMessage);
-
-impl Transition<Context, NewEntryAckMessage> for State {
-    fn transition(
-        mut self,
-        _: &mut Context,
-        NewEntryAckMessage(msg): NewEntryAckMessage,
-    ) -> Result<Self, Error> {
-        match self {
-            State::WaitingReplayEntries {
-                ref mut async_results,
-                ..
-            }
-            | State::Replaying {
-                ref mut async_results,
-                ..
-            }
-            | State::Processing {
-                ref mut async_results,
-                ..
-            } => {
-                async_results.notify_ack(msg.entry_index);
-            }
-            State::Ended | State::Suspended => {
-                // Can ignore
-            }
-            s => return Err(s.as_unexpected_state("NewEntryAck")),
-        }
-        Ok(self)
-    }
-}
-
-struct NewEntryMessage(RawMessage);
-
-impl Transition<Context, NewEntryMessage> for State {
-    fn transition(
-        self,
         context: &mut Context,
-        NewEntryMessage(msg): NewEntryMessage,
+        NewNotificationMessage(msg): NewNotificationMessage,
     ) -> Result<Self, Error> {
+        match &mut self {
+            State::WaitingReplayEntries { async_results, .. }
+            | State::Replaying { async_results, .. }
+            | State::Processing { async_results, .. } => {
+                async_results.enqueue(msg.decode_as_notification()?);
+            }
+            State::Ended | State::Suspended => {
+                // Can ignore
+            }
+            s => return Err(s.as_unexpected_state("NewNotificationMessage")),
+        };
+
+        self.transition(context, PostReceiveEntry)
+    }
+}
+
+struct NewCommandMessage(RawMessage);
+
+impl Transition<Context, NewCommandMessage> for State {
+    fn transition(
+        mut self,
+        context: &mut Context,
+        NewCommandMessage(msg): NewCommandMessage,
+    ) -> Result<Self, Error> {
+        match &mut self {
+            State::WaitingReplayEntries { entries, .. } => {
+                entries.push_back(msg);
+            }
+            _ => return Err(errors::UNEXPECTED_ENTRY_MESSAGE),
+        };
+
+        self.transition(context, PostReceiveEntry)
+    }
+}
+
+struct PostReceiveEntry;
+
+impl Transition<Context, PostReceiveEntry> for State {
+    fn transition(self, context: &mut Context, _: PostReceiveEntry) -> Result<Self, Error> {
         match self {
             State::WaitingReplayEntries {
-                mut entries,
+                mut received_entries,
+                entries,
                 async_results,
             } => {
-                entries.push_back(msg);
-
-                if context.expect_start_info().entries_to_replay == entries.len() as u32 {
+                received_entries += 1;
+                if context.expect_start_info().entries_to_replay == received_entries {
                     Ok(State::Replaying {
-                        current_await_point: None,
                         entries,
+                        run_state: Default::default(),
                         async_results,
                     })
                 } else {
                     Ok(State::WaitingReplayEntries {
+                        received_entries,
                         entries,
                         async_results,
                     })
                 }
             }
-            _ => Err(errors::UNEXPECTED_ENTRY_MESSAGE),
+            s => Ok(s),
+        }
+    }
+}
+
+pub(crate) struct NotifyInputClosed;
+
+impl Transition<Context, NotifyInputClosed> for State {
+    fn transition(self, _: &mut Context, _: NotifyInputClosed) -> Result<Self, Error> {
+        match self {
+            State::WaitingStart | State::WaitingReplayEntries { .. } => {
+                Err(INPUT_CLOSED_WHILE_WAITING_ENTRIES)
+            }
+            _ => Ok(self),
         }
     }
 }

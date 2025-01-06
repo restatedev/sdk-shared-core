@@ -1,5 +1,4 @@
 mod async_results;
-mod combinators;
 mod input;
 mod journal;
 mod terminal;
@@ -9,7 +8,6 @@ use crate::vm::context::Context;
 use crate::vm::State;
 use crate::{CoreVM, Error};
 pub(crate) use async_results::*;
-pub(crate) use combinators::*;
 pub(crate) use input::*;
 pub(crate) use journal::*;
 use std::mem;
@@ -81,11 +79,11 @@ impl CoreVM {
                             code: e.code as u32,
                             message: e.message.clone().into_owned(),
                             description: e.description.clone().into_owned(),
-                            related_entry_index: Some(self.context.journal.index() as u32),
-                            related_entry_name: Some(
+                            related_command_index: Some(self.context.journal.command_index() as u32),
+                            related_command_name: Some(
                                 self.context.journal.current_entry_name.clone(),
                             ),
-                            related_entry_type: Some(u16::from(
+                            related_command_type: Some(u16::from(
                                 self.context.journal.current_entry_ty,
                             ) as u32),
                             next_retry_delay: self

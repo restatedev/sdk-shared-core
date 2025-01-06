@@ -1,7 +1,6 @@
 mod async_result;
 mod calls;
 mod failures;
-mod get_state;
 mod input_output;
 mod promise;
 mod run;
@@ -12,13 +11,12 @@ mod suspensions;
 use super::*;
 
 use crate::service_protocol::messages::{
-    output_entry_message, run_entry_message, ErrorMessage, InputEntryMessage, OutputEntryMessage,
-    RestateMessage, RunEntryMessage, StartMessage, SuspensionMessage, WriteableRestateMessage,
+    output_command_message, ErrorMessage, InputCommandMessage, OutputCommandMessage,
+    RestateMessage, StartMessage, SuspensionMessage,
 };
-use crate::service_protocol::{messages, Decoder, Encoder, RawMessage, Version};
+use crate::service_protocol::{messages, CompletionId, Decoder, Encoder, RawMessage, Version};
 use bytes::Bytes;
 use googletest::prelude::*;
-use std::result::Result;
 use test_log::test;
 
 // --- Test infra
@@ -56,7 +54,7 @@ impl VMTestCase {
         }
     }
 
-    fn input<M: WriteableRestateMessage>(mut self, m: M) -> Self {
+    fn input<M: RestateMessage>(mut self, m: M) -> Self {
         self.vm.notify_input(self.encoder.encode(&m));
         self
     }
@@ -131,9 +129,17 @@ pub fn error_message_as_vm_error(vm_error: Error) -> impl Matcher<ActualT = Erro
     })
 }
 
-pub fn suspended_with_index(index: u32) -> impl Matcher<ActualT = SuspensionMessage> {
+pub fn suspended_waiting_completion(
+    completion_id: CompletionId,
+) -> impl Matcher<ActualT = SuspensionMessage> {
     pat!(SuspensionMessage {
-        entry_indexes: eq(vec![index])
+        waiting_completions: eq(vec![completion_id])
+    })
+}
+
+pub fn suspended_waiting_signal(signal_idx: u32) -> impl Matcher<ActualT = SuspensionMessage> {
+    pat!(SuspensionMessage {
+        waiting_signals: eq(vec![signal_idx])
     })
 }
 
@@ -141,33 +147,10 @@ pub fn is_suspended() -> impl Matcher<ActualT = SuspendedOrVMError> {
     pat!(SuspendedOrVMError::Suspended(_))
 }
 
-#[allow(dead_code)]
-pub fn is_run_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = RunEntryMessage> {
-    pat!(RunEntryMessage {
-        result: some(pat!(run_entry_message::Result::Value(eq(
-            Bytes::copy_from_slice(b.as_ref())
-        ))))
-    })
-}
-
-pub fn is_run_with_failure(
-    code: u16,
-    message: impl Into<String>,
-) -> impl Matcher<ActualT = RunEntryMessage> {
-    pat!(RunEntryMessage {
-        result: some(pat!(run_entry_message::Result::Failure(eq(
-            messages::Failure {
-                code: code as u32,
-                message: message.into(),
-            }
-        ))))
-    })
-}
-
-pub fn is_output_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = OutputEntryMessage> {
-    pat!(OutputEntryMessage {
-        result: some(pat!(output_entry_message::Result::Value(eq(
-            Bytes::copy_from_slice(b.as_ref())
+pub fn is_output_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = OutputCommandMessage> {
+    pat!(OutputCommandMessage {
+        result: some(pat!(output_command_message::Result::Value(eq(
+            Bytes::copy_from_slice(b.as_ref()).into()
         ))))
     })
 }
@@ -175,9 +158,9 @@ pub fn is_output_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = Out
 pub fn is_output_with_failure(
     code: u16,
     message: impl Into<String>,
-) -> impl Matcher<ActualT = OutputEntryMessage> {
-    pat!(OutputEntryMessage {
-        result: some(pat!(output_entry_message::Result::Failure(eq(
+) -> impl Matcher<ActualT = OutputCommandMessage> {
+    pat!(OutputCommandMessage {
+        result: some(pat!(output_command_message::Result::Failure(eq(
             messages::Failure {
                 code: code as u32,
                 message: message.into(),
@@ -201,11 +184,11 @@ pub fn start_message(known_entries: u32) -> StartMessage {
     }
 }
 
-pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputEntryMessage {
-    InputEntryMessage {
+pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputCommandMessage {
+    InputCommandMessage {
         headers: vec![],
-        value: Bytes::copy_from_slice(b.as_ref()),
-        ..InputEntryMessage::default()
+        value: Some(Bytes::copy_from_slice(b.as_ref()).into()),
+        ..InputCommandMessage::default()
     }
 }
 

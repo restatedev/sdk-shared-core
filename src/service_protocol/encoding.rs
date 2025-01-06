@@ -9,13 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use super::header::UnknownMessageType;
-use super::messages::{RestateMessage, WriteableRestateMessage};
+use super::messages::RestateMessage;
 use super::*;
 
 use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
+use prost::Message;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DecodingError {
@@ -25,6 +26,11 @@ pub enum DecodingError {
     UnexpectedMessageType {
         expected: MessageType,
         actual: MessageType,
+    },
+    #[error("expected message type {expected:?} to have field {field}")]
+    MissingField {
+        expected: MessageType,
+        field: &'static str,
     },
     #[error(transparent)]
     UnknownMessageType(#[from] UnknownMessageType),
@@ -46,7 +52,7 @@ impl Encoder {
     }
 
     /// Encodes a protocol message to bytes
-    pub fn encode<M: WriteableRestateMessage>(&self, msg: &M) -> Bytes {
+    pub fn encode<M: RestateMessage>(&self, msg: &M) -> Bytes {
         let mut buf = BytesMut::with_capacity(self.encoded_len(msg));
         self.encode_to_buf_mut(&mut buf, msg).expect(
             "Encoding messages should be infallible, \
@@ -57,16 +63,16 @@ impl Encoder {
     }
 
     /// Includes header len
-    pub fn encoded_len<M: WriteableRestateMessage>(&self, msg: &M) -> usize {
+    pub fn encoded_len<M: RestateMessage>(&self, msg: &M) -> usize {
         8 + msg.encoded_len()
     }
 
-    pub fn encode_to_buf_mut<M: WriteableRestateMessage>(
+    pub fn encode_to_buf_mut<M: RestateMessage>(
         &self,
         mut buf: impl BufMut,
         msg: &M,
     ) -> Result<(), prost::EncodeError> {
-        let header = msg.generate_header(false);
+        let header = msg.generate_header();
         buf.put_u64(header.into());
         // Note:
         // prost::EncodeError can be triggered only by a buffer smaller than required,
@@ -94,6 +100,26 @@ impl RawMessage {
             });
         }
         M::decode(self.1).map_err(|e| DecodingError::DecodeMessage(self.0.message_type(), e))
+    }
+
+    pub fn decode_as_notification(self) -> Result<Notification, DecodingError> {
+        let ty = self.ty();
+        assert!(ty.is_notification(), "Expected a notification");
+
+        let messages::NotificationTemplate { id, result } =
+            messages::NotificationTemplate::decode(self.1)
+                .map_err(|e| DecodingError::DecodeMessage(self.0.message_type(), e))?;
+
+        Ok(Notification {
+            id: id.ok_or(DecodingError::MissingField {
+                expected: ty,
+                field: "id",
+            })?,
+            result: result.ok_or(DecodingError::MissingField {
+                expected: ty,
+                field: "result",
+            })?,
+        })
     }
 }
 
@@ -149,7 +175,7 @@ impl DecoderState {
     fn needs_bytes(&self) -> usize {
         match self {
             DecoderState::WaitingHeader => 8,
-            DecoderState::WaitingPayload(h) => h.frame_length() as usize,
+            DecoderState::WaitingPayload(h) => h.message_length() as usize,
         }
     }
 
@@ -162,7 +188,7 @@ impl DecoderState {
                 DecoderState::WaitingPayload(header)
             }
             DecoderState::WaitingPayload(h) => {
-                let msg = RawMessage(h, buf.copy_to_bytes(h.frame_length() as usize));
+                let msg = RawMessage(h, buf.copy_to_bytes(h.message_length() as usize));
                 res = Some(msg);
                 DecoderState::WaitingHeader
             }
@@ -199,15 +225,19 @@ mod tests {
             duration_since_last_stored_entry: 0,
         };
 
-        let expected_msg_1 = messages::InputEntryMessage {
-            value: Bytes::from_static("input".as_bytes()),
-            ..messages::InputEntryMessage::default()
+        let expected_msg_1 = messages::InputCommandMessage {
+            value: Some(messages::Value {
+                content: Bytes::from_static("input".as_bytes()),
+            }),
+            ..messages::InputCommandMessage::default()
         };
-        let expected_msg_2 = messages::CompletionMessage {
-            entry_index: 1,
-            result: Some(messages::completion_message::Result::Empty(
-                messages::Empty::default(),
-            )),
+        let expected_msg_2 = messages::GetLazyStateCompletionNotificationMessage {
+            completion_id: 1,
+            result: Some(
+                messages::get_lazy_state_completion_notification_message::Result::Void(
+                    messages::Void::default(),
+                ),
+            ),
         };
 
         decoder.push(encoder.encode(&expected_msg_0));
@@ -224,12 +254,11 @@ mod tests {
         let actual_msg_1 = decoder.consume_next().unwrap().unwrap();
         assert_eq!(
             actual_msg_1.header().message_type(),
-            MessageType::InputEntry
+            MessageType::InputCommand
         );
-        assert_eq!(actual_msg_1.header().completed(), None);
         assert_eq!(
             actual_msg_1
-                .decode_to::<messages::InputEntryMessage>()
+                .decode_to::<messages::InputCommandMessage>()
                 .unwrap(),
             expected_msg_1
         );
@@ -237,11 +266,11 @@ mod tests {
         let actual_msg_2 = decoder.consume_next().unwrap().unwrap();
         assert_eq!(
             actual_msg_2.header().message_type(),
-            MessageType::Completion
+            MessageType::GetLazyStateCompletionNotification
         );
         assert_eq!(
             actual_msg_2
-                .decode_to::<messages::CompletionMessage>()
+                .decode_to::<messages::GetLazyStateCompletionNotificationMessage>()
                 .unwrap(),
             expected_msg_2
         );
@@ -263,9 +292,11 @@ mod tests {
         let encoder = Encoder::new(Version::maximum_supported_version());
         let mut decoder = Decoder::new(Version::maximum_supported_version());
 
-        let expected_msg = messages::InputEntryMessage {
-            value: Bytes::from_static("input".as_bytes()),
-            ..messages::InputEntryMessage::default()
+        let expected_msg = messages::InputCommandMessage {
+            value: Some(messages::Value {
+                content: Bytes::from_static("input".as_bytes()),
+            }),
+            ..messages::InputCommandMessage::default()
         };
         let expected_msg_encoded = encoder.encode(&expected_msg);
 
@@ -275,11 +306,13 @@ mod tests {
         decoder.push(expected_msg_encoded.slice(split_index..));
 
         let actual_msg = decoder.consume_next().unwrap().unwrap();
-        assert_eq!(actual_msg.header().message_type(), MessageType::InputEntry);
-        assert_eq!(actual_msg.header().completed(), None);
+        assert_eq!(
+            actual_msg.header().message_type(),
+            MessageType::InputCommand
+        );
         assert_eq!(
             actual_msg
-                .decode_to::<messages::InputEntryMessage>()
+                .decode_to::<messages::InputCommandMessage>()
                 .unwrap(),
             expected_msg
         );

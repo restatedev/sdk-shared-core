@@ -10,9 +10,22 @@
 
 mod encoding;
 mod header;
-pub mod messages;
+pub(crate) mod messages;
 mod version;
 
-pub use encoding::{Decoder, DecodingError, Encoder, RawMessage};
-pub use header::{MessageHeader, MessageType};
-pub use version::{UnsupportedVersionError, Version};
+pub(crate) use encoding::{Decoder, DecodingError, Encoder, RawMessage};
+pub(crate) use header::{MessageHeader, MessageType};
+pub(crate) use version::UnsupportedVersionError;
+pub use version::Version;
+
+pub(crate) type NotificationId = messages::notification_template::Id;
+pub(crate) type NotificationResult = messages::notification_template::Result;
+pub(crate) type CompletionId = u32;
+
+#[derive(Debug)]
+pub(crate) struct Notification {
+    pub(crate) id: NotificationId,
+    pub(crate) result: NotificationResult,
+}
+
+pub(crate) const CANCEL_SIGNAL_ID: u32 = 1;
