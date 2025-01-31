@@ -8,7 +8,7 @@ use crate::service_protocol::messages::{
 use crate::service_protocol::{
     messages, CompletionId, MessageType, Notification, NotificationId, NotificationResult,
 };
-use crate::vm::context::{Context, EagerGetState, EagerGetStateKeys, RunState};
+use crate::vm::context::{Context, EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::{
     EmptyGetEagerState, EmptyGetEagerStateKeys, EntryMismatchError, UnavailableEntryError,
     UnexpectedGetState, UnexpectedGetStateKeys, UnexpectedStateError,
@@ -34,23 +34,23 @@ impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
     ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Replaying {
-                mut entries,
+                mut commands,
                 run_state,
                 async_results,
             } => {
-                let actual = entries
+                let actual = commands
                     .pop_front()
                     .ok_or(UnavailableEntryError::new(M::ty()))?
                     .decode_to::<M>()?;
-                let new_state = if entries.is_empty() {
+                let new_state = if commands.is_empty() {
                     State::Processing {
                         processing_first_entry: true,
-                        run_state: RunState::default(),
+                        run_state,
                         async_results,
                     }
                 } else {
                     State::Replaying {
-                        entries,
+                        commands,
                         run_state,
                         async_results,
                     }
@@ -368,7 +368,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                 }
             }
             State::Replaying {
-                mut entries,
+                mut commands,
                 mut async_results,
                 run_state,
             } => {
@@ -378,7 +378,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                 let handle = async_results
                     .create_handle_mapping(NotificationId::CompletionId(completion_id));
 
-                let actual = entries
+                let actual = commands
                     .pop_front()
                     .ok_or(UnavailableEntryError::new(GetLazyStateCommandMessage::ty()))?;
 
@@ -430,15 +430,15 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                     }
                 }
 
-                let new_state = if entries.is_empty() {
+                let new_state = if commands.is_empty() {
                     State::Processing {
                         processing_first_entry: true,
-                        run_state: RunState::default(),
+                        run_state,
                         async_results,
                     }
                 } else {
                     State::Replaying {
-                        entries,
+                        commands,
                         run_state,
                         async_results,
                     }
@@ -517,7 +517,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                 }
             }
             State::Replaying {
-                mut entries,
+                mut commands,
                 mut async_results,
                 run_state,
             } => {
@@ -527,7 +527,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                 let handle = async_results
                     .create_handle_mapping(NotificationId::CompletionId(completion_id));
 
-                let actual = entries.pop_front().ok_or(UnavailableEntryError::new(
+                let actual = commands.pop_front().ok_or(UnavailableEntryError::new(
                     GetLazyStateKeysCommandMessage::ty(),
                 ))?;
 
@@ -573,15 +573,15 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                     }
                 }
 
-                let new_state = if entries.is_empty() {
+                let new_state = if commands.is_empty() {
                     State::Processing {
                         processing_first_entry: true,
-                        run_state: RunState::default(),
+                        run_state,
                         async_results,
                     }
                 } else {
                     State::Replaying {
-                        entries,
+                        commands,
                         run_state,
                         async_results,
                     }

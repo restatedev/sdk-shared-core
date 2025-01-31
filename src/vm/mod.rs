@@ -42,11 +42,11 @@ pub(crate) enum State {
     WaitingStart,
     WaitingReplayEntries {
         received_entries: u32,
-        entries: VecDeque<RawMessage>,
+        commands: VecDeque<RawMessage>,
         async_results: AsyncResultsState,
     },
     Replaying {
-        entries: VecDeque<RawMessage>,
+        commands: VecDeque<RawMessage>,
         run_state: RunState,
         async_results: AsyncResultsState,
     },

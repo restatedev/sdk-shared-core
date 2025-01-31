@@ -63,7 +63,7 @@ impl Transition<Context, NewStartMessage> for State {
 
         Ok(State::WaitingReplayEntries {
             received_entries: 0,
-            entries: Default::default(),
+            commands: Default::default(),
             async_results: Default::default(),
         })
     }
@@ -102,8 +102,8 @@ impl Transition<Context, NewCommandMessage> for State {
         NewCommandMessage(msg): NewCommandMessage,
     ) -> Result<Self, Error> {
         match &mut self {
-            State::WaitingReplayEntries { entries, .. } => {
-                entries.push_back(msg);
+            State::WaitingReplayEntries { commands, .. } => {
+                commands.push_back(msg);
             }
             _ => return Err(errors::UNEXPECTED_ENTRY_MESSAGE),
         };
@@ -119,20 +119,20 @@ impl Transition<Context, PostReceiveEntry> for State {
         match self {
             State::WaitingReplayEntries {
                 mut received_entries,
-                entries,
+                commands,
                 async_results,
             } => {
                 received_entries += 1;
                 if context.expect_start_info().entries_to_replay == received_entries {
                     Ok(State::Replaying {
-                        entries,
+                        commands,
                         run_state: Default::default(),
                         async_results,
                     })
                 } else {
                     Ok(State::WaitingReplayEntries {
                         received_entries,
-                        entries,
+                        commands,
                         async_results,
                     })
                 }
