@@ -72,7 +72,7 @@ impl Error {
         Error {
             code: code.0,
             message: Cow::Borrowed(message),
-            description: Cow::Borrowed(""),
+            stacktrace: Cow::Borrowed(""),
         }
     }
 }

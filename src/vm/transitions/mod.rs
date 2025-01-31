@@ -78,7 +78,7 @@ impl CoreVM {
                         let msg = ErrorMessage {
                             code: e.code as u32,
                             message: e.message.clone().into_owned(),
-                            description: e.description.clone().into_owned(),
+                            stacktrace: e.stacktrace.clone().into_owned(),
                             related_command_index: Some(self.context.journal.command_index() as u32),
                             related_command_name: Some(
                                 self.context.journal.current_entry_name.clone(),

@@ -116,7 +116,7 @@ pub fn eq_vm_error(vm_error: Error) -> impl Matcher<ActualT = Error> {
     pat!(Error {
         code: eq(vm_error.code),
         message: eq(vm_error.message),
-        description: eq(vm_error.description)
+        stacktrace: eq(vm_error.stacktrace)
     })
 }
 
@@ -125,7 +125,7 @@ pub fn error_message_as_vm_error(vm_error: Error) -> impl Matcher<ActualT = Erro
     pat!(ErrorMessage {
         code: eq(vm_error.code as u32),
         message: eq(vm_error.message),
-        description: eq(vm_error.description)
+        stacktrace: eq(vm_error.stacktrace)
     })
 }
 

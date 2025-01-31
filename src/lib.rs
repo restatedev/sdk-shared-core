@@ -40,11 +40,11 @@ pub struct ResponseHead {
 pub struct SuspendedError;
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("VM Error [{code}]: {message}. Description: {description}")]
+#[error("State machine error [{code}]: {message}. Stacktrace: {stacktrace}")]
 pub struct Error {
     code: u16,
     message: Cow<'static, str>,
-    description: Cow<'static, str>,
+    stacktrace: Cow<'static, str>,
 }
 
 impl Error {
@@ -52,7 +52,7 @@ impl Error {
         Error {
             code: code.into(),
             message: message.into(),
-            description: Default::default(),
+            stacktrace: Default::default(),
         }
     }
 
@@ -69,11 +69,11 @@ impl Error {
     }
 
     pub fn description(&self) -> &str {
-        &self.description
+        &self.stacktrace
     }
 
-    pub fn with_description(mut self, description: impl Into<Cow<'static, str>>) -> Self {
-        self.description = description.into();
+    pub fn with_stacktrace(mut self, stacktrace: impl Into<Cow<'static, str>>) -> Self {
+        self.stacktrace = stacktrace.into();
         self
     }
 
@@ -85,10 +85,10 @@ impl Error {
     ) -> Self {
         let c = code.into();
         if self.code == c {
-            if self.description.is_empty() {
-                self.description = description.into();
+            if self.stacktrace.is_empty() {
+                self.stacktrace = description.into();
             } else {
-                self.description = format!("{}. {}", self.description, description.into()).into();
+                self.stacktrace = format!("{}. {}", self.stacktrace, description.into()).into();
             }
             self
         } else {

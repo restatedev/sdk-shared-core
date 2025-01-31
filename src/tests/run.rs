@@ -390,7 +390,7 @@ fn enter_then_notify_error() {
 
             vm.notify_error(
                 Error::internal(Cow::Borrowed("my-error"))
-                    .with_description(Cow::Borrowed("my-error-description")),
+                    .with_stacktrace(Cow::Borrowed("my-error-description")),
                 None,
             );
         });
@@ -407,7 +407,7 @@ fn enter_then_notify_error() {
         error_message_as_vm_error(Error {
             code: 500,
             message: Cow::Borrowed("my-error"),
-            description: Cow::Borrowed("my-error-description"),
+            stacktrace: Cow::Borrowed("my-error-description"),
         })
     );
     assert_eq!(output.next(), None);
