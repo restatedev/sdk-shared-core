@@ -316,7 +316,7 @@ impl super::VM for CoreVM {
         match &self.last_transition {
             Ok(State::WaitingStart) | Ok(State::WaitingReplayEntries { .. }) => Ok(false),
             Ok(State::Processing { .. }) | Ok(State::Replaying { .. }) => Ok(true),
-            Ok(s) => Err(UnexpectedStateError::new(s.into(), "IsReadyToExecute").into()),
+            Ok(s) => Err(s.as_unexpected_state("IsReadyToExecute")),
             Err(e) => Err(e.clone()),
         }
     }

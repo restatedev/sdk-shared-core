@@ -15,7 +15,7 @@ mod version;
 
 pub(crate) use encoding::{Decoder, DecodingError, Encoder, RawMessage};
 pub(crate) use header::{MessageHeader, MessageType};
-pub(crate) use version::UnsupportedVersionError;
+pub(crate) use version::ContentTypeError;
 pub use version::Version;
 
 pub(crate) type NotificationId = messages::notification_template::Id;
