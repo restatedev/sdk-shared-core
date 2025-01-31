@@ -9,6 +9,7 @@ pub struct StartMessage {
     /// The user can use this id to address this invocation in admin and status introspection apis.
     #[prost(string, tag = "2")]
     pub debug_id: ::prost::alloc::string::String,
+    /// This is the sum of known commands + notifications
     #[prost(uint32, tag = "3")]
     pub known_entries: u32,
     /// protolint:disable:next REPEATED_FIELD_NAMES_PLURALIZED
@@ -45,41 +46,21 @@ pub mod start_message {
     }
 }
 /// Type: 0x0000 + 1
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CompletionMessage {
-    #[prost(uint32, tag = "1")]
-    pub entry_index: u32,
-    #[prost(oneof = "completion_message::Result", tags = "13, 14, 15")]
-    pub result: ::core::option::Option<completion_message::Result>,
-}
-/// Nested message and enum types in `CompletionMessage`.
-pub mod completion_message {
-    #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Result {
-        #[prost(message, tag = "13")]
-        Empty(super::Empty),
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
-        Failure(super::Failure),
-    }
-}
-/// Type: 0x0000 + 2
 /// Implementations MUST send this message when suspending an invocation.
+///
+/// These lists represent any of the notification_idx and/or notification_name the invocation is waiting on to progress.
+/// The runtime will resume the invocation as soon as either one of the given notification_idx or notification_name is completed.
+/// Between the two lists there MUST be at least one element.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuspensionMessage {
-    /// This list represents any of the entry_index the invocation is waiting on to progress.
-    /// The runtime will resume the invocation as soon as one of the given entry_index is completed.
-    /// This list MUST not be empty.
-    /// False positive, entry_indexes is a valid plural of entry_indices.
-    /// <https://learn.microsoft.com/en-us/style-guide/a-z-word-list-term-collections/i/index-indexes-indices>
-    ///
-    /// protolint:disable:this REPEATED_FIELD_NAMES_PLURALIZED
     #[prost(uint32, repeated, tag = "1")]
-    pub entry_indexes: ::prost::alloc::vec::Vec<u32>,
+    pub waiting_completions: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint32, repeated, tag = "2")]
+    pub waiting_signals: ::prost::alloc::vec::Vec<u32>,
+    #[prost(string, repeated, tag = "3")]
+    pub waiting_named_signals: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-/// Type: 0x0000 + 3
+/// Type: 0x0000 + 2
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ErrorMessage {
     /// The code can be any HTTP status code, as described <https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml.>
@@ -94,40 +75,100 @@ pub struct ErrorMessage {
     /// Contains a verbose error description, e.g. the exception stacktrace.
     #[prost(string, tag = "3")]
     pub description: ::prost::alloc::string::String,
-    /// Entry that caused the failure. This may be outside the current stored journal size.
+    /// Command that caused the failure. This may be outside the current stored journal size.
     /// If no specific entry caused the failure, the current replayed/processed entry can be used.
     #[prost(uint32, optional, tag = "4")]
-    pub related_entry_index: ::core::option::Option<u32>,
+    pub related_command_index: ::core::option::Option<u32>,
     /// Name of the entry that caused the failure.
     #[prost(string, optional, tag = "5")]
-    pub related_entry_name: ::core::option::Option<::prost::alloc::string::String>,
-    /// Entry type.
+    pub related_command_name: ::core::option::Option<::prost::alloc::string::String>,
+    /// Command type.
     #[prost(uint32, optional, tag = "6")]
-    pub related_entry_type: ::core::option::Option<u32>,
+    pub related_command_type: ::core::option::Option<u32>,
     /// Delay before executing the next retry, specified as duration in milliseconds.
     /// If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
     #[prost(uint64, optional, tag = "8")]
     pub next_retry_delay: ::core::option::Option<u64>,
 }
-/// Type: 0x0000 + 4
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct EntryAckMessage {
-    #[prost(uint32, tag = "1")]
-    pub entry_index: u32,
-}
-/// Type: 0x0000 + 5
+/// Type: 0x0000 + 3
 /// Implementations MUST send this message when the invocation lifecycle ends.
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct EndMessage {}
+/// Type: 0x0000 + 4
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct CommandAckMessage {
+    #[prost(uint32, tag = "1")]
+    pub command_index: u32,
+}
+/// This is a special control message to propose ctx.run completions to the runtime.
+/// This won't be written to the journal immediately, but will appear later as a new notification (meaning the result was stored).
+///
+/// Type: 0x0000 + 5
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ProposeRunCompletionMessage {
+    #[prost(uint32, tag = "1")]
+    pub result_completion_id: u32,
+    #[prost(oneof = "propose_run_completion_message::Result", tags = "14, 15")]
+    pub result: ::core::option::Option<propose_run_completion_message::Result>,
+}
+/// Nested message and enum types in `ProposeRunCompletionMessage`.
+pub mod propose_run_completion_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(bytes, tag = "14")]
+        Value(::prost::bytes::Bytes),
+        #[prost(message, tag = "15")]
+        Failure(super::Failure),
+    }
+}
+/// A notification message follows the following duck-type:
+///
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NotificationTemplate {
+    #[prost(oneof = "notification_template::Id", tags = "1, 2, 3")]
+    pub id: ::core::option::Option<notification_template::Id>,
+    #[prost(oneof = "notification_template::Result", tags = "4, 5, 6, 16, 17")]
+    pub result: ::core::option::Option<notification_template::Result>,
+}
+/// Nested message and enum types in `NotificationTemplate`.
+pub mod notification_template {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Eq, Hash)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Id {
+        #[prost(uint32, tag = "1")]
+        CompletionId(u32),
+        #[prost(uint32, tag = "2")]
+        SignalId(u32),
+        #[prost(string, tag = "3")]
+        SignalName(::prost::alloc::string::String),
+    }
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "4")]
+        Void(super::Void),
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
+        Failure(super::Failure),
+        /// Used by specific commands
+        #[prost(string, tag = "16")]
+        InvocationId(::prost::alloc::string::String),
+        #[prost(message, tag = "17")]
+        StateKeys(super::StateKeys),
+    }
+}
 /// Completable: No
 /// Fallible: No
 /// Type: 0x0400 + 0
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct InputEntryMessage {
+pub struct InputCommandMessage {
     #[prost(message, repeated, tag = "1")]
     pub headers: ::prost::alloc::vec::Vec<Header>,
-    #[prost(bytes = "bytes", tag = "14")]
-    pub value: ::prost::bytes::Bytes,
+    #[prost(message, optional, tag = "14")]
+    pub value: ::core::option::Option<Value>,
     /// Entry name
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
@@ -136,229 +177,304 @@ pub struct InputEntryMessage {
 /// Fallible: No
 /// Type: 0x0400 + 1
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OutputEntryMessage {
+pub struct OutputCommandMessage {
     /// Entry name
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "output_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<output_entry_message::Result>,
+    #[prost(oneof = "output_command_message::Result", tags = "14, 15")]
+    pub result: ::core::option::Option<output_command_message::Result>,
 }
-/// Nested message and enum types in `OutputEntryMessage`.
-pub mod output_entry_message {
-    #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Result {
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
-        Failure(super::Failure),
-    }
-}
-/// Completable: Yes
-/// Fallible: No
-/// Type: 0x0800 + 0
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetStateEntryMessage {
-    #[prost(bytes = "bytes", tag = "1")]
-    pub key: ::prost::bytes::Bytes,
-    /// Entry name
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "get_state_entry_message::Result", tags = "13, 14, 15")]
-    pub result: ::core::option::Option<get_state_entry_message::Result>,
-}
-/// Nested message and enum types in `GetStateEntryMessage`.
-pub mod get_state_entry_message {
-    #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Result {
-        #[prost(message, tag = "13")]
-        Empty(super::Empty),
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
-        Failure(super::Failure),
-    }
-}
-/// Completable: No
-/// Fallible: No
-/// Type: 0x0800 + 1
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SetStateEntryMessage {
-    #[prost(bytes = "bytes", tag = "1")]
-    pub key: ::prost::bytes::Bytes,
-    #[prost(bytes = "bytes", tag = "3")]
-    pub value: ::prost::bytes::Bytes,
-    /// Entry name
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-}
-/// Completable: No
-/// Fallible: No
-/// Type: 0x0800 + 2
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ClearStateEntryMessage {
-    #[prost(bytes = "bytes", tag = "1")]
-    pub key: ::prost::bytes::Bytes,
-    /// Entry name
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-}
-/// Completable: No
-/// Fallible: No
-/// Type: 0x0800 + 3
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ClearAllStateEntryMessage {
-    /// Entry name
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-}
-/// Completable: Yes
-/// Fallible: No
-/// Type: 0x0800 + 4
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetStateKeysEntryMessage {
-    /// Entry name
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "get_state_keys_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<get_state_keys_entry_message::Result>,
-}
-/// Nested message and enum types in `GetStateKeysEntryMessage`.
-pub mod get_state_keys_entry_message {
-    #[derive(Clone, PartialEq, ::prost::Message)]
-    pub struct StateKeys {
-        #[prost(bytes = "bytes", repeated, tag = "1")]
-        pub keys: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
-    }
+/// Nested message and enum types in `OutputCommandMessage`.
+pub mod output_command_message {
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "14")]
-        Value(StateKeys),
+        Value(super::Value),
         #[prost(message, tag = "15")]
         Failure(super::Failure),
     }
 }
 /// Completable: Yes
 /// Fallible: No
-/// Type: 0x0800 + 8
+/// Type: 0x0400 + 2
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetPromiseEntryMessage {
-    #[prost(string, tag = "1")]
-    pub key: ::prost::alloc::string::String,
-    /// Entry name
+pub struct GetLazyStateCommandMessage {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub key: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "get_promise_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<get_promise_entry_message::Result>,
 }
-/// Nested message and enum types in `GetPromiseEntryMessage`.
-pub mod get_promise_entry_message {
+/// Notification for GetLazyStateCommandMessage
+/// Type: 0x8000 + 2
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetLazyStateCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(
+        oneof = "get_lazy_state_completion_notification_message::Result",
+        tags = "4, 5"
+    )]
+    pub result: ::core::option::Option<
+        get_lazy_state_completion_notification_message::Result,
+    >,
+}
+/// Nested message and enum types in `GetLazyStateCompletionNotificationMessage`.
+pub mod get_lazy_state_completion_notification_message {
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
-        Failure(super::Failure),
+        #[prost(message, tag = "4")]
+        Void(super::Void),
+        #[prost(message, tag = "5")]
+        Value(super::Value),
     }
 }
-/// Completable: Yes
+/// Completable: No
 /// Fallible: No
-/// Type: 0x0800 + 9
+/// Type: 0x0400 + 3
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PeekPromiseEntryMessage {
-    #[prost(string, tag = "1")]
-    pub key: ::prost::alloc::string::String,
+pub struct SetStateCommandMessage {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub key: ::prost::bytes::Bytes,
+    #[prost(message, optional, tag = "3")]
+    pub value: ::core::option::Option<Value>,
     /// Entry name
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "peek_promise_entry_message::Result", tags = "13, 14, 15")]
-    pub result: ::core::option::Option<peek_promise_entry_message::Result>,
 }
-/// Nested message and enum types in `PeekPromiseEntryMessage`.
-pub mod peek_promise_entry_message {
+/// Completable: No
+/// Fallible: No
+/// Type: 0x0400 + 4
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClearStateCommandMessage {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub key: ::prost::bytes::Bytes,
+    /// Entry name
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Completable: No
+/// Fallible: No
+/// Type: 0x0400 + 5
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClearAllStateCommandMessage {
+    /// Entry name
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Completable: Yes
+/// Fallible: No
+/// Type: 0x0400 + 6
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetLazyStateKeysCommandMessage {
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Notification for GetLazyStateKeysCommandMessage
+/// Type: 0x8000 + 6
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetLazyStateKeysCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(message, optional, tag = "17")]
+    pub state_keys: ::core::option::Option<StateKeys>,
+}
+/// Completable: No
+/// Fallible: No
+/// Type: 0x0400 + 7
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetEagerStateCommandMessage {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub key: ::prost::bytes::Bytes,
+    /// Entry name
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(oneof = "get_eager_state_command_message::Result", tags = "13, 14")]
+    pub result: ::core::option::Option<get_eager_state_command_message::Result>,
+}
+/// Nested message and enum types in `GetEagerStateCommandMessage`.
+pub mod get_eager_state_command_message {
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "13")]
-        Empty(super::Empty),
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
+        Void(super::Void),
+        #[prost(message, tag = "14")]
+        Value(super::Value),
+    }
+}
+/// Completable: No
+/// Fallible: No
+/// Type: 0x0400 + 8
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetEagerStateKeysCommandMessage {
+    #[prost(message, optional, tag = "14")]
+    pub value: ::core::option::Option<StateKeys>,
+    /// Entry name
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Completable: Yes
+/// Fallible: No
+/// Type: 0x0400 + 9
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetPromiseCommandMessage {
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Notification for GetPromiseCommandMessage
+/// Type: 0x8000 + 9
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetPromiseCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(
+        oneof = "get_promise_completion_notification_message::Result",
+        tags = "5, 6"
+    )]
+    pub result: ::core::option::Option<
+        get_promise_completion_notification_message::Result,
+    >,
+}
+/// Nested message and enum types in `GetPromiseCompletionNotificationMessage`.
+pub mod get_promise_completion_notification_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
         Failure(super::Failure),
     }
 }
 /// Completable: Yes
 /// Fallible: No
-/// Type: 0x0800 + A
+/// Type: 0x0400 + A
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CompletePromiseEntryMessage {
+pub struct PeekPromiseCommandMessage {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
-    /// Entry name
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+}
+/// Notification for PeekPromiseCommandMessage
+/// Type: 0x8000 + A
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PeekPromiseCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(
+        oneof = "peek_promise_completion_notification_message::Result",
+        tags = "4, 5, 6"
+    )]
+    pub result: ::core::option::Option<
+        peek_promise_completion_notification_message::Result,
+    >,
+}
+/// Nested message and enum types in `PeekPromiseCompletionNotificationMessage`.
+pub mod peek_promise_completion_notification_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "4")]
+        Void(super::Void),
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
+        Failure(super::Failure),
+    }
+}
+/// Completable: Yes
+/// Fallible: No
+/// Type: 0x0400 + B
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompletePromiseCommandMessage {
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
     /// The value to use to complete the promise
-    #[prost(oneof = "complete_promise_entry_message::Completion", tags = "2, 3")]
-    pub completion: ::core::option::Option<complete_promise_entry_message::Completion>,
-    #[prost(oneof = "complete_promise_entry_message::Result", tags = "13, 15")]
-    pub result: ::core::option::Option<complete_promise_entry_message::Result>,
+    #[prost(oneof = "complete_promise_command_message::Completion", tags = "2, 3")]
+    pub completion: ::core::option::Option<complete_promise_command_message::Completion>,
 }
-/// Nested message and enum types in `CompletePromiseEntryMessage`.
-pub mod complete_promise_entry_message {
+/// Nested message and enum types in `CompletePromiseCommandMessage`.
+pub mod complete_promise_command_message {
     /// The value to use to complete the promise
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Completion {
-        #[prost(bytes, tag = "2")]
-        CompletionValue(::prost::bytes::Bytes),
+        #[prost(message, tag = "2")]
+        CompletionValue(super::Value),
         #[prost(message, tag = "3")]
         CompletionFailure(super::Failure),
     }
+}
+/// Notification for CompletePromiseCommandMessage
+/// Type: 0x8000 + B
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompletePromiseCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(
+        oneof = "complete_promise_completion_notification_message::Result",
+        tags = "4, 6"
+    )]
+    pub result: ::core::option::Option<
+        complete_promise_completion_notification_message::Result,
+    >,
+}
+/// Nested message and enum types in `CompletePromiseCompletionNotificationMessage`.
+pub mod complete_promise_completion_notification_message {
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
-        /// Returns empty if value was set successfully
-        #[prost(message, tag = "13")]
-        Empty(super::Empty),
-        /// Returns a failure if the promise was already completed
-        #[prost(message, tag = "15")]
+        #[prost(message, tag = "4")]
+        Void(super::Void),
+        #[prost(message, tag = "6")]
         Failure(super::Failure),
     }
 }
 /// Completable: Yes
 /// Fallible: No
-/// Type: 0x0C00 + 0
+/// Type: 0x0400 + C
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SleepEntryMessage {
+pub struct SleepCommandMessage {
     /// Wake up time.
     /// The time is set as duration since UNIX Epoch.
     #[prost(uint64, tag = "1")]
     pub wake_up_time: u64,
-    /// Entry name
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "sleep_entry_message::Result", tags = "13, 15")]
-    pub result: ::core::option::Option<sleep_entry_message::Result>,
 }
-/// Nested message and enum types in `SleepEntryMessage`.
-pub mod sleep_entry_message {
-    #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Result {
-        #[prost(message, tag = "13")]
-        Empty(super::Empty),
-        #[prost(message, tag = "15")]
-        Failure(super::Failure),
-    }
+/// Notification for SleepCommandMessage
+/// Type: 0x8000 + C
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct SleepCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(message, optional, tag = "4")]
+    pub void: ::core::option::Option<Void>,
 }
-/// Completable: Yes
+/// Completable: Yes (two notifications: one with invocation id, then one with the actual result)
 /// Fallible: Yes
-/// Type: 0x0C00 + 1
+/// Type: 0x0400 + D
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CallEntryMessage {
+pub struct CallCommandMessage {
     #[prost(string, tag = "1")]
     pub service_name: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
@@ -373,28 +489,47 @@ pub struct CallEntryMessage {
     /// If present, it must be non empty.
     #[prost(string, optional, tag = "6")]
     pub idempotency_key: ::core::option::Option<::prost::alloc::string::String>,
-    /// Entry name
+    #[prost(uint32, tag = "10")]
+    pub invocation_id_notification_idx: u32,
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "call_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<call_entry_message::Result>,
 }
-/// Nested message and enum types in `CallEntryMessage`.
-pub mod call_entry_message {
+/// Notification for CallCommandMessage and OneWayCallCommandMessage
+/// Type: 0x8000 + E
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CallInvocationIdCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(string, tag = "16")]
+    pub invocation_id: ::prost::alloc::string::String,
+}
+/// Notification for CallCommandMessage
+/// Type: 0x8000 + D
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CallCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(oneof = "call_completion_notification_message::Result", tags = "5, 6")]
+    pub result: ::core::option::Option<call_completion_notification_message::Result>,
+}
+/// Nested message and enum types in `CallCompletionNotificationMessage`.
+pub mod call_completion_notification_message {
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
         Failure(super::Failure),
     }
 }
-/// Completable: No
+/// Completable: Yes (only one notification with invocation id)
 /// Fallible: Yes
-/// Type: 0x0C00 + 2
+/// Type: 0x0400 + E
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OneWayCallEntryMessage {
+pub struct OneWayCallCommandMessage {
     #[prost(string, tag = "1")]
     pub service_name: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
@@ -415,212 +550,254 @@ pub struct OneWayCallEntryMessage {
     /// If present, it must be non empty.
     #[prost(string, optional, tag = "7")]
     pub idempotency_key: ::core::option::Option<::prost::alloc::string::String>,
-    /// Entry name
+    #[prost(uint32, tag = "10")]
+    pub invocation_id_notification_idx: u32,
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
-}
-/// Completable: Yes
-/// Fallible: No
-/// Type: 0x0C00 + 3
-/// Awakeables are addressed by an identifier exposed to the user. See the spec for more details.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AwakeableEntryMessage {
-    /// Entry name
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "awakeable_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<awakeable_entry_message::Result>,
-}
-/// Nested message and enum types in `AwakeableEntryMessage`.
-pub mod awakeable_entry_message {
-    #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Result {
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
-        Failure(super::Failure),
-    }
 }
 /// Completable: No
 /// Fallible: Yes
-/// Type: 0x0C00 + 4
+/// Type: 0x04000 + 10
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CompleteAwakeableEntryMessage {
-    /// Identifier of the awakeable. See the spec for more details.
+pub struct SendSignalCommandMessage {
     #[prost(string, tag = "1")]
-    pub id: ::prost::alloc::string::String,
-    /// Entry name
+    pub target_invocation_id: ::prost::alloc::string::String,
+    /// Cannot use the field 'name' here because used above
     #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "complete_awakeable_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<complete_awakeable_entry_message::Result>,
+    pub entry_name: ::prost::alloc::string::String,
+    #[prost(oneof = "send_signal_command_message::SignalId", tags = "2, 3")]
+    pub signal_id: ::core::option::Option<send_signal_command_message::SignalId>,
+    #[prost(oneof = "send_signal_command_message::Result", tags = "4, 5, 6")]
+    pub result: ::core::option::Option<send_signal_command_message::Result>,
 }
-/// Nested message and enum types in `CompleteAwakeableEntryMessage`.
-pub mod complete_awakeable_entry_message {
+/// Nested message and enum types in `SendSignalCommandMessage`.
+pub mod send_signal_command_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum SignalId {
+        #[prost(uint32, tag = "2")]
+        Idx(u32),
+        #[prost(string, tag = "3")]
+        Name(::prost::alloc::string::String),
+    }
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
+        #[prost(message, tag = "4")]
+        Void(super::Void),
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
         Failure(super::Failure),
     }
 }
-/// Completable: No
+/// Proposals for Run completions are sent through ProposeRunCompletionMessage
+///
+/// Completable: Yes
 /// Fallible: No
-/// Type: 0x0C00 + 5
-/// Flag: RequiresRuntimeAck
+/// Type: 0x0400 + 11
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RunEntryMessage {
-    /// Entry name
+pub struct RunCommandMessage {
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "run_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<run_entry_message::Result>,
 }
-/// Nested message and enum types in `RunEntryMessage`.
-pub mod run_entry_message {
+/// Notification for RunCommandMessage
+/// Type: 0x8000 + 11
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RunCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(oneof = "run_completion_notification_message::Result", tags = "5, 6")]
+    pub result: ::core::option::Option<run_completion_notification_message::Result>,
+}
+/// Nested message and enum types in `RunCompletionNotificationMessage`.
+pub mod run_completion_notification_message {
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
         Failure(super::Failure),
     }
 }
+/// Completable: Yes
+/// Fallible: Yes
+/// Type: 0x0400 + 12
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AttachInvocationCommandMessage {
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(oneof = "attach_invocation_command_message::Target", tags = "1, 3, 4")]
+    pub target: ::core::option::Option<attach_invocation_command_message::Target>,
+}
+/// Nested message and enum types in `AttachInvocationCommandMessage`.
+pub mod attach_invocation_command_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Target {
+        /// Target invocation id
+        #[prost(string, tag = "1")]
+        InvocationId(::prost::alloc::string::String),
+        /// Target idempotent request
+        #[prost(message, tag = "3")]
+        IdempotentRequestTarget(super::IdempotentRequestTarget),
+        /// Target workflow target
+        #[prost(message, tag = "4")]
+        WorkflowTarget(super::WorkflowTarget),
+    }
+}
+/// Notification for AttachInvocationCommandMessage
+/// Type: 0x8000 + 12
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AttachInvocationCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(
+        oneof = "attach_invocation_completion_notification_message::Result",
+        tags = "5, 6"
+    )]
+    pub result: ::core::option::Option<
+        attach_invocation_completion_notification_message::Result,
+    >,
+}
+/// Nested message and enum types in `AttachInvocationCompletionNotificationMessage`.
+pub mod attach_invocation_completion_notification_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
+        Failure(super::Failure),
+    }
+}
+/// Completable: Yes
+/// Fallible: Yes
+/// Type: 0x0400 + 13
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetInvocationOutputCommandMessage {
+    #[prost(uint32, tag = "11")]
+    pub result_completion_id: u32,
+    #[prost(string, tag = "12")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(oneof = "get_invocation_output_command_message::Target", tags = "1, 3, 4")]
+    pub target: ::core::option::Option<get_invocation_output_command_message::Target>,
+}
+/// Nested message and enum types in `GetInvocationOutputCommandMessage`.
+pub mod get_invocation_output_command_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Target {
+        /// Target invocation id
+        #[prost(string, tag = "1")]
+        InvocationId(::prost::alloc::string::String),
+        /// Target idempotent request
+        #[prost(message, tag = "3")]
+        IdempotentRequestTarget(super::IdempotentRequestTarget),
+        /// Target workflow target
+        #[prost(message, tag = "4")]
+        WorkflowTarget(super::WorkflowTarget),
+    }
+}
+/// Notification for GetInvocationOutputCommandMessage
+/// Type: 0x8000 + 13
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetInvocationOutputCompletionNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+    #[prost(
+        oneof = "get_invocation_output_completion_notification_message::Result",
+        tags = "4, 5, 6"
+    )]
+    pub result: ::core::option::Option<
+        get_invocation_output_completion_notification_message::Result,
+    >,
+}
+/// Nested message and enum types in `GetInvocationOutputCompletionNotificationMessage`.
+pub mod get_invocation_output_completion_notification_message {
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "4")]
+        Void(super::Void),
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
+        Failure(super::Failure),
+    }
+}
+/// We have this for backward compatibility, because we need to parse both old and new awakeable id.
 /// Completable: No
 /// Fallible: Yes
-/// Type: 0x0C00 + 6
+/// Type: 0x0400 + 14
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CancelInvocationEntryMessage {
-    /// Entry name
+pub struct CompleteAwakeableCommandMessage {
+    #[prost(string, tag = "1")]
+    pub awakeable_id: ::prost::alloc::string::String,
+    /// Cannot use the field 'name' here because used above
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "cancel_invocation_entry_message::Target", tags = "1, 2")]
-    pub target: ::core::option::Option<cancel_invocation_entry_message::Target>,
+    #[prost(oneof = "complete_awakeable_command_message::Result", tags = "2, 3")]
+    pub result: ::core::option::Option<complete_awakeable_command_message::Result>,
 }
-/// Nested message and enum types in `CancelInvocationEntryMessage`.
-pub mod cancel_invocation_entry_message {
-    #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Target {
-        /// Target invocation id to cancel
-        #[prost(string, tag = "1")]
-        InvocationId(::prost::alloc::string::String),
-        /// Target index of the call/one way call journal entry in this journal.
-        #[prost(uint32, tag = "2")]
-        CallEntryIndex(u32),
-    }
-}
-/// Completable: Yes
-/// Fallible: Yes
-/// Type: 0x0C00 + 7
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetCallInvocationIdEntryMessage {
-    /// Index of the call/one way call journal entry in this journal.
-    #[prost(uint32, tag = "1")]
-    pub call_entry_index: u32,
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "get_call_invocation_id_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<get_call_invocation_id_entry_message::Result>,
-}
-/// Nested message and enum types in `GetCallInvocationIdEntryMessage`.
-pub mod get_call_invocation_id_entry_message {
+/// Nested message and enum types in `CompleteAwakeableCommandMessage`.
+pub mod complete_awakeable_command_message {
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
-        #[prost(string, tag = "14")]
-        Value(::prost::alloc::string::String),
-        #[prost(message, tag = "15")]
-        Failure(super::Failure),
-    }
-}
-/// Completable: Yes
-/// Fallible: Yes
-/// Type: 0x0C00 + 8
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct AttachInvocationEntryMessage {
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "attach_invocation_entry_message::Target", tags = "1, 2, 3, 4")]
-    pub target: ::core::option::Option<attach_invocation_entry_message::Target>,
-    #[prost(oneof = "attach_invocation_entry_message::Result", tags = "14, 15")]
-    pub result: ::core::option::Option<attach_invocation_entry_message::Result>,
-}
-/// Nested message and enum types in `AttachInvocationEntryMessage`.
-pub mod attach_invocation_entry_message {
-    #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Target {
-        /// Target invocation id
-        #[prost(string, tag = "1")]
-        InvocationId(::prost::alloc::string::String),
-        /// Target index of the call/one way call journal entry in this journal.
-        #[prost(uint32, tag = "2")]
-        CallEntryIndex(u32),
-        /// Target idempotent request
+        #[prost(message, tag = "2")]
+        Value(super::Value),
         #[prost(message, tag = "3")]
-        IdempotentRequestTarget(super::IdempotentRequestTarget),
-        /// Target workflow target
-        #[prost(message, tag = "4")]
-        WorkflowTarget(super::WorkflowTarget),
-    }
-    #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Result {
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
         Failure(super::Failure),
     }
 }
-/// Completable: Yes
-/// Fallible: Yes
-/// Type: 0x0C00 + 9
+/// Notification message for signals
+/// Type: 0xFBFF
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetInvocationOutputEntryMessage {
-    #[prost(string, tag = "12")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(oneof = "get_invocation_output_entry_message::Target", tags = "1, 2, 3, 4")]
-    pub target: ::core::option::Option<get_invocation_output_entry_message::Target>,
-    #[prost(oneof = "get_invocation_output_entry_message::Result", tags = "13, 14, 15")]
-    pub result: ::core::option::Option<get_invocation_output_entry_message::Result>,
+pub struct SignalNotificationMessage {
+    #[prost(oneof = "signal_notification_message::SignalId", tags = "2, 3")]
+    pub signal_id: ::core::option::Option<signal_notification_message::SignalId>,
+    #[prost(oneof = "signal_notification_message::Result", tags = "4, 5, 6")]
+    pub result: ::core::option::Option<signal_notification_message::Result>,
 }
-/// Nested message and enum types in `GetInvocationOutputEntryMessage`.
-pub mod get_invocation_output_entry_message {
+/// Nested message and enum types in `SignalNotificationMessage`.
+pub mod signal_notification_message {
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum Target {
-        /// Target invocation id
-        #[prost(string, tag = "1")]
-        InvocationId(::prost::alloc::string::String),
-        /// Target index of the call/one way call journal entry in this journal.
+    pub enum SignalId {
         #[prost(uint32, tag = "2")]
-        CallEntryIndex(u32),
-        /// Target idempotent request
-        #[prost(message, tag = "3")]
-        IdempotentRequestTarget(super::IdempotentRequestTarget),
-        /// Target workflow target
-        #[prost(message, tag = "4")]
-        WorkflowTarget(super::WorkflowTarget),
+        Idx(u32),
+        #[prost(string, tag = "3")]
+        Name(::prost::alloc::string::String),
     }
     #[allow(clippy::enum_variant_names)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
-        /// Empty if no result is still available
-        #[prost(message, tag = "13")]
-        Empty(super::Empty),
-        #[prost(bytes, tag = "14")]
-        Value(::prost::bytes::Bytes),
-        #[prost(message, tag = "15")]
+        #[prost(message, tag = "4")]
+        Void(super::Void),
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+        #[prost(message, tag = "6")]
         Failure(super::Failure),
     }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StateKeys {
+    #[prost(bytes = "bytes", repeated, tag = "1")]
+    pub keys: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Value {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub content: ::prost::bytes::Bytes,
 }
 /// This failure object carries user visible errors,
-/// e.g. invocation failure return value or failure result of an InvokeEntryMessage.
+/// e.g. invocation failure return value or failure result of an InvokeCommandMessage.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Failure {
     /// The code can be any HTTP status code, as described <https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml.>
@@ -656,7 +833,7 @@ pub struct IdempotentRequestTarget {
     pub idempotency_key: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct Empty {}
+pub struct Void {}
 /// Service protocol version.
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -675,6 +852,8 @@ pub enum ServiceProtocolVersion {
     /// * New entry to attach to existing invocation: AttachInvocationEntryMessage
     /// * New entry to get output of existing invocation: GetInvocationOutputEntryMessage
     V3 = 3,
+    /// Immutable journal.
+    V4 = 4,
 }
 impl ServiceProtocolVersion {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -687,6 +866,7 @@ impl ServiceProtocolVersion {
             Self::V1 => "V1",
             Self::V2 => "V2",
             Self::V3 => "V3",
+            Self::V4 => "V4",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -696,6 +876,34 @@ impl ServiceProtocolVersion {
             "V1" => Some(Self::V1),
             "V2" => Some(Self::V2),
             "V3" => Some(Self::V3),
+            "V4" => Some(Self::V4),
+            _ => None,
+        }
+    }
+}
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum BuiltInSignal {
+    Unknown = 0,
+    Cancel = 1,
+}
+impl BuiltInSignal {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unknown => "UNKNOWN",
+            Self::Cancel => "CANCEL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "UNKNOWN" => Some(Self::Unknown),
+            "CANCEL" => Some(Self::Cancel),
             _ => None,
         }
     }

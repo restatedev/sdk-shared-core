@@ -1,9 +1,10 @@
 use super::*;
 
 use crate::service_protocol::messages::{
-    ErrorMessage, GetStateEntryMessage, InputEntryMessage, OneWayCallEntryMessage, StartMessage,
+    ErrorMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage, StartMessage,
 };
 use std::fmt;
+use std::result::Result;
 use test_log::test;
 
 #[test]
@@ -18,7 +19,7 @@ fn got_closed_stream_before_end_of_replay() {
         known_entries: 2,
         ..Default::default()
     }));
-    vm.notify_input(encoder.encode(&InputEntryMessage::default()));
+    vm.notify_input(encoder.encode(&InputCommandMessage::default()));
 
     // Now notify input closed
     vm.notify_input_closed();
@@ -38,14 +39,16 @@ fn got_closed_stream_before_end_of_replay() {
 }
 
 #[test]
-fn get_state_entry_mismatch() {
-    test_entry_mismatch(
-        GetStateEntryMessage {
+fn get_lazy_state_entry_mismatch() {
+    test_entry_mismatch_on_replay(
+        GetLazyStateCommandMessage {
             key: Bytes::from_static(b"my-key"),
+            result_completion_id: 1,
             ..Default::default()
         },
-        GetStateEntryMessage {
+        GetLazyStateCommandMessage {
             key: Bytes::from_static(b"another-key"),
+            result_completion_id: 1,
             ..Default::default()
         },
         |vm| vm.sys_state_get("another-key".to_owned()),
@@ -54,19 +57,21 @@ fn get_state_entry_mismatch() {
 
 #[test]
 fn one_way_call_entry_mismatch() {
-    test_entry_mismatch(
-        OneWayCallEntryMessage {
+    test_entry_mismatch_on_replay(
+        OneWayCallCommandMessage {
             service_name: "greeter".to_owned(),
             handler_name: "greet".to_owned(),
             key: "my-key".to_owned(),
             parameter: Bytes::from_static(b"123"),
+            invocation_id_notification_idx: 1,
             ..Default::default()
         },
-        OneWayCallEntryMessage {
+        OneWayCallCommandMessage {
             service_name: "greeter".to_owned(),
             handler_name: "greet".to_owned(),
             key: "my-key".to_owned(),
             parameter: Bytes::from_static(b"456"),
+            invocation_id_notification_idx: 1,
             ..Default::default()
         },
         |vm| {
@@ -85,7 +90,7 @@ fn one_way_call_entry_mismatch() {
     );
 }
 
-fn test_entry_mismatch<M: WriteableRestateMessage + Clone, T: fmt::Debug>(
+fn test_entry_mismatch_on_replay<M: RestateMessage + Clone, T: fmt::Debug>(
     expected: M,
     actual: M,
     user_code: impl FnOnce(&mut CoreVM) -> Result<T, Error>,
@@ -98,11 +103,7 @@ fn test_entry_mismatch<M: WriteableRestateMessage + Clone, T: fmt::Debug>(
             partial_state: true,
             ..Default::default()
         })
-        .input(InputEntryMessage {
-            headers: vec![],
-            value: Bytes::from_static(b"my-data"),
-            ..InputEntryMessage::default()
-        })
+        .input(input_entry_message(b"my-data"))
         .input(expected.clone())
         .run(|vm| {
             vm.sys_input().unwrap();

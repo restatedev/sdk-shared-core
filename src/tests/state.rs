@@ -3,6 +3,9 @@ use crate::tests::VMTestCase;
 use crate::{CoreVM, NonEmptyValue, SuspendedOrVMError, Value, VM};
 use assert2::let_assert;
 use bytes::Bytes;
+use googletest::assert_that;
+use googletest::matchers::pat;
+use googletest::prelude::err;
 
 /// Normal state
 fn get_state_handler(vm: &mut CoreVM) {
@@ -10,20 +13,17 @@ fn get_state_handler(vm: &mut CoreVM) {
 
     let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-    vm.notify_await_point(h1);
-    let h1_result = vm.take_async_result(h1);
-    if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+    if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+        assert_that!(
+            vm.take_notification(h1),
+            err(pat!(SuspendedOrVMError::Suspended(_)))
+        );
         return;
     }
 
-    let str_result = match h1_result.unwrap().unwrap() {
+    let str_result = match vm.take_notification(h1).unwrap().unwrap() {
         Value::Void => "Unknown".to_owned(),
         Value::Success(s) => String::from_utf8(s.to_vec()).unwrap(),
-        Value::Failure(f) => {
-            vm.sys_write_output(NonEmptyValue::Failure(f)).unwrap();
-            vm.sys_end().unwrap();
-            return;
-        }
         _ => panic!("Unexpected variants"),
     };
 
@@ -36,7 +36,9 @@ fn get_state_handler(vm: &mut CoreVM) {
 
 mod only_lazy_state {
     use super::*;
+    use googletest::assert_that;
 
+    use crate::tests::{input_entry_message, is_output_with_success, suspended_waiting_completion};
     use test_log::test;
 
     #[test]
@@ -45,31 +47,29 @@ mod only_lazy_state {
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
-                known_entries: 2,
+                known_entries: 3,
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateCommandMessage {
+                key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             })
-            .input(GetStateEntryMessage {
-                key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco",
-                ))),
-                ..Default::default()
+            .input(GetLazyStateCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    get_lazy_state_completion_notification_message::Result::Value(
+                        Bytes::from_static(b"Francesco").into(),
+                    ),
+                ),
             })
             .run(get_state_handler);
 
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -77,35 +77,37 @@ mod only_lazy_state {
         );
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn entry_already_completed_empty() {
-        let mut output = VMTestCase::new()
-            .input(StartMessage {
-                id: Bytes::from_static(b"abc"),
-                debug_id: "abc".to_owned(),
-                known_entries: 2,
-                partial_state: true,
-                ..Default::default()
-            })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(GetStateEntryMessage {
-                key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
-                ..Default::default()
-            })
-            .run(get_state_handler);
+        let mut output =
+            VMTestCase::new()
+                .input(StartMessage {
+                    id: Bytes::from_static(b"abc"),
+                    debug_id: "abc".to_owned(),
+                    known_entries: 3,
+                    partial_state: true,
+                    ..Default::default()
+                })
+                .input(input_entry_message(b"Till"))
+                .input(GetLazyStateCommandMessage {
+                    key: Bytes::from_static(b"STATE"),
+                    result_completion_id: 1,
+                    ..Default::default()
+                })
+                .input(GetLazyStateCompletionNotificationMessage {
+                    completion_id: 1,
+                    result: Some(
+                        get_lazy_state_completion_notification_message::Result::Void(
+                            Default::default(),
+                        ),
+                    ),
+                })
+                .run(get_state_handler);
 
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Unknown"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Unknown")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -113,6 +115,7 @@ mod only_lazy_state {
         );
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn new_entry() {
         let mut output = VMTestCase::new()
@@ -123,28 +126,25 @@ mod only_lazy_state {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
+            .input(input_entry_message(b"Till"))
             .run(get_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-        assert_eq!(
+        assert_that!(
             output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![1],
-            }
+            suspended_waiting_completion(1)
         );
 
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn entry_not_completed_on_replay() {
         let mut output = VMTestCase::new()
@@ -155,25 +155,22 @@ mod only_lazy_state {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(GetStateEntryMessage {
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             })
             .run(get_state_handler);
 
-        assert_eq!(
+        assert_that!(
             output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![1],
-            }
+            suspended_waiting_completion(1)
         );
 
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn entry_on_replay_completed_later() {
         let mut output = VMTestCase::new()
@@ -184,30 +181,25 @@ mod only_lazy_state {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(GetStateEntryMessage {
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             })
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"Francesco",
-                ))),
+            .input(GetLazyStateCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    get_lazy_state_completion_notification_message::Result::Value(
+                        Bytes::from_static(b"Francesco").into(),
+                    ),
+                ),
             })
             .run(get_state_handler);
 
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -215,6 +207,7 @@ mod only_lazy_state {
         );
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn new_entry_completed_later() {
         let mut output = VMTestCase::new()
@@ -225,119 +218,28 @@ mod only_lazy_state {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"Francesco",
-                ))),
-            })
-            .run(get_state_handler);
-
-        assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
-                key: Bytes::from_static(b"STATE"),
-                ..Default::default()
-            }
-        );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
-        );
-        assert_eq!(
-            output.next_decoded::<EndMessage>().unwrap(),
-            EndMessage::default()
-        );
-        assert_eq!(output.next(), None);
-    }
-    #[test]
-    fn replay_failed_get_state_entry() {
-        let mut output = VMTestCase::new()
-            .input(StartMessage {
-                id: Bytes::from_static(b"abc"),
-                debug_id: "abc".to_owned(),
-                known_entries: 2,
-                partial_state: true,
-                ..Default::default()
-            })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(GetStateEntryMessage {
-                key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Failure(Failure {
-                    code: 409,
-                    ..Default::default()
-                })),
-                ..Default::default()
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    get_lazy_state_completion_notification_message::Result::Value(
+                        Bytes::from_static(b"Francesco").into(),
+                    ),
+                ),
             })
             .run(get_state_handler);
 
         assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Failure(Failure {
-                    code: 409,
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }
-        );
-        assert_eq!(
-            output.next_decoded::<EndMessage>().unwrap(),
-            EndMessage::default()
-        );
-        assert_eq!(output.next(), None);
-    }
-    #[test]
-    fn complete_failing_get_state_entry() {
-        let mut output = VMTestCase::new()
-            .input(StartMessage {
-                id: Bytes::from_static(b"abc"),
-                debug_id: "abc".to_owned(),
-                known_entries: 1,
-                partial_state: true,
-                ..Default::default()
-            })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Failure(Failure {
-                    code: 409,
-                    ..Default::default()
-                })),
-            })
-            .run(get_state_handler);
-
-        assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Failure(Failure {
-                    code: 409,
-                    ..Default::default()
-                })),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -351,6 +253,7 @@ mod only_lazy_state {
 mod eager {
     use super::*;
 
+    use crate::tests::{input_entry_message, is_output_with_success, suspended_waiting_completion};
     use test_log::test;
 
     fn get_empty_state_handler(vm: &mut CoreVM) {
@@ -358,20 +261,17 @@ mod eager {
 
         let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-        vm.notify_await_point(h1);
-        let h1_result = vm.take_async_result(h1);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+            assert_that!(
+                vm.take_notification(h1),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
 
-        let str_result = match h1_result.unwrap().unwrap() {
+        let str_result = match vm.take_notification(h1).unwrap().unwrap() {
             Value::Void => "true".to_owned(),
             Value::Success(_) => "false".to_owned(),
-            Value::Failure(f) => {
-                vm.sys_write_output(NonEmptyValue::Failure(f)).unwrap();
-                vm.sys_end().unwrap();
-                return;
-            }
             _ => panic!("Unexpected variants"),
         };
 
@@ -391,25 +291,24 @@ mod eager {
                 known_entries: 1,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
+            .input(InputCommandMessage::default())
             .run(get_empty_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"true"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"true")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -428,21 +327,20 @@ mod eager {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
+            .input(InputCommandMessage::default())
             .run(get_empty_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-        assert_eq!(
+        assert_that!(
             output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![1],
-            }
+            suspended_waiting_completion(1)
         );
 
         assert_eq!(output.next(), None);
@@ -458,22 +356,19 @@ mod eager {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(GetStateEntryMessage {
+            .input(InputCommandMessage::default())
+            .input(GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default(),
+                )),
                 ..Default::default()
             })
             .run(get_empty_state_handler);
 
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"true"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"true")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -496,27 +391,24 @@ mod eager {
                 key: "my-greeter".to_owned(),
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
+            .input(InputCommandMessage::default())
             .run(get_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
+                result: Some(get_eager_state_command_message::Result::Value(
+                    Bytes::from_static(b"Francesco").into()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -540,27 +432,24 @@ mod eager {
                 key: "my-greeter".to_owned(),
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
+            .input(InputCommandMessage::default())
             .run(get_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
+                result: Some(get_eager_state_command_message::Result::Value(
+                    Bytes::from_static(b"Francesco").into()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -579,21 +468,20 @@ mod eager {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
+            .input(InputCommandMessage::default())
             .run(get_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-        assert_eq!(
+        assert_that!(
             output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![1],
-            }
+            suspended_waiting_completion(1)
         );
         assert_eq!(output.next(), None);
     }
@@ -602,12 +490,16 @@ mod eager {
         let input = vm.sys_input().unwrap().input;
 
         let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
-        vm.notify_await_point(h1);
-        let h1_result = vm.take_async_result(h1);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+            assert_that!(
+                vm.take_notification(h1),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-        let get_result = match h1_result.unwrap().unwrap() {
+
+        let get_result = match vm.take_notification(h1).unwrap().unwrap() {
             Value::Void => {
                 panic!("Unexpected empty get state")
             }
@@ -627,12 +519,16 @@ mod eager {
         .unwrap();
 
         let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
-        vm.notify_await_point(h2);
-        let h2_result = vm.take_async_result(h2);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h2_result {
+
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h2]) {
+            assert_that!(
+                vm.take_notification(h2),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-        let second_get_result = match h2_result.unwrap().unwrap() {
+
+        let second_get_result = match vm.take_notification(h2).unwrap().unwrap() {
             Value::Void => {
                 panic!("Unexpected empty get state")
             }
@@ -665,48 +561,44 @@ mod eager {
                 key: "my-greeter".to_owned(),
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
+            .input(input_entry_message(b"Till"))
             .run(append_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
+                result: Some(get_eager_state_command_message::Result::Value(
+                    Bytes::from_static(b"Francesco").into()
+                )),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<SetStateEntryMessage>().unwrap(),
-            SetStateEntryMessage {
+            output.next_decoded::<SetStateCommandMessage>().unwrap(),
+            SetStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                value: Bytes::from_static(b"FrancescoTill"),
+                value: Some(Bytes::from_static(b"FrancescoTill").into()),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Value(Bytes::from_static(
-                    b"FrancescoTill"
-                ))),
+                result: Some(get_eager_state_command_message::Result::Value(
+                    Bytes::from_static(b"FrancescoTill").into()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"FrancescoTill"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"FrancescoTill")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -725,51 +617,48 @@ mod eager {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"Francesco",
-                ))),
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    get_lazy_state_completion_notification_message::Result::Value(
+                        Bytes::from_static(b"Francesco").into(),
+                    ),
+                ),
             })
             .run(append_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<SetStateEntryMessage>().unwrap(),
-            SetStateEntryMessage {
+            output.next_decoded::<SetStateCommandMessage>().unwrap(),
+            SetStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                value: Bytes::from_static(b"FrancescoTill"),
+                value: Some(Bytes::from_static(b"FrancescoTill").into()),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Value(Bytes::from_static(
-                    b"FrancescoTill"
-                ))),
+                result: Some(get_eager_state_command_message::Result::Value(
+                    Bytes::from_static(b"FrancescoTill").into()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"FrancescoTill"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"FrancescoTill")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -782,33 +671,34 @@ mod eager {
         vm.sys_input().unwrap();
 
         let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
-        vm.notify_await_point(h1);
-        let h1_result = vm.take_async_result(h1);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+            assert_that!(
+                vm.take_notification(h1),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-        let first_get_result = match h1_result.unwrap().unwrap() {
+        let first_get_result = match vm.take_notification(h1).unwrap().unwrap() {
             Value::Void => {
                 panic!("Unexpected empty get state")
             }
             Value::Success(s) => s,
-            Value::Failure(f) => {
-                vm.sys_write_output(NonEmptyValue::Failure(f)).unwrap();
-                vm.sys_end().unwrap();
-                return;
-            }
             _ => panic!("Unexpected variants"),
         };
 
         vm.sys_state_clear("STATE".to_owned()).unwrap();
 
         let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
-        vm.notify_await_point(h2);
-        let h2_result = vm.take_async_result(h2);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h2_result {
+
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h2]) {
+            assert_that!(
+                vm.take_notification(h2),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-        let_assert!(Ok(Some(Value::Void)) = h2_result);
+        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         vm.sys_write_output(NonEmptyValue::Success(first_get_result))
             .unwrap();
@@ -830,45 +720,43 @@ mod eager {
                 key: "my-greeter".to_owned(),
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
+            .input(input_entry_message(b"Till"))
             .run(get_and_clear_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
+                result: Some(get_eager_state_command_message::Result::Value(
+                    Bytes::from_static(b"Francesco").into()
+                )),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<ClearStateEntryMessage>().unwrap(),
-            ClearStateEntryMessage {
+            output.next_decoded::<ClearStateCommandMessage>().unwrap(),
+            ClearStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -887,48 +775,47 @@ mod eager {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"Francesco",
-                ))),
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    get_lazy_state_completion_notification_message::Result::Value(
+                        Bytes::from_static(b"Francesco").into(),
+                    ),
+                ),
             })
             .run(get_and_clear_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
+                key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<ClearStateCommandMessage>().unwrap(),
+            ClearStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<ClearStateEntryMessage>().unwrap(),
-            ClearStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
-                key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
-                ..Default::default()
-            }
-        );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -941,33 +828,31 @@ mod eager {
         vm.sys_input().unwrap();
 
         let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
-        vm.notify_await_point(h1);
-        let h1_result = vm.take_async_result(h1);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+            assert_that!(
+                vm.take_notification(h1),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-        let first_get_result = match h1_result.unwrap().unwrap() {
+        let first_get_result = match vm.take_notification(h1).unwrap().unwrap() {
             Value::Void => {
                 panic!("Unexpected empty get state")
             }
             Value::Success(s) => s,
-            Value::Failure(f) => {
-                vm.sys_write_output(NonEmptyValue::Failure(f)).unwrap();
-                vm.sys_end().unwrap();
-                return;
-            }
             _ => panic!("Unexpected variants"),
         };
 
         vm.sys_state_clear_all().unwrap();
 
         let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
-        vm.notify_await_point(h2);
-        let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h2));
+        vm.do_progress(vec![h2]).unwrap();
+        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         let h3 = vm.sys_state_get("ANOTHER_STATE".to_owned()).unwrap();
-        vm.notify_await_point(h3);
-        let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h3));
+        vm.do_progress(vec![h3]).unwrap();
+        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h3));
 
         vm.sys_write_output(NonEmptyValue::Success(first_get_result))
             .unwrap();
@@ -995,50 +880,54 @@ mod eager {
                 key: "my-greeter".to_owned(),
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
+            .input(input_entry_message(b"Till"))
             .run(get_and_clear_all_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
+                result: Some(get_eager_state_command_message::Result::Value(
+                    Bytes::from_static(b"Francesco").into()
+                )),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<ClearAllStateEntryMessage>().unwrap(),
-            ClearAllStateEntryMessage::default()
+            output
+                .next_decoded::<ClearAllStateCommandMessage>()
+                .unwrap(),
+            ClearAllStateCommandMessage::default()
         );
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"ANOTHER_STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -1057,53 +946,58 @@ mod eager {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"Francesco",
-                ))),
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    get_lazy_state_completion_notification_message::Result::Value(
+                        Bytes::from_static(b"Francesco").into(),
+                    ),
+                ),
             })
             .run(get_and_clear_all_state_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<ClearAllStateEntryMessage>().unwrap(),
-            ClearAllStateEntryMessage::default()
+            output
+                .next_decoded::<ClearAllStateCommandMessage>()
+                .unwrap(),
+            ClearAllStateCommandMessage::default()
         );
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"ANOTHER_STATE"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"Francesco"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"Francesco")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -1116,12 +1010,12 @@ mod eager {
         vm.sys_input().unwrap();
 
         let h1 = vm.sys_state_get("key-0".to_owned()).unwrap();
-        vm.notify_await_point(h1);
-        let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h1));
+        vm.do_progress(vec![h1]).unwrap();
+        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h1));
 
         let h2 = vm.sys_state_get("key-0".to_owned()).unwrap();
-        vm.notify_await_point(h2);
-        let_assert!(Ok(Some(Value::Void)) = vm.take_async_result(h2));
+        vm.do_progress(vec![h2]).unwrap();
+        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
             .unwrap();
@@ -1137,31 +1031,36 @@ mod eager {
                 known_entries: 1,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
+            .input(InputCommandMessage::default())
             .run(consecutive_get_with_empty_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"key-0"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"key-0"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(b""))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -1179,28 +1078,31 @@ mod eager {
                 known_entries: 2,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(GetStateEntryMessage {
+            .input(InputCommandMessage::default())
+            .input(GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"key-0"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default(),
+                )),
                 ..Default::default()
             })
             .run(consecutive_get_with_empty_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateEntryMessage>().unwrap(),
-            GetStateEntryMessage {
+            output
+                .next_decoded::<GetEagerStateCommandMessage>()
+                .unwrap(),
+            GetEagerStateCommandMessage {
                 key: Bytes::from_static(b"key-0"),
-                result: Some(get_state_entry_message::Result::Empty(Empty::default())),
+                result: Some(get_eager_state_command_message::Result::Void(
+                    Default::default()
+                )),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(b""))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -1213,9 +1115,9 @@ mod eager {
 mod state_keys {
     use super::*;
 
-    use crate::service_protocol::messages::get_state_keys_entry_message::StateKeys;
+    use crate::service_protocol::messages::StateKeys;
+    use crate::tests::{input_entry_message, is_output_with_success, suspended_waiting_completion};
     use googletest::prelude::*;
-    use prost::Message;
     use test_log::test;
 
     fn get_state_keys_handler(vm: &mut CoreVM) {
@@ -1223,14 +1125,14 @@ mod state_keys {
 
         let h1 = vm.sys_state_get_keys().unwrap();
 
-        vm.notify_await_point(h1);
-        let h1_result = vm.take_async_result(h1);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+            assert_that!(
+                vm.take_notification(h1),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-
-        let output = match h1_result.unwrap().unwrap() {
-            Value::Failure(f) => NonEmptyValue::Failure(f),
+        let output = match vm.take_notification(h1).unwrap().unwrap() {
             Value::StateKeys(keys) => NonEmptyValue::Success(Bytes::from(keys.join(","))),
             _ => panic!("Unexpected variants"),
         };
@@ -1249,29 +1151,21 @@ mod state_keys {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(GetStateKeysEntryMessage {
-                result: Some(get_state_keys_entry_message::Result::Value(StateKeys {
+            .input(input_entry_message(b"Till"))
+            .input(GetEagerStateKeysCommandMessage {
+                value: Some(StateKeys {
                     keys: vec![
-                        Bytes::from_static(b"MY-STATE"),
                         Bytes::from_static(b"ANOTHER-STATE"),
+                        Bytes::from_static(b"MY-STATE"),
                     ],
-                })),
+                }),
                 ..Default::default()
             })
             .run(get_state_keys_handler);
 
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"ANOTHER-STATE,MY-STATE"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"ANOTHER-STATE,MY-STATE")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -1279,6 +1173,7 @@ mod state_keys {
         );
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn new_entry() {
         let mut output = VMTestCase::new()
@@ -1289,35 +1184,34 @@ mod state_keys {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
+            .input(input_entry_message(b"Till"))
             .run(get_state_keys_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateKeysEntryMessage>().unwrap(),
-            GetStateKeysEntryMessage::default()
-        );
-        assert_eq!(
-            output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![1],
+            output
+                .next_decoded::<GetLazyStateKeysCommandMessage>()
+                .unwrap(),
+            GetLazyStateKeysCommandMessage {
+                result_completion_id: 1,
+                ..Default::default()
             }
+        );
+        assert_that!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            suspended_waiting_completion(1)
         );
 
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn new_entry_completed_later() {
-        let state_keys: Bytes = StateKeys {
+        let state_keys = StateKeys {
             keys: vec![
                 Bytes::from_static(b"MY-STATE"),
                 Bytes::from_static(b"ANOTHER-STATE"),
             ],
-        }
-        .encode_to_vec()
-        .into();
+        };
         let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
@@ -1326,28 +1220,25 @@ mod state_keys {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(state_keys)),
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateKeysCompletionNotificationMessage {
+                completion_id: 1,
+                state_keys: Some(state_keys.clone()),
             })
             .run(get_state_keys_handler);
 
         assert_eq!(
-            output.next_decoded::<GetStateKeysEntryMessage>().unwrap(),
-            GetStateKeysEntryMessage::default()
-        );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"ANOTHER-STATE,MY-STATE"
-                ))),
+            output
+                .next_decoded::<GetLazyStateKeysCommandMessage>()
+                .unwrap(),
+            GetLazyStateKeysCommandMessage {
+                result_completion_id: 1,
                 ..Default::default()
             }
+        );
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"MY-STATE,ANOTHER-STATE")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -1355,16 +1246,15 @@ mod state_keys {
         );
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn entry_on_replay_completed_later() {
-        let state_keys: Bytes = StateKeys {
+        let state_keys = StateKeys {
             keys: vec![
                 Bytes::from_static(b"MY-STATE"),
                 Bytes::from_static(b"ANOTHER-STATE"),
             ],
-        }
-        .encode_to_vec()
-        .into();
+        };
         let mut output = VMTestCase::new()
             .input(StartMessage {
                 id: Bytes::from_static(b"abc"),
@@ -1373,25 +1263,20 @@ mod state_keys {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateKeysCommandMessage {
+                result_completion_id: 1,
                 ..Default::default()
             })
-            .input(GetStateKeysEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(state_keys)),
+            .input(GetLazyStateKeysCompletionNotificationMessage {
+                completion_id: 1,
+                state_keys: Some(state_keys.clone()),
             })
             .run(get_state_keys_handler);
 
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"ANOTHER-STATE,MY-STATE"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"MY-STATE,ANOTHER-STATE")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -1399,6 +1284,7 @@ mod state_keys {
         );
         assert_eq!(output.next(), None);
     }
+
     #[test]
     fn new_entry_completed_with_eager_state() {
         let mut output = VMTestCase::new()
@@ -1409,43 +1295,35 @@ mod state_keys {
                 partial_state: false,
                 state_map: vec![
                     StateEntry {
-                        key: Bytes::from_static(b"ANOTHER-STATE"),
-                        value: Bytes::from_static(b"Till"),
-                    },
-                    StateEntry {
                         key: Bytes::from_static(b"MY-STATE"),
                         value: Bytes::from_static(b"Francesco"),
+                    },
+                    StateEntry {
+                        key: Bytes::from_static(b"ANOTHER-STATE"),
+                        value: Bytes::from_static(b"Till"),
                     },
                 ],
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                value: Bytes::from_static(b"Till"),
-                ..Default::default()
-            })
+            .input(input_entry_message(b"Till"))
             .run(get_state_keys_handler);
 
         assert_that!(
-            output.next_decoded::<GetStateKeysEntryMessage>().unwrap(),
-            pat!(GetStateKeysEntryMessage {
-                result: some(pat!(get_state_keys_entry_message::Result::Value(pat!(
-                    StateKeys {
-                        keys: unordered_elements_are!(
-                            eq(Bytes::from_static(b"ANOTHER-STATE")),
-                            eq(Bytes::from_static(b"MY-STATE"))
-                        )
-                    }
-                ))))
+            output
+                .next_decoded::<GetEagerStateKeysCommandMessage>()
+                .unwrap(),
+            pat!(GetEagerStateKeysCommandMessage {
+                value: some(pat!(StateKeys {
+                    keys: eq(vec![
+                        Bytes::from_static(b"ANOTHER-STATE"),
+                        Bytes::from_static(b"MY-STATE")
+                    ])
+                }))
             })
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"ANOTHER-STATE,MY-STATE"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"ANOTHER-STATE,MY-STATE")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),

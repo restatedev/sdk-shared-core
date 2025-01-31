@@ -1,8 +1,6 @@
 use super::*;
 
-use crate::service_protocol::messages::{
-    output_entry_message, EndMessage, InputEntryMessage, OutputEntryMessage, StartMessage,
-};
+use crate::service_protocol::messages::{EndMessage, OutputCommandMessage, StartMessage};
 use assert2::let_assert;
 use test_log::test;
 
@@ -23,21 +21,12 @@ fn echo() {
             known_entries: 1,
             ..Default::default()
         })
-        .input(InputEntryMessage {
-            headers: vec![],
-            value: Bytes::from_static(b"my-data"),
-            ..InputEntryMessage::default()
-        })
+        .input(input_entry_message(b"my-data"))
         .run(echo_handler);
 
-    assert_eq!(
-        output.next_decoded::<OutputEntryMessage>().unwrap(),
-        OutputEntryMessage {
-            result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                b"my-data"
-            ))),
-            ..OutputEntryMessage::default()
-        }
+    assert_that!(
+        output.next_decoded::<OutputCommandMessage>().unwrap(),
+        is_output_with_success(b"my-data")
     );
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),
@@ -55,13 +44,13 @@ fn headers() {
             known_entries: 1,
             ..Default::default()
         })
-        .input(InputEntryMessage {
+        .input(InputCommandMessage {
             headers: vec![service_protocol::messages::Header {
                 key: "x-my-header".to_owned(),
                 value: "my-value".to_owned(),
             }],
-            value: Bytes::from_static(b"other-value"),
-            ..InputEntryMessage::default()
+            value: Some(Bytes::from_static(b"other-value").into()),
+            ..InputCommandMessage::default()
         })
         .run(|vm| {
             let_assert!(Input { headers, .. } = vm.sys_input().unwrap());
@@ -79,12 +68,9 @@ fn headers() {
             vm.sys_end().unwrap();
         });
 
-    assert_eq!(
-        output.next_decoded::<OutputEntryMessage>().unwrap(),
-        OutputEntryMessage {
-            result: Some(output_entry_message::Result::Value(Bytes::default())),
-            ..OutputEntryMessage::default()
-        }
+    assert_that!(
+        output.next_decoded::<OutputCommandMessage>().unwrap(),
+        is_output_with_success("")
     );
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),
@@ -102,16 +88,12 @@ fn replay_output_too() {
             known_entries: 2,
             ..Default::default()
         })
-        .input(InputEntryMessage {
-            headers: vec![],
-            value: Bytes::from_static(b"my-data"),
-            ..InputEntryMessage::default()
-        })
-        .input(OutputEntryMessage {
-            result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                b"my-data",
-            ))),
-            ..OutputEntryMessage::default()
+        .input(input_entry_message(b"my-data"))
+        .input(OutputCommandMessage {
+            result: Some(output_command_message::Result::Value(
+                Bytes::from_static(b"my-data").into(),
+            )),
+            ..OutputCommandMessage::default()
         })
         .run(echo_handler);
 

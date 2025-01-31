@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::service_protocol::messages::{Failure, *};
+use crate::Value;
 
 mod get_promise {
     use super::*;
@@ -11,13 +12,15 @@ mod get_promise {
         vm.sys_input().unwrap();
 
         let h1 = vm.sys_get_promise("my-prom".to_owned()).unwrap();
-        vm.notify_await_point(h1);
-        let h1_result = vm.take_async_result(h1);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+            assert_that!(
+                vm.take_notification(h1),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-
-        let output = match h1_result.unwrap().expect("Should be ready") {
+        let output = match vm.take_notification(h1).unwrap().expect("Should be ready") {
             Value::Void => {
                 panic!("Got void result, unexpected for get promise")
             }
@@ -40,31 +43,26 @@ mod get_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"\"my value\"",
-                ))),
+            .input(InputCommandMessage::default())
+            .input(GetPromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(get_promise_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"\"my value\"").into(),
+                )),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<GetPromiseEntryMessage>().unwrap(),
-            GetPromiseEntryMessage {
+            output.next_decoded::<GetPromiseCommandMessage>().unwrap(),
+            GetPromiseCommandMessage {
                 key: "my-prom".to_owned(),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"\"my value\""
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"\"my value\"")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -82,34 +80,30 @@ mod get_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Failure(Failure {
-                    code: 500,
-                    message: "myerror".to_owned(),
-                })),
+            .input(InputCommandMessage::default())
+            .input(GetPromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    get_promise_completion_notification_message::Result::Failure(Failure {
+                        code: 500,
+                        message: "myerror".to_owned(),
+                    }),
+                ),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<GetPromiseEntryMessage>().unwrap(),
-            GetPromiseEntryMessage {
+            output.next_decoded::<GetPromiseCommandMessage>().unwrap(),
+            GetPromiseCommandMessage {
                 key: "my-prom".to_owned(),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Failure(Failure {
-                    code: 500,
-                    message: "myerror".to_owned(),
-                })),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_failure(500, "myerror")
         );
-
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
             EndMessage::default()
@@ -127,13 +121,15 @@ mod peek_promise {
         vm.sys_input().unwrap();
 
         let h1 = vm.sys_peek_promise("my-prom".to_owned()).unwrap();
-        vm.notify_await_point(h1);
-        let h1_result = vm.take_async_result(h1);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+
+        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+            assert_that!(
+                vm.take_notification(h1),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-
-        let output = match h1_result.unwrap().expect("Should be ready") {
+        let output = match vm.take_notification(h1).unwrap().expect("Should be ready") {
             Value::Void => NonEmptyValue::Success("null".into()),
             Value::Success(s) => NonEmptyValue::Success(s),
             Value::Failure(f) => NonEmptyValue::Failure(f),
@@ -154,30 +150,26 @@ mod peek_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"\"my value\"",
-                ))),
+            .input(InputCommandMessage::default())
+            .input(PeekPromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(peek_promise_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"\"my value\"").into(),
+                )),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<PeekPromiseEntryMessage>().unwrap(),
-            PeekPromiseEntryMessage {
+            output.next_decoded::<PeekPromiseCommandMessage>().unwrap(),
+            PeekPromiseCommandMessage {
                 key: "my-prom".to_owned(),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"\"my value\""
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"\"my value\"")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -196,32 +188,29 @@ mod peek_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Failure(Failure {
-                    code: 500,
-                    message: "myerror".to_owned(),
-                })),
+            .input(InputCommandMessage::default())
+            .input(PeekPromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    peek_promise_completion_notification_message::Result::Failure(Failure {
+                        code: 500,
+                        message: "myerror".to_owned(),
+                    }),
+                ),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<PeekPromiseEntryMessage>().unwrap(),
-            PeekPromiseEntryMessage {
+            output.next_decoded::<PeekPromiseCommandMessage>().unwrap(),
+            PeekPromiseCommandMessage {
                 key: "my-prom".to_owned(),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Failure(Failure {
-                    code: 500,
-                    message: "myerror".to_owned(),
-                })),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_failure(500, "myerror")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -240,28 +229,26 @@ mod peek_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Empty(Empty::default())),
+            .input(InputCommandMessage::default())
+            .input(PeekPromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(peek_promise_completion_notification_message::Result::Void(
+                    Default::default(),
+                )),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<PeekPromiseEntryMessage>().unwrap(),
-            PeekPromiseEntryMessage {
+            output.next_decoded::<PeekPromiseCommandMessage>().unwrap(),
+            PeekPromiseCommandMessage {
                 key: "my-prom".to_owned(),
+                result_completion_id: 1,
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"null"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"null")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -286,13 +273,15 @@ mod complete_promise {
             let h1 = vm
                 .sys_complete_promise("my-prom".to_owned(), result)
                 .unwrap();
-            vm.notify_await_point(h1);
-            let h1_result = vm.take_async_result(h1);
-            if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+
+            if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+                assert_that!(
+                    vm.take_notification(h1),
+                    err(pat!(SuspendedOrVMError::Suspended(_)))
+                );
                 return;
             }
-
-            let output = match h1_result.unwrap().expect("Should be ready") {
+            let output = match vm.take_notification(h1).unwrap().expect("Should be ready") {
                 Value::Void => RESOLVED,
                 Value::Success(_) => panic!("Unexpected success completion"),
                 Value::Failure(_) => REJECTED,
@@ -314,10 +303,14 @@ mod complete_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Empty(Empty::default())),
+            .input(InputCommandMessage::default())
+            .input(CompletePromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    complete_promise_completion_notification_message::Result::Void(
+                        Default::default(),
+                    ),
+                ),
             })
             .run(handler(NonEmptyValue::Success(Bytes::from_static(
                 b"my val",
@@ -325,22 +318,22 @@ mod complete_promise {
 
         assert_eq!(
             output
-                .next_decoded::<CompletePromiseEntryMessage>()
+                .next_decoded::<CompletePromiseCommandMessage>()
                 .unwrap(),
-            CompletePromiseEntryMessage {
+            CompletePromiseCommandMessage {
                 key: "my-prom".to_owned(),
-                completion: Some(complete_promise_entry_message::Completion::CompletionValue(
-                    Bytes::from_static(b"my val")
-                )),
+                result_completion_id: 1,
+                completion: Some(
+                    complete_promise_command_message::Completion::CompletionValue(
+                        Bytes::from_static(b"my val").into()
+                    )
+                ),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(RESOLVED)),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(RESOLVED)
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -359,13 +352,15 @@ mod complete_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Failure(Failure {
-                    code: 500,
-                    message: "cannot write promise".to_owned(),
-                })),
+            .input(InputCommandMessage::default())
+            .input(CompletePromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    complete_promise_completion_notification_message::Result::Failure(Failure {
+                        code: 500,
+                        message: "cannot write promise".to_owned(),
+                    }),
+                ),
             })
             .run(handler(NonEmptyValue::Success(Bytes::from_static(
                 b"my val",
@@ -373,22 +368,22 @@ mod complete_promise {
 
         assert_eq!(
             output
-                .next_decoded::<CompletePromiseEntryMessage>()
+                .next_decoded::<CompletePromiseCommandMessage>()
                 .unwrap(),
-            CompletePromiseEntryMessage {
+            CompletePromiseCommandMessage {
                 key: "my-prom".to_owned(),
-                completion: Some(complete_promise_entry_message::Completion::CompletionValue(
-                    Bytes::from_static(b"my val")
-                )),
+                result_completion_id: 1,
+                completion: Some(
+                    complete_promise_command_message::Completion::CompletionValue(
+                        Bytes::from_static(b"my val").into()
+                    )
+                ),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(REJECTED)),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(REJECTED)
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -407,10 +402,14 @@ mod complete_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Empty(Empty::default())),
+            .input(InputCommandMessage::default())
+            .input(CompletePromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    complete_promise_completion_notification_message::Result::Void(
+                        Default::default(),
+                    ),
+                ),
             })
             .run(handler(NonEmptyValue::Failure(TerminalFailure {
                 code: 500,
@@ -419,12 +418,13 @@ mod complete_promise {
 
         assert_eq!(
             output
-                .next_decoded::<CompletePromiseEntryMessage>()
+                .next_decoded::<CompletePromiseCommandMessage>()
                 .unwrap(),
-            CompletePromiseEntryMessage {
+            CompletePromiseCommandMessage {
                 key: "my-prom".to_owned(),
+                result_completion_id: 1,
                 completion: Some(
-                    complete_promise_entry_message::Completion::CompletionFailure(Failure {
+                    complete_promise_command_message::Completion::CompletionFailure(Failure {
                         code: 500,
                         message: "my failure".to_owned(),
                     })
@@ -432,12 +432,9 @@ mod complete_promise {
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(RESOLVED)),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(RESOLVED)
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -456,13 +453,15 @@ mod complete_promise {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Failure(Failure {
-                    code: 500,
-                    message: "cannot write promise".to_owned(),
-                })),
+            .input(InputCommandMessage::default())
+            .input(CompletePromiseCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    complete_promise_completion_notification_message::Result::Failure(Failure {
+                        code: 500,
+                        message: "cannot write promise".to_owned(),
+                    }),
+                ),
             })
             .run(handler(NonEmptyValue::Failure(TerminalFailure {
                 code: 500,
@@ -471,12 +470,13 @@ mod complete_promise {
 
         assert_eq!(
             output
-                .next_decoded::<CompletePromiseEntryMessage>()
+                .next_decoded::<CompletePromiseCommandMessage>()
                 .unwrap(),
-            CompletePromiseEntryMessage {
+            CompletePromiseCommandMessage {
                 key: "my-prom".to_owned(),
+                result_completion_id: 1,
                 completion: Some(
-                    complete_promise_entry_message::Completion::CompletionFailure(Failure {
+                    complete_promise_command_message::Completion::CompletionFailure(Failure {
                         code: 500,
                         message: "my failure".to_owned(),
                     })
@@ -484,12 +484,9 @@ mod complete_promise {
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(REJECTED)),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(REJECTED)
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),

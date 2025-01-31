@@ -1,13 +1,13 @@
-use crate::service_protocol::messages::{
-    completion_message, CompletionParsingHint, EntryMessage, RestateMessage,
-    WriteableRestateMessage,
+use crate::service_protocol::messages::{NamedCommandMessage, RestateMessage};
+use crate::service_protocol::{
+    Encoder, MessageType, Notification, NotificationId, NotificationResult, Version,
 };
-use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{AsyncResultHandle, AsyncResultState, EntryRetryInfo, Error, VMOptions, Value};
+use crate::{EntryRetryInfo, NotificationHandle, VMOptions, CANCEL_NOTIFICATION_HANDLE};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
+use tracing::instrument;
 
 #[derive(Clone, Debug)]
 pub(crate) struct StartInfo {
@@ -20,31 +20,56 @@ pub(crate) struct StartInfo {
 }
 
 pub(crate) struct Journal {
-    index: Option<u32>,
+    command_index: Option<u32>,
+    notification_index: Option<u32>,
+    completion_index: u32,
+    signal_index: u32,
     pub(crate) current_entry_ty: MessageType,
     pub(crate) current_entry_name: String,
 }
 
 impl Journal {
-    pub(crate) fn transition<M: EntryMessage + RestateMessage>(&mut self, expected: &M) {
-        self.index = Some(self.index.take().map(|i| i + 1).unwrap_or(0));
+    pub(crate) fn transition<M: NamedCommandMessage + RestateMessage>(&mut self, expected: &M) {
+        if M::ty().is_notification() {
+            self.notification_index =
+                Some(self.notification_index.take().map(|i| i + 1).unwrap_or(0));
+        } else if M::ty().is_command() {
+            self.command_index = Some(self.command_index.take().map(|i| i + 1).unwrap_or(0));
+        }
         self.current_entry_name = expected.name();
         self.current_entry_ty = M::ty();
     }
 
-    pub(crate) fn index(&self) -> i64 {
-        self.index.map(|u| u as i64).unwrap_or(-1)
+    pub(crate) fn command_index(&self) -> i64 {
+        self.command_index.map(|u| u as i64).unwrap_or(-1)
     }
 
-    pub(crate) fn expect_index(&self) -> u32 {
-        self.index.expect("index was initialized")
+    pub(crate) fn notification_index(&self) -> i64 {
+        self.notification_index.map(|u| u as i64).unwrap_or(-1)
+    }
+
+    pub(crate) fn next_completion_notification_id(&mut self) -> u32 {
+        let next = self.completion_index;
+        self.completion_index += 1;
+        next
+    }
+
+    pub(crate) fn next_signal_notification_id(&mut self) -> u32 {
+        let next = self.signal_index;
+        self.signal_index += 1;
+        next
     }
 }
 
 impl Default for Journal {
     fn default() -> Self {
         Journal {
-            index: None,
+            command_index: None,
+            notification_index: None,
+            // Clever trick for protobuf here
+            completion_index: 1,
+            // 1 to 16 are reserved!
+            signal_index: 17,
             current_entry_ty: MessageType::Start,
             current_entry_name: "".to_string(),
         }
@@ -66,7 +91,7 @@ impl Output {
         }
     }
 
-    pub(crate) fn send<M: WriteableRestateMessage>(&mut self, msg: &M) {
+    pub(crate) fn send<M: RestateMessage>(&mut self, msg: &M) {
         if !self.is_closed {
             self.buffer.push(self.encoder.encode(msg))
         }
@@ -82,143 +107,168 @@ impl Output {
 }
 
 #[derive(Debug)]
-enum UnparsedCompletionOrParsingHint {
-    UnparsedCompletion(completion_message::Result),
-    ParsingHint(CompletionParsingHint),
+pub(crate) struct AsyncResultsState {
+    to_process: VecDeque<Notification>,
+    ready: HashMap<NotificationId, NotificationResult>,
+
+    handle_mapping: HashMap<NotificationHandle, NotificationId>,
+    next_notification_handle: NotificationHandle,
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct AsyncResultsState {
-    unparsed_completions_or_parsing_hints: HashMap<u32, UnparsedCompletionOrParsingHint>,
-    ready_results: HashMap<u32, Value>,
-    last_acked_entry: u32,
-    waiting_ack_results: VecDeque<(u32, Value)>,
+impl Default for AsyncResultsState {
+    fn default() -> Self {
+        Self {
+            to_process: Default::default(),
+            ready: Default::default(),
+
+            // First 15 are reserved for built-in signals!
+            handle_mapping: HashMap::from([(
+                CANCEL_NOTIFICATION_HANDLE,
+                NotificationId::SignalId(1),
+            )]),
+            next_notification_handle: NotificationHandle(17),
+        }
+    }
 }
 
 impl AsyncResultsState {
-    pub(crate) fn has_ready_result(&self, index: u32) -> bool {
-        self.ready_results.contains_key(&index)
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.journal.notification.id = ?notification.id,
+        ),
+        ret
+    )]
+    pub(crate) fn enqueue(&mut self, notification: Notification) {
+        self.to_process.push_back(notification);
     }
 
-    pub(crate) fn take_ready_result(&mut self, index: u32) -> Option<Value> {
-        self.ready_results.remove(&index)
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.journal.notification.id = ?notification.id,
+        ),
+        ret
+    )]
+    pub(crate) fn insert_ready(&mut self, notification: Notification) {
+        self.ready.insert(notification.id, notification.result);
     }
 
-    pub(crate) fn insert_completion_parsing_hint(
+    pub(crate) fn create_handle_mapping(
         &mut self,
-        index: u32,
-        completion_parsing_hint: CompletionParsingHint,
-    ) -> Result<(), Error> {
-        if let Some(unparsed_completion_or_parsing_hint) =
-            self.unparsed_completions_or_parsing_hints.remove(&index)
-        {
-            match unparsed_completion_or_parsing_hint {
-                UnparsedCompletionOrParsingHint::UnparsedCompletion(result) => {
-                    self.ready_results
-                        .insert(index, completion_parsing_hint.parse(result)?);
-                }
-                UnparsedCompletionOrParsingHint::ParsingHint(_) => {
-                    panic!("Unexpected double call to insert_completion_parsing_hint for entry {index}")
-                }
+        notification_id: NotificationId,
+    ) -> NotificationHandle {
+        let assigned_handle = self.next_notification_handle;
+        self.next_notification_handle.0 += 1;
+        self.handle_mapping.insert(assigned_handle, notification_id);
+        assigned_handle
+    }
+
+    #[instrument(level = "trace", skip(self), ret)]
+    pub(crate) fn process_next_until_any_found(&mut self, ids: &HashSet<NotificationId>) -> bool {
+        while let Some(notif) = self.to_process.pop_front() {
+            let any_found = ids.contains(&notif.id);
+            self.ready.insert(notif.id, notif.result);
+            if any_found {
+                return true;
             }
-        } else {
-            self.unparsed_completions_or_parsing_hints.insert(
-                index,
-                UnparsedCompletionOrParsingHint::ParsingHint(completion_parsing_hint),
-            );
         }
-        Ok(())
+        false
     }
 
-    pub(crate) fn insert_unparsed_completion(
-        &mut self,
-        index: u32,
-        result: completion_message::Result,
-    ) -> Result<(), Error> {
-        if let Some(unparsed_completion_or_parsing_hint) =
-            self.unparsed_completions_or_parsing_hints.remove(&index)
-        {
-            match unparsed_completion_or_parsing_hint {
-                UnparsedCompletionOrParsingHint::UnparsedCompletion(_) => {
-                    panic!("Unexpected double call to insert_unparsed_completion for entry {index}")
-                }
-                UnparsedCompletionOrParsingHint::ParsingHint(completion_parsing_hint) => {
-                    self.ready_results
-                        .insert(index, completion_parsing_hint.parse(result)?);
-                }
-            }
-        } else {
-            self.unparsed_completions_or_parsing_hints.insert(
-                index,
-                UnparsedCompletionOrParsingHint::UnparsedCompletion(result),
-            );
-        }
-        Ok(())
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.shared_core.notification.handle = ?handle,
+        ),
+        ret
+    )]
+    pub(crate) fn is_handle_completed(&self, handle: NotificationHandle) -> bool {
+        self.handle_mapping
+            .get(&handle)
+            .is_some_and(|id| self.ready.contains_key(id))
     }
 
-    pub(crate) fn insert_ready_result(&mut self, index: u32, value: Value) {
-        self.ready_results.insert(index, value);
+    pub(crate) fn non_deterministic_find_id(&self, id: &NotificationId) -> bool {
+        if self.ready.contains_key(id) {
+            return true;
+        }
+        self.to_process.iter().any(|notif| notif.id == *id)
     }
 
-    pub(crate) fn insert_waiting_ack_result(&mut self, index: u32, value: Value) {
-        if index <= self.last_acked_entry {
-            self.ready_results.insert(index, value);
-        } else {
-            self.waiting_ack_results.push_back((index, value));
-        }
-    }
-
-    pub(crate) fn notify_ack(&mut self, ack: u32) {
-        if ack <= self.last_acked_entry {
-            return;
-        }
-        self.last_acked_entry = ack;
-
-        while let Some((idx, _)) = self.waiting_ack_results.front() {
-            if *idx > self.last_acked_entry {
-                return;
-            }
-            let (idx, value) = self.waiting_ack_results.pop_front().unwrap();
-            self.ready_results.insert(idx, value);
-        }
-    }
-
-    pub(crate) fn get_ready_results_state(&self) -> HashMap<AsyncResultHandle, AsyncResultState> {
-        self.ready_results
-            .iter()
-            .map(|(idx, val)| {
-                (
-                    AsyncResultHandle(*idx),
-                    match val {
-                        Value::Void
-                        | Value::Success(_)
-                        | Value::StateKeys(_)
-                        | Value::InvocationId(_)
-                        | Value::CombinatorResult(_) => AsyncResultState::Success,
-                        Value::Failure(_) => AsyncResultState::Failure,
-                    },
-                )
-            })
+    pub(crate) fn resolve_notification_handles(
+        &self,
+        handles: Vec<NotificationHandle>,
+    ) -> HashSet<NotificationId> {
+        handles
+            .into_iter()
+            .filter_map(|h| self.handle_mapping.get(&h).cloned())
             .collect()
+    }
+
+    pub(crate) fn must_resolve_notification_handle(
+        &self,
+        handle: &NotificationHandle,
+    ) -> NotificationId {
+        self.handle_mapping
+            .get(handle)
+            .expect("If there is an handle, there must be a corresponding id")
+            .clone()
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.shared_core.notification.handle = ?handle,
+        ),
+        ret
+    )]
+    pub(crate) fn take_handle(&mut self, handle: NotificationHandle) -> Option<NotificationResult> {
+        let id = self.handle_mapping.get(&handle)?;
+        if let Some(res) = self.ready.remove(id) {
+            self.handle_mapping.remove(&handle);
+            Some(res)
+        } else {
+            None
+        }
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum RunState {
-    Running(String),
-    NotRunning,
+#[derive(Debug, Default)]
+pub(crate) struct RunState {
+    to_execute: HashSet<NotificationHandle>,
+    executing: HashSet<NotificationHandle>,
 }
 
 impl RunState {
-    pub(crate) fn is_running(&self) -> bool {
-        matches!(self, RunState::Running(_))
+    pub fn insert_run_to_execute(&mut self, handle: NotificationHandle) {
+        self.to_execute.insert(handle);
     }
 
-    pub(crate) fn name(&self) -> Option<&str> {
-        match self {
-            RunState::Running(n) => Some(n),
-            RunState::NotRunning => None,
+    pub fn try_execute_run(
+        &mut self,
+        any_handle: &HashSet<NotificationHandle>,
+    ) -> Option<NotificationHandle> {
+        if let Some(runnable) = self.to_execute.intersection(any_handle).next() {
+            let runnable = *runnable;
+            self.to_execute.remove(&runnable);
+            self.executing.insert(runnable);
+            return Some(runnable);
         }
+        None
+    }
+
+    pub fn any_executing(&self, any_handle: &[NotificationHandle]) -> bool {
+        any_handle.iter().any(|h| self.executing.contains(h))
+    }
+
+    pub fn notify_executed(&mut self, executed: NotificationHandle) {
+        self.to_execute.remove(&executed);
+        self.executing.remove(&executed);
     }
 }
 
@@ -281,7 +331,9 @@ impl EagerState {
         if self.is_partial {
             EagerGetStateKeys::Unknown
         } else {
-            EagerGetStateKeys::Keys(self.values.keys().cloned().collect())
+            let mut keys: Vec<_> = self.values.keys().cloned().collect();
+            keys.sort();
+            EagerGetStateKeys::Keys(keys)
         }
     }
 
@@ -313,6 +365,7 @@ pub(crate) struct Context {
     // Used by the error handler to set ErrorMessage.next_retry_delay
     pub(crate) next_retry_delay: Option<Duration>,
 
+    #[allow(unused)]
     pub(crate) options: VMOptions,
 }
 
@@ -327,25 +380,21 @@ impl Context {
 
     pub(crate) fn infer_entry_retry_info(&self) -> EntryRetryInfo {
         let start_info = self.expect_start_info();
-        if self.journal.expect_index() == start_info.entries_to_replay {
-            // This is the first entry we try to commit after replay.
-            //  ONLY in this case we re-use the StartInfo!
-            let retry_count = start_info.retry_count_since_last_stored_entry;
-            let retry_loop_duration = if start_info.retry_count_since_last_stored_entry == 0 {
-                // When the retry count is == 0, the duration_since_last_stored_entry might not be zero.
-                //
-                // In fact, in that case the duration is the interval between the previously stored entry and the time to start/resume the invocation.
-                // For the sake of entry retries though, we're not interested in that time elapsed, so we 0 it here for simplicity of the downstream consumer (the retry policy).
-                Duration::ZERO
-            } else {
-                Duration::from_millis(start_info.duration_since_last_stored_entry)
-            };
-            EntryRetryInfo {
-                retry_count,
-                retry_loop_duration,
-            }
+        // This is the first entry we try to commit after replay.
+        //  ONLY in this case we re-use the StartInfo!
+        let retry_count = start_info.retry_count_since_last_stored_entry;
+        let retry_loop_duration = if start_info.retry_count_since_last_stored_entry == 0 {
+            // When the retry count is == 0, the duration_since_last_stored_entry might not be zero.
+            //
+            // In fact, in that case the duration is the interval between the previously stored entry and the time to start/resume the invocation.
+            // For the sake of entry retries though, we're not interested in that time elapsed, so we 0 it here for simplicity of the downstream consumer (the retry policy).
+            Duration::ZERO
         } else {
-            EntryRetryInfo::default()
+            Duration::from_millis(start_info.duration_since_last_stored_entry)
+        };
+        EntryRetryInfo {
+            retry_count,
+            retry_loop_duration,
         }
     }
 }

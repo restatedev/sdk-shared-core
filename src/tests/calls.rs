@@ -1,6 +1,9 @@
 use super::*;
 
+use crate::service_protocol::messages::send_signal_command_message::SignalId;
 use crate::service_protocol::messages::*;
+use crate::service_protocol::CANCEL_SIGNAL_ID;
+use crate::Value;
 use assert2::let_assert;
 use googletest::prelude::*;
 use test_log::test;
@@ -10,11 +13,9 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
     let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
-        .input(CompletionMessage {
-            entry_index: 2,
-            result: Some(completion_message::Result::Value(Bytes::from_static(
-                b"my-id",
-            ))),
+        .input(CallInvocationIdCompletionNotificationMessage {
+            completion_id: 1,
+            invocation_id: "my-id".to_string(),
         })
         .run(|vm| {
             vm.sys_input().unwrap();
@@ -32,57 +33,37 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
                 )
                 .unwrap();
 
-            let invocation_id_handle = vm
-                .sys_get_call_invocation_id(GetInvocationIdTarget::CallEntry(call_handle))
-                .unwrap();
-            vm.notify_await_point(invocation_id_handle);
+            assert_eq!(
+                vm.do_progress(vec![call_handle.invocation_id_notification_handle])
+                    .unwrap(),
+                DoProgressResponse::AnyCompleted
+            );
             let_assert!(
-                Some(Value::InvocationId(invocation_id)) =
-                    vm.take_async_result(invocation_id_handle).unwrap()
+                Some(Value::InvocationId(invocation_id)) = vm
+                    .take_notification(call_handle.invocation_id_notification_handle)
+                    .unwrap()
             );
             assert_eq!(invocation_id, "my-id");
 
-            vm.sys_cancel_invocation(CancelInvocationTarget::CallEntry(call_handle))
-                .unwrap();
-            vm.sys_cancel_invocation(CancelInvocationTarget::InvocationId(invocation_id.clone()))
-                .unwrap();
+            vm.sys_cancel_invocation(invocation_id).unwrap();
 
             vm.sys_end().unwrap();
         });
 
     assert_that!(
-        output.next_decoded::<CallEntryMessage>().unwrap(),
-        pat!(CallEntryMessage {
+        output.next_decoded::<CallCommandMessage>().unwrap(),
+        pat!(CallCommandMessage {
             service_name: eq("MySvc"),
-            handler_name: eq("MyHandler")
+            handler_name: eq("MyHandler"),
+            invocation_id_notification_idx: eq(1),
         })
     );
     assert_eq!(
-        output
-            .next_decoded::<GetCallInvocationIdEntryMessage>()
-            .unwrap(),
-        GetCallInvocationIdEntryMessage {
-            call_entry_index: 1,
-            ..Default::default()
-        }
-    );
-    assert_eq!(
-        output
-            .next_decoded::<CancelInvocationEntryMessage>()
-            .unwrap(),
-        CancelInvocationEntryMessage {
-            target: Some(cancel_invocation_entry_message::Target::CallEntryIndex(1)),
-            ..Default::default()
-        }
-    );
-    assert_eq!(
-        output
-            .next_decoded::<CancelInvocationEntryMessage>()
-            .unwrap(),
-        CancelInvocationEntryMessage {
-            target: Some(cancel_invocation_entry_message::Target::InvocationId(
-                "my-id".to_string()
-            )),
+        output.next_decoded::<SendSignalCommandMessage>().unwrap(),
+        SendSignalCommandMessage {
+            target_invocation_id: "my-id".to_string(),
+            signal_id: Some(SignalId::Idx(CANCEL_SIGNAL_ID)),
+            result: Some(send_signal_command_message::Result::Void(Default::default())),
             ..Default::default()
         }
     );
@@ -98,11 +79,9 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
     let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
-        .input(CompletionMessage {
-            entry_index: 2,
-            result: Some(completion_message::Result::Value(Bytes::from_static(
-                b"my-id",
-            ))),
+        .input(CallInvocationIdCompletionNotificationMessage {
+            completion_id: 1,
+            invocation_id: "my-id".to_string(),
         })
         .run(|vm| {
             vm.sys_input().unwrap();
@@ -121,57 +100,37 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
                 )
                 .unwrap();
 
-            let invocation_id_handle = vm
-                .sys_get_call_invocation_id(GetInvocationIdTarget::SendEntry(send_handle))
-                .unwrap();
-            vm.notify_await_point(invocation_id_handle);
+            assert_eq!(
+                vm.do_progress(vec![send_handle.invocation_id_notification_handle])
+                    .unwrap(),
+                DoProgressResponse::AnyCompleted
+            );
             let_assert!(
-                Some(Value::InvocationId(invocation_id)) =
-                    vm.take_async_result(invocation_id_handle).unwrap()
+                Some(Value::InvocationId(invocation_id)) = vm
+                    .take_notification(send_handle.invocation_id_notification_handle)
+                    .unwrap()
             );
             assert_eq!(invocation_id, "my-id");
 
-            vm.sys_cancel_invocation(CancelInvocationTarget::SendEntry(send_handle))
-                .unwrap();
-            vm.sys_cancel_invocation(CancelInvocationTarget::InvocationId(invocation_id.clone()))
-                .unwrap();
+            vm.sys_cancel_invocation(invocation_id).unwrap();
 
             vm.sys_end().unwrap();
         });
 
     assert_that!(
-        output.next_decoded::<OneWayCallEntryMessage>().unwrap(),
-        pat!(OneWayCallEntryMessage {
+        output.next_decoded::<OneWayCallCommandMessage>().unwrap(),
+        pat!(OneWayCallCommandMessage {
             service_name: eq("MySvc"),
-            handler_name: eq("MyHandler")
+            handler_name: eq("MyHandler"),
+            invocation_id_notification_idx: eq(1),
         })
     );
     assert_eq!(
-        output
-            .next_decoded::<GetCallInvocationIdEntryMessage>()
-            .unwrap(),
-        GetCallInvocationIdEntryMessage {
-            call_entry_index: 1,
-            ..Default::default()
-        }
-    );
-    assert_eq!(
-        output
-            .next_decoded::<CancelInvocationEntryMessage>()
-            .unwrap(),
-        CancelInvocationEntryMessage {
-            target: Some(cancel_invocation_entry_message::Target::CallEntryIndex(1)),
-            ..Default::default()
-        }
-    );
-    assert_eq!(
-        output
-            .next_decoded::<CancelInvocationEntryMessage>()
-            .unwrap(),
-        CancelInvocationEntryMessage {
-            target: Some(cancel_invocation_entry_message::Target::InvocationId(
-                "my-id".to_string()
-            )),
+        output.next_decoded::<SendSignalCommandMessage>().unwrap(),
+        SendSignalCommandMessage {
+            target_invocation_id: "my-id".to_string(),
+            signal_id: Some(SignalId::Idx(CANCEL_SIGNAL_ID)),
+            result: Some(send_signal_command_message::Result::Void(Default::default())),
             ..Default::default()
         }
     );

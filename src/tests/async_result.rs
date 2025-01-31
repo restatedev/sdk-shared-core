@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::service_protocol::messages::*;
+use crate::Value;
 use assert2::let_assert;
 
 use test_log::test;
@@ -24,7 +25,7 @@ fn dont_await_call() {
             known_entries: 1,
             ..Default::default()
         })
-        .input(InputEntryMessage::default())
+        .input(InputCommandMessage::default())
         .run(|vm| {
             vm.sys_input().unwrap();
 
@@ -37,22 +38,19 @@ fn dont_await_call() {
         });
 
     assert_eq!(
-        output.next_decoded::<CallEntryMessage>().unwrap(),
-        CallEntryMessage {
+        output.next_decoded::<CallCommandMessage>().unwrap(),
+        CallCommandMessage {
             service_name: "Greeter".to_owned(),
             handler_name: "greeter".to_owned(),
             parameter: Bytes::from_static(b"Francesco"),
+            invocation_id_notification_idx: 1,
+            result_completion_id: 2,
             ..Default::default()
         }
     );
-    assert_eq!(
-        output.next_decoded::<OutputEntryMessage>().unwrap(),
-        OutputEntryMessage {
-            result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                b"Whatever"
-            ))),
-            ..Default::default()
-        }
+    assert_that!(
+        output.next_decoded::<OutputCommandMessage>().unwrap(),
+        is_output_with_success(b"Whatever")
     );
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),
@@ -70,7 +68,7 @@ fn dont_await_call_dont_notify_input_closed() {
             known_entries: 1,
             ..Default::default()
         })
-        .input(InputEntryMessage::default())
+        .input(InputCommandMessage::default())
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
             let _ = vm
@@ -82,22 +80,19 @@ fn dont_await_call_dont_notify_input_closed() {
         });
 
     assert_eq!(
-        output.next_decoded::<CallEntryMessage>().unwrap(),
-        CallEntryMessage {
+        output.next_decoded::<CallCommandMessage>().unwrap(),
+        CallCommandMessage {
             service_name: "Greeter".to_owned(),
             handler_name: "greeter".to_owned(),
             parameter: Bytes::from_static(b"Francesco"),
+            invocation_id_notification_idx: 1,
+            result_completion_id: 2,
             ..Default::default()
         }
     );
-    assert_eq!(
-        output.next_decoded::<OutputEntryMessage>().unwrap(),
-        OutputEntryMessage {
-            result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                b"Whatever"
-            ))),
-            ..Default::default()
-        }
+    assert_that!(
+        output.next_decoded::<OutputCommandMessage>().unwrap(),
+        is_output_with_success(b"Whatever")
     );
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),
@@ -106,7 +101,7 @@ fn dont_await_call_dont_notify_input_closed() {
     assert_eq!(output.next(), None);
 }
 
-mod notify_await_point {
+mod do_progress {
     use super::*;
 
     use test_log::test;
@@ -120,79 +115,29 @@ mod notify_await_point {
                 known_entries: 1,
                 ..Default::default()
             })
-            .input(InputEntryMessage {
-                headers: vec![],
-                value: Bytes::from_static(b"my-data"),
-                ..InputEntryMessage::default()
-            })
+            .input(input_entry_message(b"my-data"))
             .run_without_closing_input(|vm, _| {
                 vm.sys_input().unwrap();
 
                 let (_, h) = vm.sys_awakeable().unwrap();
 
-                vm.notify_await_point(h);
-                vm.notify_await_point(h);
+                assert_eq!(
+                    vm.do_progress(vec![h]).unwrap(),
+                    DoProgressResponse::ReadFromInput
+                );
+                assert_eq!(
+                    vm.do_progress(vec![h]).unwrap(),
+                    DoProgressResponse::ReadFromInput
+                );
 
                 vm.notify_input_closed();
+
+                let_assert!(Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h]));
             });
 
-        assert_eq!(
-            output.next_decoded::<AwakeableEntryMessage>().unwrap(),
-            AwakeableEntryMessage::default()
-        );
-        assert_eq!(
-            output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![1],
-            }
-        );
-        assert_eq!(output.next(), None);
-    }
-
-    #[test]
-    fn await_two_handles_at_same_time() {
-        let mut output = VMTestCase::new()
-            .input(StartMessage {
-                id: Bytes::from_static(b"123"),
-                debug_id: "123".to_string(),
-                known_entries: 1,
-                ..Default::default()
-            })
-            .input(InputEntryMessage {
-                headers: vec![],
-                value: Bytes::from_static(b"my-data"),
-                ..InputEntryMessage::default()
-            })
-            .run_without_closing_input(|vm, _| {
-                vm.sys_input().unwrap();
-
-                let (_, h1) = vm.sys_awakeable().unwrap();
-                let (_, h2) = vm.sys_awakeable().unwrap();
-
-                vm.notify_await_point(h1);
-                // This should transition the state machine to error
-                vm.notify_await_point(h2);
-
-                vm.notify_input_closed();
-            });
-
-        assert_eq!(
-            output.next_decoded::<AwakeableEntryMessage>().unwrap(),
-            AwakeableEntryMessage::default()
-        );
-        assert_eq!(
-            output.next_decoded::<AwakeableEntryMessage>().unwrap(),
-            AwakeableEntryMessage::default()
-        );
         assert_that!(
-            output.next_decoded::<ErrorMessage>().unwrap(),
-            error_message_as_vm_error(
-                vm::errors::AwaitingTwoAsyncResultError {
-                    previous: 1,
-                    current: 2,
-                }
-                .into()
-            )
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            suspended_waiting_signal(17)
         );
         assert_eq!(output.next(), None);
     }
@@ -213,21 +158,35 @@ mod reverse_await_order {
             .sys_call(greeter_target(), Bytes::from_static(b"Till"))
             .unwrap();
 
-        vm.notify_await_point(h2);
-        let h2_result = vm.take_async_result(h2);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h2_result {
+        if let Err(SuspendedOrVMError::Suspended(_)) =
+            vm.do_progress(vec![h2.call_notification_handle])
+        {
+            assert_that!(
+                vm.take_notification(h2.call_notification_handle),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-        let_assert!(Some(Value::Success(h2_value)) = h2_result.unwrap());
+        let_assert!(
+            Some(Value::Success(h2_value)) =
+                vm.take_notification(h2.call_notification_handle).unwrap()
+        );
 
         vm.sys_state_set("A2".to_owned(), h2_value.clone()).unwrap();
 
-        vm.notify_await_point(h1);
-        let h1_result = vm.take_async_result(h1);
-        if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
+        if let Err(SuspendedOrVMError::Suspended(_)) =
+            vm.do_progress(vec![h1.call_notification_handle])
+        {
+            assert_that!(
+                vm.take_notification(h1.call_notification_handle),
+                err(pat!(SuspendedOrVMError::Suspended(_)))
+            );
             return;
         }
-        let_assert!(Some(Value::Success(h1_value)) = h1_result.unwrap());
+        let_assert!(
+            Some(Value::Success(h1_value)) =
+                vm.take_notification(h1.call_notification_handle).unwrap()
+        );
 
         vm.sys_write_output(NonEmptyValue::Success(Bytes::from(
             [&h1_value[..], b"-", &h2_value[..]].concat(),
@@ -246,32 +205,34 @@ mod reverse_await_order {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
+            .input(InputCommandMessage::default())
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Francesco"),
+                invocation_id_notification_idx: 1,
+                result_completion_id: 2,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Till"),
+                invocation_id_notification_idx: 3,
+                result_completion_id: 4,
                 ..Default::default()
             }
         );
-        assert_eq!(
+        assert_that!(
             output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![2],
-            }
+            suspended_waiting_completion(4)
         );
 
         assert_eq!(output.next(), None);
@@ -287,55 +248,62 @@ mod reverse_await_order {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"FRANCESCO",
-                ))),
+            .input(InputCommandMessage::default())
+            .input(CallInvocationIdCompletionNotificationMessage {
+                completion_id: 1,
+                invocation_id: "a1".to_string(),
             })
-            .input(CompletionMessage {
-                entry_index: 2,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"TILL",
-                ))),
+            .input(CallInvocationIdCompletionNotificationMessage {
+                completion_id: 3,
+                invocation_id: "a2".to_string(),
+            })
+            .input(CallCompletionNotificationMessage {
+                completion_id: 2,
+                result: Some(call_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"FRANCESCO").into(),
+                )),
+            })
+            .input(CallCompletionNotificationMessage {
+                completion_id: 4,
+                result: Some(call_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"TILL").into(),
+                )),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Francesco"),
+                invocation_id_notification_idx: 1,
+                result_completion_id: 2,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Till"),
+                invocation_id_notification_idx: 3,
+                result_completion_id: 4,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<SetStateEntryMessage>().unwrap(),
-            SetStateEntryMessage {
+            output.next_decoded::<SetStateCommandMessage>().unwrap(),
+            SetStateCommandMessage {
                 key: Bytes::from_static(b"A2"),
-                value: Bytes::from_static(b"TILL"),
+                value: Some(Bytes::from_static(b"TILL").into()),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"FRANCESCO-TILL"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"FRANCESCO-TILL")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -355,55 +323,54 @@ mod reverse_await_order {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 2,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"TILL",
-                ))),
+            .input(InputCommandMessage::default())
+            .input(CallCompletionNotificationMessage {
+                completion_id: 4,
+                result: Some(call_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"TILL").into(),
+                )),
             })
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"FRANCESCO",
-                ))),
+            .input(CallCompletionNotificationMessage {
+                completion_id: 2,
+                result: Some(call_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"FRANCESCO").into(),
+                )),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Francesco"),
+                invocation_id_notification_idx: 1,
+                result_completion_id: 2,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Till"),
+                invocation_id_notification_idx: 3,
+                result_completion_id: 4,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<SetStateEntryMessage>().unwrap(),
-            SetStateEntryMessage {
+            output.next_decoded::<SetStateCommandMessage>().unwrap(),
+            SetStateCommandMessage {
                 key: Bytes::from_static(b"A2"),
-                value: Bytes::from_static(b"TILL"),
+                value: Some(Bytes::from_static(b"TILL").into()),
                 ..Default::default()
             }
         );
-        assert_eq!(
-            output.next_decoded::<OutputEntryMessage>().unwrap(),
-            OutputEntryMessage {
-                result: Some(output_entry_message::Result::Value(Bytes::from_static(
-                    b"FRANCESCO-TILL"
-                ))),
-                ..Default::default()
-            }
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"FRANCESCO-TILL")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
@@ -423,46 +390,48 @@ mod reverse_await_order {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 2,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"TILL",
-                ))),
+            .input(InputCommandMessage::default())
+            .input(CallCompletionNotificationMessage {
+                completion_id: 4,
+                result: Some(call_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"TILL").into(),
+                )),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Francesco"),
+                invocation_id_notification_idx: 1,
+                result_completion_id: 2,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Till"),
+                invocation_id_notification_idx: 3,
+                result_completion_id: 4,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<SetStateEntryMessage>().unwrap(),
-            SetStateEntryMessage {
+            output.next_decoded::<SetStateCommandMessage>().unwrap(),
+            SetStateCommandMessage {
                 key: Bytes::from_static(b"A2"),
-                value: Bytes::from_static(b"TILL"),
+                value: Some(Bytes::from_static(b"TILL").into()),
                 ..Default::default()
             }
         );
-        assert_eq!(
+        assert_that!(
             output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![1],
-            }
+            suspended_waiting_completion(2)
         );
 
         assert_eq!(output.next(), None);
@@ -478,38 +447,40 @@ mod reverse_await_order {
                 partial_state: true,
                 ..Default::default()
             })
-            .input(InputEntryMessage::default())
-            .input(CompletionMessage {
-                entry_index: 1,
-                result: Some(completion_message::Result::Value(Bytes::from_static(
-                    b"FRANCESCO",
-                ))),
+            .input(InputCommandMessage::default())
+            .input(CallCompletionNotificationMessage {
+                completion_id: 2,
+                result: Some(call_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"FRANCESCO").into(),
+                )),
             })
             .run(handler);
 
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Francesco"),
+                invocation_id_notification_idx: 1,
+                result_completion_id: 2,
                 ..Default::default()
             }
         );
         assert_eq!(
-            output.next_decoded::<CallEntryMessage>().unwrap(),
-            CallEntryMessage {
+            output.next_decoded::<CallCommandMessage>().unwrap(),
+            CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
                 parameter: Bytes::from_static(b"Till"),
+                invocation_id_notification_idx: 3,
+                result_completion_id: 4,
                 ..Default::default()
             }
         );
-        assert_eq!(
+        assert_that!(
             output.next_decoded::<SuspensionMessage>().unwrap(),
-            SuspensionMessage {
-                entry_indexes: vec![2],
-            }
+            suspended_waiting_completion(4)
         );
 
         assert_eq!(output.next(), None);

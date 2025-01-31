@@ -2,8 +2,28 @@ use super::*;
 
 use crate::service_protocol::messages::*;
 
+use crate::Value;
 use assert2::let_assert;
 use test_log::test;
+
+fn sleep_handler(vm: &mut CoreVM) {
+    vm.sys_input().unwrap();
+
+    let h1 = vm.sys_sleep(Duration::from_secs(1), None).unwrap();
+
+    if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
+        assert_that!(
+            vm.take_notification(h1),
+            err(pat!(SuspendedOrVMError::Suspended(_)))
+        );
+        return;
+    }
+    let_assert!(Some(Value::Void) = vm.take_notification(h1).unwrap());
+
+    vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
+        .unwrap();
+    vm.sys_end().unwrap();
+}
 
 #[test]
 fn sleep_suspends() {
@@ -15,32 +35,18 @@ fn sleep_suspends() {
             partial_state: true,
             ..Default::default()
         })
-        .input(InputEntryMessage {
-            value: Bytes::from_static(b"Till"),
-            ..Default::default()
+        .input(input_entry_message(b"Till"))
+        .run(sleep_handler);
+
+    assert_that!(
+        output.next_decoded::<SleepCommandMessage>().unwrap(),
+        pat!(SleepCommandMessage {
+            result_completion_id: eq(1)
         })
-        .run(|vm| {
-            vm.sys_input().unwrap();
-
-            let h1 = vm.sys_sleep(Duration::from_secs(1), None).unwrap();
-            vm.notify_await_point(h1);
-            let h1_result = vm.take_async_result(h1);
-            if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
-                return;
-            }
-            let_assert!(Some(Value::Void) = h1_result.unwrap());
-
-            vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
-                .unwrap();
-            vm.sys_end().unwrap();
-        });
-
-    let _ = output.next_decoded::<SleepEntryMessage>().unwrap();
-    assert_eq!(
+    );
+    assert_that!(
         output.next_decoded::<SuspensionMessage>().unwrap(),
-        SuspensionMessage {
-            entry_indexes: vec![1],
-        }
+        suspended_waiting_completion(1)
     );
     assert_eq!(output.next(), None);
 }
@@ -51,41 +57,25 @@ fn sleep_completed() {
         .input(StartMessage {
             id: Bytes::from_static(b"abc"),
             debug_id: "abc".to_owned(),
-            known_entries: 2,
+            known_entries: 3,
             partial_state: true,
             ..Default::default()
         })
-        .input(InputEntryMessage {
-            value: Bytes::from_static(b"Till"),
-            ..Default::default()
-        })
-        .input(SleepEntryMessage {
+        .input(input_entry_message(b"Till"))
+        .input(SleepCommandMessage {
             wake_up_time: 1721123699086,
-            result: Some(sleep_entry_message::Result::Empty(Empty::default())),
+            result_completion_id: 1,
             ..Default::default()
         })
-        .run(|vm| {
-            vm.sys_input().unwrap();
+        .input(SleepCompletionNotificationMessage {
+            completion_id: 1,
+            void: Some(Default::default()),
+        })
+        .run(sleep_handler);
 
-            let h1 = vm.sys_sleep(Duration::from_secs(1), None).unwrap();
-            vm.notify_await_point(h1);
-            let h1_result = vm.take_async_result(h1);
-            if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
-                return;
-            }
-            let_assert!(Some(Value::Void) = h1_result.unwrap());
-
-            vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
-                .unwrap();
-            vm.sys_end().unwrap();
-        });
-
-    assert_eq!(
-        output.next_decoded::<OutputEntryMessage>().unwrap(),
-        OutputEntryMessage {
-            result: Some(output_entry_message::Result::Value(Bytes::new())),
-            ..Default::default()
-        }
+    assert_that!(
+        output.next_decoded::<OutputCommandMessage>().unwrap(),
+        is_output_with_success("")
     );
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),
@@ -104,35 +94,17 @@ fn sleep_still_sleeping() {
             partial_state: true,
             ..Default::default()
         })
-        .input(InputEntryMessage {
-            value: Bytes::from_static(b"Till"),
-            ..Default::default()
-        })
-        .input(SleepEntryMessage {
+        .input(input_entry_message(b"Till"))
+        .input(SleepCommandMessage {
             wake_up_time: 1721123699086,
+            result_completion_id: 1,
             ..Default::default()
         })
-        .run(|vm| {
-            vm.sys_input().unwrap();
+        .run(sleep_handler);
 
-            let h1 = vm.sys_sleep(Duration::from_secs(1), None).unwrap();
-            vm.notify_await_point(h1);
-            let h1_result = vm.take_async_result(h1);
-            if let Err(SuspendedOrVMError::Suspended(_)) = &h1_result {
-                return;
-            }
-            let_assert!(Some(Value::Void) = h1_result.unwrap());
-
-            vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
-                .unwrap();
-            vm.sys_end().unwrap();
-        });
-
-    assert_eq!(
+    assert_that!(
         output.next_decoded::<SuspensionMessage>().unwrap(),
-        SuspensionMessage {
-            entry_indexes: vec![1],
-        }
+        suspended_waiting_completion(1)
     );
     assert_eq!(output.next(), None);
 }

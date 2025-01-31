@@ -7,7 +7,6 @@ mod vm;
 
 use bytes::Bytes;
 use std::borrow::Cow;
-use std::fmt;
 use std::time::Duration;
 
 pub use crate::retries::RetryPolicy;
@@ -22,8 +21,6 @@ pub mod error {
     pub use crate::vm::errors::codes;
     pub use crate::vm::errors::InvocationErrorCode;
 }
-
-use crate::vm::AsyncResultAccessTrackerInner;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Header {
@@ -126,34 +123,32 @@ pub struct Target {
     pub headers: Vec<Header>,
 }
 
-#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq)]
-pub struct AsyncResultHandle(u32);
+pub const CANCEL_NOTIFICATION_HANDLE: NotificationHandle = NotificationHandle(1);
 
-impl From<u32> for AsyncResultHandle {
+#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq)]
+pub struct NotificationHandle(u32);
+
+impl From<u32> for NotificationHandle {
     fn from(value: u32) -> Self {
-        AsyncResultHandle(value)
+        NotificationHandle(value)
     }
 }
 
-impl From<AsyncResultHandle> for u32 {
-    fn from(value: AsyncResultHandle) -> Self {
+impl From<NotificationHandle> for u32 {
+    fn from(value: NotificationHandle) -> Self {
         value.0
     }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct SendHandle(u32);
-
-impl From<u32> for SendHandle {
-    fn from(value: u32) -> Self {
-        SendHandle(value)
-    }
+pub struct CallHandle {
+    pub invocation_id_notification_handle: NotificationHandle,
+    pub call_notification_handle: NotificationHandle,
 }
 
-impl From<SendHandle> for u32 {
-    fn from(value: SendHandle) -> Self {
-        value.0
-    }
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SendHandle {
+    pub invocation_id_notification_handle: NotificationHandle,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -166,7 +161,6 @@ pub enum Value {
     StateKeys(Vec<String>),
     /// Only returned for get_call_invocation_id
     InvocationId(String),
-    CombinatorResult(Vec<AsyncResultHandle>),
 }
 
 /// Terminal failure
@@ -182,12 +176,6 @@ pub struct EntryRetryInfo {
     pub retry_count: u32,
     /// Time spent in the current retry loop.
     pub retry_loop_duration: Duration,
-}
-
-#[derive(Debug)]
-pub enum RunEnterResult {
-    Executed(NonEmptyValue),
-    NotExecuted(EntryRetryInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -216,23 +204,8 @@ impl From<NonEmptyValue> for Value {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum GetInvocationIdTarget {
-    CallEntry(AsyncResultHandle),
-    SendEntry(SendHandle),
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum CancelInvocationTarget {
-    InvocationId(String),
-    CallEntry(AsyncResultHandle),
-    SendEntry(SendHandle),
-}
-
-#[derive(Debug, Eq, PartialEq)]
 pub enum AttachInvocationTarget {
     InvocationId(String),
-    CallEntry(AsyncResultHandle),
-    SendEntry(SendHandle),
     WorkflowId {
         name: String,
         key: String,
@@ -253,17 +226,19 @@ pub enum TakeOutputResult {
 
 pub type VMResult<T> = Result<T, Error>;
 
-pub struct VMOptions {
-    /// If true, false when two concurrent async results are awaited at the same time. If false, just log it.
-    pub fail_on_wait_concurrent_async_result: bool,
-}
+#[derive(Default)]
+pub struct VMOptions {}
 
-impl Default for VMOptions {
-    fn default() -> Self {
-        Self {
-            fail_on_wait_concurrent_async_result: true,
-        }
-    }
+#[derive(Debug, PartialEq, Eq)]
+pub enum DoProgressResponse {
+    /// Any of the given AsyncResultHandle completed
+    AnyCompleted,
+    /// The SDK should read from input at this point
+    ReadFromInput,
+    /// The SDK should execute a pending run
+    ExecuteRun(NotificationHandle),
+    /// Any of the run given before with ExecuteRun is waiting for completion
+    WaitingPendingRun,
 }
 
 pub trait VM: Sized {
@@ -291,21 +266,25 @@ pub trait VM: Sized {
 
     // --- Async results
 
-    fn notify_await_point(&mut self, handle: AsyncResultHandle);
+    fn is_completed(&self, handle: NotificationHandle) -> bool;
 
-    /// Ok(None) means the result is not ready.
-    fn take_async_result(
+    fn do_progress(
         &mut self,
-        handle: AsyncResultHandle,
+        any_handle: Vec<NotificationHandle>,
+    ) -> Result<DoProgressResponse, SuspendedOrVMError>;
+
+    fn take_notification(
+        &mut self,
+        handle: NotificationHandle,
     ) -> Result<Option<Value>, SuspendedOrVMError>;
 
     // --- Syscall(s)
 
     fn sys_input(&mut self) -> VMResult<Input>;
 
-    fn sys_state_get(&mut self, key: String) -> VMResult<AsyncResultHandle>;
+    fn sys_state_get(&mut self, key: String) -> VMResult<NotificationHandle>;
 
-    fn sys_state_get_keys(&mut self) -> VMResult<AsyncResultHandle>;
+    fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle>;
 
     fn sys_state_set(&mut self, key: String, value: Bytes) -> VMResult<()>;
 
@@ -318,9 +297,9 @@ pub trait VM: Sized {
         &mut self,
         wake_up_time_since_unix_epoch: Duration,
         now_since_unix_epoch: Option<Duration>,
-    ) -> VMResult<AsyncResultHandle>;
+    ) -> VMResult<NotificationHandle>;
 
-    fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<AsyncResultHandle>;
+    fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<CallHandle>;
 
     fn sys_send(
         &mut self,
@@ -329,38 +308,49 @@ pub trait VM: Sized {
         execution_time_since_unix_epoch: Option<Duration>,
     ) -> VMResult<SendHandle>;
 
-    fn sys_awakeable(&mut self) -> VMResult<(String, AsyncResultHandle)>;
+    fn sys_awakeable(&mut self) -> VMResult<(String, NotificationHandle)>;
 
     fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()>;
 
-    fn sys_get_promise(&mut self, key: String) -> VMResult<AsyncResultHandle>;
+    fn create_signal_handle(&mut self, signal_name: String) -> VMResult<NotificationHandle>;
 
-    fn sys_peek_promise(&mut self, key: String) -> VMResult<AsyncResultHandle>;
+    fn sys_complete_signal(
+        &mut self,
+        target_invocation_id: String,
+        signal_name: String,
+        value: NonEmptyValue,
+    ) -> VMResult<()>;
+
+    fn sys_get_promise(&mut self, key: String) -> VMResult<NotificationHandle>;
+
+    fn sys_peek_promise(&mut self, key: String) -> VMResult<NotificationHandle>;
 
     fn sys_complete_promise(
         &mut self,
         key: String,
         value: NonEmptyValue,
-    ) -> VMResult<AsyncResultHandle>;
+    ) -> VMResult<NotificationHandle>;
 
-    fn sys_run_enter(&mut self, name: String) -> VMResult<RunEnterResult>;
+    fn sys_run(&mut self, name: String) -> VMResult<NotificationHandle>;
 
-    fn sys_run_exit(
+    fn propose_run_completion(
         &mut self,
+        notification_handle: NotificationHandle,
         value: RunExitResult,
         retry_policy: RetryPolicy,
-    ) -> VMResult<AsyncResultHandle>;
+    ) -> VMResult<()>;
 
-    fn sys_get_call_invocation_id(
+    fn sys_cancel_invocation(&mut self, target_invocation_id: String) -> VMResult<()>;
+
+    fn sys_attach_invocation(
         &mut self,
-        call: GetInvocationIdTarget,
-    ) -> VMResult<AsyncResultHandle>;
+        target: AttachInvocationTarget,
+    ) -> VMResult<NotificationHandle>;
 
-    fn sys_cancel_invocation(&mut self, target: CancelInvocationTarget) -> VMResult<()>;
-
-    fn sys_attach_invocation(&mut self, target: AttachInvocationTarget) -> VMResult<()>;
-
-    fn sys_get_invocation_output(&mut self, target: AttachInvocationTarget) -> VMResult<()>;
+    fn sys_get_invocation_output(
+        &mut self,
+        target: AttachInvocationTarget,
+    ) -> VMResult<NotificationHandle>;
 
     fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()>;
 
@@ -368,15 +358,6 @@ pub trait VM: Sized {
 
     /// Returns true if the state machine is in processing state
     fn is_processing(&self) -> bool;
-
-    /// Returns true if the state machine is between a sys_run_enter and sys_run_exit
-    fn is_inside_run(&self) -> bool;
-
-    /// Returns false if the combinator can't be completed yet.
-    fn sys_try_complete_combinator(
-        &mut self,
-        combinator: impl AsyncResultCombinator + fmt::Debug,
-    ) -> VMResult<Option<AsyncResultHandle>>;
 }
 
 // HOW TO USE THIS API
@@ -419,28 +400,6 @@ pub trait VM: Sized {
 //         io.write_out(buffer)
 //     }
 //     io.close()
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AsyncResultState {
-    Success,
-    Failure,
-    NotReady,
-}
-
-pub struct AsyncResultAccessTracker(AsyncResultAccessTrackerInner);
-
-impl AsyncResultAccessTracker {
-    pub fn get_state(&mut self, handle: AsyncResultHandle) -> AsyncResultState {
-        self.0.get_state(handle)
-    }
-}
-
-pub trait AsyncResultCombinator {
-    fn try_complete(
-        &self,
-        tracker: &mut AsyncResultAccessTracker,
-    ) -> Option<Vec<AsyncResultHandle>>;
-}
 
 #[cfg(test)]
 mod tests;

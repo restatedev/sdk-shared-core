@@ -1,120 +1,132 @@
 use crate::vm::context::Context;
-use crate::vm::errors::{
-    AwaitingTwoAsyncResultError, UnexpectedStateError, INPUT_CLOSED_WHILE_WAITING_ENTRIES,
-};
+use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::State;
-use crate::{Error, SuspendedError, Value};
-use tracing::warn;
+use crate::{DoProgressResponse, Error, NotificationHandle, SuspendedError, Value};
+use tracing::trace;
 
-pub(crate) struct NotifyInputClosed;
+pub(crate) struct DoProgress(pub(crate) Vec<NotificationHandle>);
 
-impl Transition<Context, NotifyInputClosed> for State {
-    fn transition(self, context: &mut Context, _: NotifyInputClosed) -> Result<Self, Error> {
+impl TransitionAndReturn<Context, DoProgress> for State {
+    type Output = Result<DoProgressResponse, SuspendedError>;
+
+    fn transition_and_return(
+        mut self,
+        context: &mut Context,
+        DoProgress(awaiting_on): DoProgress,
+    ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Replaying {
-                current_await_point: Some(await_point),
-                ref async_results,
+                ref mut async_results,
                 ..
+            } => {
+                // Check first if any was completed already
+                if awaiting_on
+                    .iter()
+                    .any(|h| async_results.is_handle_completed(*h))
+                {
+                    // We're good, let's give back control to user code
+                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
+                }
+
+                let notification_ids = async_results.resolve_notification_handles(awaiting_on);
+                if notification_ids.is_empty() {
+                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
+                }
+
+                // Let's try to find it in the notifications we already have
+                if async_results.process_next_until_any_found(&notification_ids) {
+                    // We're good, let's give back control to user code
+                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
+                }
+
+                // Check suspension condition
+                if context.input_is_closed {
+                    let state = self.transition(context, HitSuspensionPoint(notification_ids))?;
+                    return Ok((state, Err(SuspendedError)));
+                };
+
+                // Nothing else can be done, we need more input
+                Ok((self, Ok(DoProgressResponse::ReadFromInput)))
             }
-            | State::Processing {
-                current_await_point: Some(await_point),
-                ref async_results,
+            State::Processing {
+                ref mut async_results,
+                ref mut run_state,
                 ..
-            } if !async_results.has_ready_result(await_point) => {
-                self.transition(context, HitSuspensionPoint(await_point))
+            } => {
+                // Check first if any was completed already
+                if awaiting_on
+                    .iter()
+                    .any(|h| async_results.is_handle_completed(*h))
+                {
+                    // We're good, let's give back control to user code
+                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
+                }
+
+                let notification_ids =
+                    async_results.resolve_notification_handles(awaiting_on.clone());
+                if notification_ids.is_empty() {
+                    trace!("Could not resolve any of the {awaiting_on:?} handles");
+                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
+                }
+
+                // Let's try to find it in the notifications we already have
+                if async_results.process_next_until_any_found(&notification_ids) {
+                    // We're good, let's give back control to user code
+                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
+                }
+
+                // We couldn't find any notification for the given ids, let's check if there's some run to execute
+                if let Some(run_to_execute) =
+                    run_state.try_execute_run(&awaiting_on.iter().cloned().collect())
+                {
+                    return Ok((self, Ok(DoProgressResponse::ExecuteRun(run_to_execute))));
+                }
+
+                // Check suspension condition
+                if context.input_is_closed {
+                    // Maybe something is executing and we're awaiting it to complete,
+                    // in this case we don't suspend yet!
+                    if run_state.any_executing(&awaiting_on) {
+                        return Ok((self, Ok(DoProgressResponse::WaitingPendingRun)));
+                    }
+
+                    let state = self.transition(context, HitSuspensionPoint(notification_ids))?;
+                    return Ok((state, Err(SuspendedError)));
+                };
+
+                // Nothing else can be done, we need more input
+                Ok((self, Ok(DoProgressResponse::ReadFromInput)))
             }
-            State::WaitingStart | State::WaitingReplayEntries { .. } => {
-                Err(INPUT_CLOSED_WHILE_WAITING_ENTRIES)
-            }
-            _ => Ok(self),
+            s => Err(UnexpectedStateError::new(s.into(), "DoProgress").into()),
         }
     }
 }
 
-pub(crate) struct NotifyAwaitPoint(pub(crate) u32);
+pub(crate) struct TakeNotification(pub(crate) NotificationHandle);
 
-impl Transition<Context, NotifyAwaitPoint> for State {
-    fn transition(
-        mut self,
-        context: &mut Context,
-        NotifyAwaitPoint(await_point): NotifyAwaitPoint,
-    ) -> Result<Self, Error> {
-        match self {
-            State::Replaying {
-                ref mut current_await_point,
-                ref async_results,
-                ..
-            }
-            | State::Processing {
-                ref mut current_await_point,
-                ref async_results,
-                ..
-            } => {
-                if let Some(previous) = current_await_point {
-                    if *previous != await_point {
-                        if context.options.fail_on_wait_concurrent_async_result {
-                            return Err(AwaitingTwoAsyncResultError {
-                                previous: *previous,
-                                current: await_point,
-                            }
-                            .into());
-                        } else {
-                            warn!(
-                                "{}",
-                                AwaitingTwoAsyncResultError {
-                                    previous: *previous,
-                                    current: await_point,
-                                }
-                            )
-                        }
-                    }
-                }
-                if context.input_is_closed && !async_results.has_ready_result(await_point) {
-                    return self.transition(context, HitSuspensionPoint(await_point));
-                };
-
-                *current_await_point = Some(await_point);
-            }
-            s => return Err(UnexpectedStateError::new(s.into(), "NotifyAwaitPoint").into()),
-        };
-
-        Ok(self)
-    }
-}
-
-pub(crate) struct TakeAsyncResult(pub(crate) u32);
-
-impl TransitionAndReturn<Context, TakeAsyncResult> for State {
+impl TransitionAndReturn<Context, TakeNotification> for State {
     type Output = Result<Option<Value>, SuspendedError>;
 
     fn transition_and_return(
         mut self,
         _: &mut Context,
-        TakeAsyncResult(async_result): TakeAsyncResult,
+        TakeNotification(handle): TakeNotification,
     ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Processing {
-                ref mut current_await_point,
                 ref mut async_results,
                 ..
             }
             | State::Replaying {
-                ref mut current_await_point,
                 ref mut async_results,
                 ..
             } => {
-                let opt = async_results.take_ready_result(async_result);
-
-                // Reset current await point if matches
-                if opt.is_some() && current_await_point.is_some_and(|i| i == async_result) {
-                    *current_await_point = None;
-                }
-
-                Ok((self, Ok(opt)))
+                let opt = async_results.take_handle(handle);
+                Ok((self, Ok(opt.map(Into::into))))
             }
             State::Suspended => Ok((self, Err(SuspendedError))),
-            s => Err(UnexpectedStateError::new(s.into(), "TakeAsyncResult").into()),
+            s => Err(UnexpectedStateError::new(s.into(), "TakeNotification").into()),
         }
     }
 }
