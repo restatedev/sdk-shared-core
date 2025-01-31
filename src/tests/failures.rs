@@ -111,14 +111,17 @@ fn test_entry_mismatch_on_replay<M: RestateMessage + Clone, T: fmt::Debug>(
             assert_that!(
                 user_code(vm),
                 err(eq_vm_error(
-                    vm::errors::EntryMismatchError::new(expected.clone(), actual.clone(),).into()
+                    vm::errors::CommandMismatchError::new(1, expected.clone(), actual.clone())
+                        .into()
                 ))
             );
         });
 
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
-        error_message_as_vm_error(vm::errors::EntryMismatchError::new(expected, actual,).into())
+        error_message_as_vm_error(
+            vm::errors::CommandMismatchError::new(1, expected, actual).into()
+        )
     );
     assert_eq!(output.next(), None);
 }

@@ -22,7 +22,7 @@ use prost::Message;
 pub enum DecodingError {
     #[error("cannot decode protocol message type {0:?}. Reason: {1:?}")]
     DecodeMessage(MessageType, #[source] prost::DecodeError),
-    #[error("expected message type {expected:?} but was {actual:?}")]
+    #[error("Replayed journal doesn't match the handler code.\nThe handler code generated: {expected:?}\nwhile the replayed entry is: {actual:?}")]
     UnexpectedMessageType {
         expected: MessageType,
         actual: MessageType,

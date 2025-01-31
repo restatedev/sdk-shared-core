@@ -1,7 +1,6 @@
 use crate::service_protocol::messages::{EndMessage, SuspensionMessage};
 use crate::service_protocol::NotificationId;
 use crate::vm::context::Context;
-use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::Transition;
 use crate::vm::State;
 use crate::Error;
@@ -81,7 +80,7 @@ impl Transition<Context, SysEnd> for State {
                 // Tolerate the case where the state machine is already ended/suspended
                 Ok(s)
             }
-            s => Err(UnexpectedStateError::new(s.into(), "SysEnd").into()),
+            s => Err(s.as_unexpected_state("SysEnd")),
         }
     }
 }

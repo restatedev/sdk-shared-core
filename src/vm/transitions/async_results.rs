@@ -1,5 +1,4 @@
 use crate::vm::context::Context;
-use crate::vm::errors::UnexpectedStateError;
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{DoProgressResponse, Error, NotificationHandle, SuspendedError, Value};
@@ -98,7 +97,8 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 // Nothing else can be done, we need more input
                 Ok((self, Ok(DoProgressResponse::ReadFromInput)))
             }
-            s => Err(UnexpectedStateError::new(s.into(), "DoProgress").into()),
+            s @ State::Suspended => Ok((s, Err(SuspendedError))),
+            s => Err(s.as_unexpected_state("DoProgress")),
         }
     }
 }
@@ -126,7 +126,7 @@ impl TransitionAndReturn<Context, TakeNotification> for State {
                 Ok((self, Ok(opt.map(Into::into))))
             }
             State::Suspended => Ok((self, Err(SuspendedError))),
-            s => Err(UnexpectedStateError::new(s.into(), "TakeNotification").into()),
+            s => Err(s.as_unexpected_state("TakeNotification")),
         }
     }
 }

@@ -10,8 +10,8 @@ use crate::service_protocol::{
 };
 use crate::vm::context::{Context, EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::{
-    EmptyGetEagerState, EmptyGetEagerStateKeys, EntryMismatchError, UnavailableEntryError,
-    UnexpectedGetState, UnexpectedGetStateKeys, UnexpectedStateError,
+    CommandMismatchError, EmptyGetEagerState, EmptyGetEagerStateKeys, UnavailableEntryError,
+    UnexpectedGetState, UnexpectedGetStateKeys,
 };
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
@@ -29,7 +29,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
 
     fn transition_and_return(
         self,
-        _: &mut Context,
+        context: &mut Context,
         PopJournalEntry(sys_name, expected): PopJournalEntry<M>,
     ) -> Result<(Self, Self::Output), Error> {
         match self {
@@ -56,11 +56,11 @@ impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
                     }
                 };
 
-                check_entry_header_match(&actual, &expected)?;
+                check_entry_header_match(context.journal.command_index(), &actual, &expected)?;
 
                 Ok((new_state, actual))
             }
-            s => Err(UnexpectedStateError::new(s.into(), sys_name).into()),
+            s => Err(s.as_unexpected_state(sys_name)),
         }
     }
 }
@@ -194,7 +194,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
                 async_results.insert_ready(notification);
                 Ok((s, handle))
             }
-            s => Err(UnexpectedStateError::new(s.into(), sys_name).into()),
+            s => Err(s.as_unexpected_state(sys_name)),
         }
     }
 }
@@ -267,7 +267,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
 
                 Ok((s, notification_handles))
             }
-            s => Err(UnexpectedStateError::new(s.into(), sys_name).into()),
+            s => Err(s.as_unexpected_state(sys_name)),
         }
     }
 }
@@ -296,7 +296,7 @@ impl TransitionAndReturn<Context, CreateSignalHandle> for State {
 
                 Ok((self, handle))
             }
-            s => Err(UnexpectedStateError::new(s.into(), sys_name).into()),
+            s => Err(s.as_unexpected_state(sys_name)),
         }
     }
 }
@@ -387,6 +387,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                         let get_eager_state_command =
                             actual.decode_to::<GetEagerStateCommandMessage>()?;
                         check_entry_header_match(
+                            context.journal.command_index(),
                             &get_eager_state_command,
                             &GetEagerStateCommandMessage {
                                 key: key.into_bytes().into(),
@@ -414,6 +415,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                         let get_lazy_state_command =
                             actual.decode_to::<GetLazyStateCommandMessage>()?;
                         check_entry_header_match(
+                            context.journal.command_index(),
                             &get_lazy_state_command,
                             &GetLazyStateCommandMessage {
                                 key: key.into_bytes().into(),
@@ -424,6 +426,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                     }
                     message_type => {
                         return Err(UnexpectedGetState {
+                            command_index: context.journal.command_index(),
                             actual: message_type,
                         }
                         .into())
@@ -446,7 +449,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
 
                 Ok((new_state, handle))
             }
-            s => Err(UnexpectedStateError::new(s.into(), "SysStateGet").into()),
+            s => Err(s.as_unexpected_state("SysStateGet")),
         }
     }
 }
@@ -536,6 +539,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                         let get_eager_state_command =
                             actual.decode_to::<GetEagerStateKeysCommandMessage>()?;
                         check_entry_header_match(
+                            context.journal.command_index(),
                             &get_eager_state_command,
                             &GetEagerStateKeysCommandMessage {
                                 value: get_eager_state_command.value.clone(),
@@ -558,6 +562,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                         let get_lazy_state_command =
                             actual.decode_to::<GetLazyStateKeysCommandMessage>()?;
                         check_entry_header_match(
+                            context.journal.command_index(),
                             &get_lazy_state_command,
                             &GetLazyStateKeysCommandMessage {
                                 result_completion_id: completion_id,
@@ -567,6 +572,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                     }
                     message_type => {
                         return Err(UnexpectedGetStateKeys {
+                            command_index: context.journal.command_index(),
                             actual: message_type,
                         }
                         .into())
@@ -589,7 +595,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
 
                 Ok((new_state, handle))
             }
-            s => Err(UnexpectedStateError::new(s.into(), "SysStateGet").into()),
+            s => Err(s.as_unexpected_state("SysStateGetKeys")),
         }
     }
 }
@@ -725,11 +731,14 @@ impl Transition<Context, ProposeRunCompletion> for State {
 }
 
 fn check_entry_header_match<M: CommandMessageHeaderEq + Clone + fmt::Debug>(
+    command_index: i64,
     actual: &M,
     expected: &M,
 ) -> Result<(), Error> {
     if !actual.header_eq(expected) {
-        return Err(EntryMismatchError::new(actual.clone(), expected.clone()).into());
+        return Err(
+            CommandMismatchError::new(command_index, actual.clone(), expected.clone()).into(),
+        );
     }
 
     Ok(())

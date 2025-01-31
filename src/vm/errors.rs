@@ -1,4 +1,4 @@
-use crate::service_protocol::{DecodingError, MessageType, UnsupportedVersionError};
+use crate::service_protocol::{ContentTypeError, DecodingError, MessageType};
 use crate::{Error, Version};
 use std::borrow::Cow;
 use std::fmt;
@@ -79,12 +79,12 @@ impl Error {
 
 pub const MISSING_CONTENT_TYPE: Error = Error::new_const(
     codes::UNSUPPORTED_MEDIA_TYPE,
-    "Missing content type when invoking",
+    "Missing content type when invoking the service deployment",
 );
 
 pub const UNEXPECTED_INPUT_MESSAGE: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
-    "Expected input message to be entry",
+    "Expected incoming message to be an entry",
 );
 
 pub const KNOWN_ENTRIES_IS_ZERO: Error =
@@ -97,18 +97,18 @@ pub const UNEXPECTED_ENTRY_MESSAGE: Error = Error::new_const(
 
 pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
-    "The input was closed while still waiting to receive all the `known_entries`",
+    "The input was closed while still waiting to receive all journal to replay",
 );
 
 pub const EMPTY_IDEMPOTENCY_KEY: Error = Error::new_const(
     codes::INTERNAL,
-    "Trying to execute an idempotent request with an empty idempotency key, this is not supported",
+    "Trying to execute an idempotent request with an empty idempotency key. The idempotency key must be non-empty.",
 );
 
 // Other errors
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Expecting entry {expected:?}, but the buffered entries were drained already. This is an invalid state")]
+#[error("The journal replay unexpectedly ended. Expecting to read entry {expected:?} from the replayed journal, but the buffered entries were drained already.")]
 pub struct UnavailableEntryError {
     expected: MessageType,
 }
@@ -120,7 +120,7 @@ impl UnavailableEntryError {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Unexpected state {state:?} when invoking '{event:?}'")]
+#[error("Unexpected state '{state:?}' when invoking '{event:?}'")]
 pub struct UnexpectedStateError {
     state: &'static str,
     event: Box<dyn fmt::Debug + 'static>,
@@ -136,29 +136,27 @@ impl UnexpectedStateError {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Entry {actual:?} doesn't match expected entry {expected:?}")]
-pub struct EntryMismatchError<M: fmt::Debug> {
+#[error("Replayed journal doesn't match the handler code at index {command_index}.\nThe handler code generated: {expected:#?}\nwhile the replayed entry is: {actual:#?}")]
+pub struct CommandMismatchError<M: fmt::Debug> {
+    command_index: i64,
     actual: M,
     expected: M,
 }
 
-impl<M: fmt::Debug> EntryMismatchError<M> {
-    pub fn new(actual: M, expected: M) -> EntryMismatchError<M> {
-        Self { actual, expected }
+impl<M: fmt::Debug> CommandMismatchError<M> {
+    pub fn new(command_index: i64, actual: M, expected: M) -> CommandMismatchError<M> {
+        Self {
+            command_index,
+            actual,
+            expected,
+        }
     }
 }
 
-impl<M: fmt::Debug> WithInvocationErrorCode for EntryMismatchError<M> {
+impl<M: fmt::Debug> WithInvocationErrorCode for CommandMismatchError<M> {
     fn code(&self) -> InvocationErrorCode {
         codes::JOURNAL_MISMATCH
     }
-}
-
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Trying to await two async results at the same time: {previous} and {current}")]
-pub struct AwaitingTwoAsyncResultError {
-    pub(crate) previous: u32,
-    pub(crate) current: u32,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -182,7 +180,7 @@ pub struct EmptyGetEagerState;
 pub struct EmptyGetEagerStateKeys;
 
 #[derive(Debug, thiserror::Error)]
-#[error("Feature {feature} is not supported by the negotiated protocol version '{current_version}', the minimum required version is '{minimum_required_version}'")]
+#[error("Feature '{feature}' is not supported by the negotiated protocol version '{current_version}', the minimum required version is '{minimum_required_version}'")]
 pub struct UnsupportedFeatureForNegotiatedVersion {
     feature: &'static str,
     current_version: Version,
@@ -204,14 +202,16 @@ impl UnsupportedFeatureForNegotiatedVersion {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Expecting entry to be either lazy or eager get state command, but was {actual:?}")]
+#[error("Replayed journal doesn't match the handler code at index {command_index}.\nThe handler code generated a 'get state command',\nwhile the replayed entry is: {actual:#?}")]
 pub struct UnexpectedGetState {
+    pub(crate) command_index: i64,
     pub(crate) actual: MessageType,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Expecting entry to be either lazy or eager get state keys command, but was {actual:?}")]
+#[error("Replayed journal doesn't match the handler code at index {command_index}.\nThe handler code generated a 'get state keys command',\nwhile the replayed entry is: {actual:#?}")]
 pub struct UnexpectedGetStateKeys {
+    pub(crate) command_index: i64,
     pub(crate) actual: MessageType,
 }
 
@@ -237,7 +237,7 @@ macro_rules! impl_error_code {
     };
 }
 
-impl_error_code!(UnsupportedVersionError, UNSUPPORTED_MEDIA_TYPE);
+impl_error_code!(ContentTypeError, UNSUPPORTED_MEDIA_TYPE);
 impl WithInvocationErrorCode for DecodingError {
     fn code(&self) -> InvocationErrorCode {
         match self {
@@ -246,9 +246,8 @@ impl WithInvocationErrorCode for DecodingError {
         }
     }
 }
-impl_error_code!(UnavailableEntryError, JOURNAL_MISMATCH);
+impl_error_code!(UnavailableEntryError, PROTOCOL_VIOLATION);
 impl_error_code!(UnexpectedStateError, PROTOCOL_VIOLATION);
-impl_error_code!(AwaitingTwoAsyncResultError, AWAITING_TWO_ASYNC_RESULTS);
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
 impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);

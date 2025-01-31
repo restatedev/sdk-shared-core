@@ -40,11 +40,16 @@ impl fmt::Display for Version {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("unsupported version '{0}'")]
-pub struct UnsupportedVersionError(String);
+#[error("unsupported protocol version '{0}'")]
+pub enum ContentTypeError {
+    #[error("unsupported protocol version '{0}'")]
+    RestateContentType(String),
+    #[error("unrecognized content-type '{0}', this is not a restate protocol content type. Make sure you're invoking the service though restate-server, rather than directly.")]
+    OtherContentType(String),
+}
 
 impl FromStr for Version {
-    type Err = UnsupportedVersionError;
+    type Err = ContentTypeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -52,7 +57,10 @@ impl FromStr for Version {
             CONTENT_TYPE_V2 => Ok(Version::V2),
             CONTENT_TYPE_V3 => Ok(Version::V3),
             CONTENT_TYPE_V4 => Ok(Version::V4),
-            s => Err(UnsupportedVersionError(s.to_owned())),
+            s if s.starts_with("application/vnd.restate.invocation.") => {
+                Err(ContentTypeError::RestateContentType(s.to_owned()))
+            }
+            s => Err(ContentTypeError::OtherContentType(s.to_owned())),
         }
     }
 }
