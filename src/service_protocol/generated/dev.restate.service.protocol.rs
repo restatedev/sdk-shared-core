@@ -72,9 +72,9 @@ pub struct ErrorMessage {
     /// Contains a concise error message, e.g. Throwable#getMessage() in Java.
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
-    /// Contains a verbose error description, e.g. the exception stacktrace.
+    /// The exception stacktrace, if available.
     #[prost(string, tag = "3")]
-    pub description: ::prost::alloc::string::String,
+    pub stacktrace: ::prost::alloc::string::String,
     /// Command that caused the failure. This may be outside the current stored journal size.
     /// If no specific entry caused the failure, the current replayed/processed entry can be used.
     #[prost(uint32, optional, tag = "4")]
