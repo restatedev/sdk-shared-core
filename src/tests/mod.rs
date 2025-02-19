@@ -1,6 +1,7 @@
 mod async_result;
 mod calls;
 mod failures;
+mod implicit_cancellation;
 mod input_output;
 mod promise;
 mod run;
@@ -11,8 +12,9 @@ mod suspensions;
 use super::*;
 
 use crate::service_protocol::messages::{
-    output_command_message, ErrorMessage, InputCommandMessage, OutputCommandMessage,
-    RestateMessage, StartMessage, SuspensionMessage,
+    output_command_message, signal_notification_message, ErrorMessage, InputCommandMessage,
+    OutputCommandMessage, RestateMessage, SignalNotificationMessage, StartMessage,
+    SuspensionMessage,
 };
 use crate::service_protocol::{messages, CompletionId, Decoder, Encoder, RawMessage, Version};
 use bytes::Bytes;
@@ -23,9 +25,13 @@ use test_log::test;
 
 impl CoreVM {
     fn mock_init(version: Version) -> CoreVM {
+        Self::mock_init_with_options(version, Default::default())
+    }
+
+    fn mock_init_with_options(version: Version, options: VMOptions) -> CoreVM {
         let vm = CoreVM::new(
             vec![("content-type".to_owned(), version.to_string())],
-            VMOptions::default(),
+            options,
         )
         .unwrap();
 
@@ -51,6 +57,13 @@ impl VMTestCase {
         Self {
             encoder: Encoder::new(Version::maximum_supported_version()),
             vm: CoreVM::mock_init(Version::maximum_supported_version()),
+        }
+    }
+
+    fn with_vm_options(options: VMOptions) -> Self {
+        Self {
+            encoder: Encoder::new(Version::maximum_supported_version()),
+            vm: CoreVM::mock_init_with_options(Version::maximum_supported_version(), options),
         }
     }
 
@@ -133,13 +146,14 @@ pub fn suspended_waiting_completion(
     completion_id: CompletionId,
 ) -> impl Matcher<ActualT = SuspensionMessage> {
     pat!(SuspensionMessage {
-        waiting_completions: eq(vec![completion_id])
+        waiting_completions: eq(vec![completion_id]),
+        waiting_signals: eq(vec![1])
     })
 }
 
 pub fn suspended_waiting_signal(signal_idx: u32) -> impl Matcher<ActualT = SuspensionMessage> {
     pat!(SuspensionMessage {
-        waiting_signals: eq(vec![signal_idx])
+        waiting_signals: all!(contains(eq(signal_idx)), contains(eq(1)))
     })
 }
 
@@ -189,6 +203,13 @@ pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputCommandMessage {
         headers: vec![],
         value: Some(Bytes::copy_from_slice(b.as_ref()).into()),
         ..InputCommandMessage::default()
+    }
+}
+
+pub fn cancel_signal_notification() -> SignalNotificationMessage {
+    SignalNotificationMessage {
+        signal_id: Some(signal_notification_message::SignalId::Idx(1)),
+        result: Some(signal_notification_message::Result::Void(Default::default())),
     }
 }
 

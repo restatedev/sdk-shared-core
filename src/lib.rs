@@ -125,7 +125,7 @@ pub struct Target {
 
 pub const CANCEL_NOTIFICATION_HANDLE: NotificationHandle = NotificationHandle(1);
 
-#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NotificationHandle(u32);
 
 impl From<u32> for NotificationHandle {
@@ -226,8 +226,30 @@ pub enum TakeOutputResult {
 
 pub type VMResult<T> = Result<T, Error>;
 
-#[derive(Default)]
-pub struct VMOptions {}
+#[derive(Debug)]
+pub enum ImplicitCancellationOption {
+    Disabled,
+    Enabled {
+        cancel_children_calls: bool,
+        cancel_children_one_way_calls: bool,
+    },
+}
+
+#[derive(Debug)]
+pub struct VMOptions {
+    pub implicit_cancellation: ImplicitCancellationOption,
+}
+
+impl Default for VMOptions {
+    fn default() -> Self {
+        Self {
+            implicit_cancellation: ImplicitCancellationOption::Enabled {
+                cancel_children_calls: true,
+                cancel_children_one_way_calls: true,
+            },
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DoProgressResponse {
@@ -239,6 +261,8 @@ pub enum DoProgressResponse {
     ExecuteRun(NotificationHandle),
     /// Any of the run given before with ExecuteRun is waiting for completion
     WaitingPendingRun,
+    /// Returned only when [ImplicitCancellationOption::Enabled].
+    CancelSignalReceived,
 }
 
 pub trait VM: Sized {

@@ -2,7 +2,7 @@ use crate::service_protocol::messages::{NamedCommandMessage, RestateMessage};
 use crate::service_protocol::{
     Encoder, MessageType, Notification, NotificationId, NotificationResult, Version,
 };
-use crate::{EntryRetryInfo, NotificationHandle, VMOptions, CANCEL_NOTIFICATION_HANDLE};
+use crate::{EntryRetryInfo, NotificationHandle, CANCEL_NOTIFICATION_HANDLE};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -236,6 +236,18 @@ impl AsyncResultsState {
             None
         }
     }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.shared_core.notification.handle = ?handle,
+        ),
+        ret
+    )]
+    pub(crate) fn copy_handle(&mut self, handle: NotificationHandle) -> Option<NotificationResult> {
+        self.ready.get(self.handle_mapping.get(&handle)?).cloned()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -364,9 +376,6 @@ pub(crate) struct Context {
 
     // Used by the error handler to set ErrorMessage.next_retry_delay
     pub(crate) next_retry_delay: Option<Duration>,
-
-    #[allow(unused)]
-    pub(crate) options: VMOptions,
 }
 
 impl Context {

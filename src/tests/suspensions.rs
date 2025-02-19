@@ -69,7 +69,7 @@ fn trigger_suspension_with_correct_awakeable() {
     assert_that!(
         output.next_decoded::<SuspensionMessage>().unwrap(),
         pat!(SuspensionMessage {
-            waiting_signals: eq(vec![18])
+            waiting_signals: all!(contains(eq(18)), contains(eq(1)))
         })
     );
     assert_eq!(output.next(), None);
@@ -107,7 +107,7 @@ fn await_many_notifications() {
         output.next_decoded::<SuspensionMessage>().unwrap(),
         pat!(SuspensionMessage {
             waiting_completions: eq(&[1]),
-            waiting_signals: eq(&[17]),
+            waiting_signals: all!(contains(eq(17)), contains(eq(1))),
             waiting_named_signals: eq(&["abc".to_owned()])
         })
     );
