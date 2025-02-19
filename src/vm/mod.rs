@@ -15,9 +15,10 @@ use crate::vm::errors::{
 };
 use crate::vm::transitions::*;
 use crate::{
-    AttachInvocationTarget, CallHandle, DoProgressResponse, Error, Header, Input, NonEmptyValue,
-    NotificationHandle, ResponseHead, RetryPolicy, RunExitResult, SendHandle, SuspendedOrVMError,
-    TakeOutputResult, Target, VMOptions, VMResult, Value,
+    AttachInvocationTarget, CallHandle, DoProgressResponse, Error, Header,
+    ImplicitCancellationOption, Input, NonEmptyValue, NotificationHandle, ResponseHead,
+    RetryPolicy, RunExitResult, SendHandle, SuspendedOrVMError, TakeOutputResult, Target,
+    VMOptions, VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -25,9 +26,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use context::{AsyncResultsState, Context, Output, RunState};
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::fmt;
 use std::mem::size_of;
 use std::time::Duration;
+use std::{fmt, mem};
 use strum::IntoStaticStr;
 use tracing::{debug, enabled, instrument, Level};
 
@@ -65,8 +66,20 @@ impl State {
     }
 }
 
+struct TrackedInvocationId {
+    handle: NotificationHandle,
+    invocation_id: Option<String>,
+}
+
+impl TrackedInvocationId {
+    fn is_resolved(&self) -> bool {
+        self.invocation_id.is_some()
+    }
+}
+
 pub struct CoreVM {
     version: Version,
+    options: VMOptions,
 
     // Input decoder
     decoder: Decoder,
@@ -74,6 +87,9 @@ pub struct CoreVM {
     // State machine
     context: Context,
     last_transition: Result<State, Error>,
+
+    // Implicit cancellation tracking
+    tracked_invocation_ids: Vec<TrackedInvocationId>,
 }
 
 impl CoreVM {
@@ -103,6 +119,34 @@ impl CoreVM {
             });
         }
         Ok(())
+    }
+
+    fn _is_completed(&self, handle: NotificationHandle) -> bool {
+        match &self.last_transition {
+            Ok(State::Replaying { async_results, .. })
+            | Ok(State::Processing { async_results, .. }) => {
+                async_results.is_handle_completed(handle)
+            }
+            _ => false,
+        }
+    }
+
+    fn _do_progress(
+        &mut self,
+        any_handle: Vec<NotificationHandle>,
+    ) -> Result<DoProgressResponse, SuspendedOrVMError> {
+        match self.do_transition(DoProgress(any_handle)) {
+            Ok(Ok(do_progress_response)) => Ok(do_progress_response),
+            Ok(Err(suspended)) => Err(SuspendedOrVMError::Suspended(suspended)),
+            Err(e) => Err(SuspendedOrVMError::VM(e)),
+        }
+    }
+
+    fn is_implicit_cancellation_enabled(&self) -> bool {
+        matches!(
+            self.options.implicit_cancellation,
+            ImplicitCancellationOption::Enabled { .. }
+        )
     }
 }
 
@@ -173,6 +217,7 @@ impl super::VM for CoreVM {
 
         Ok(Self {
             version,
+            options,
             decoder: Decoder::new(version),
             context: Context {
                 input_is_closed: false,
@@ -181,9 +226,9 @@ impl super::VM for CoreVM {
                 journal: Default::default(),
                 eager_state: Default::default(),
                 next_retry_delay: None,
-                options,
             },
             last_transition: Ok(State::WaitingStart),
+            tracked_invocation_ids: vec![],
         })
     }
 
@@ -332,13 +377,7 @@ impl super::VM for CoreVM {
         ret
     )]
     fn is_completed(&self, handle: NotificationHandle) -> bool {
-        match &self.last_transition {
-            Ok(State::Replaying { async_results, .. })
-            | Ok(State::Processing { async_results, .. }) => {
-                async_results.is_handle_completed(handle)
-            }
-            _ => false,
-        }
+        self._is_completed(handle)
     }
 
     #[instrument(
@@ -353,13 +392,56 @@ impl super::VM for CoreVM {
     )]
     fn do_progress(
         &mut self,
-        any_handle: Vec<NotificationHandle>,
+        mut any_handle: Vec<NotificationHandle>,
     ) -> Result<DoProgressResponse, SuspendedOrVMError> {
-        match self.do_transition(DoProgress(any_handle)) {
-            Ok(Ok(do_progress_response)) => Ok(do_progress_response),
-            Ok(Err(suspended)) => Err(SuspendedOrVMError::Suspended(suspended)),
-            Err(e) => Err(SuspendedOrVMError::VM(e)),
+        // Is it time to cancel?
+        if self.is_implicit_cancellation_enabled() && self._is_completed(CANCEL_NOTIFICATION_HANDLE)
+        {
+            // Loop once over the tracked invocation ids to resolve the unresolved ones
+            for i in 0..self.tracked_invocation_ids.len() {
+                if self.tracked_invocation_ids[i].is_resolved() {
+                    continue;
+                }
+
+                let handle = self.tracked_invocation_ids[i].handle;
+
+                // Try to resolve it
+                match self._do_progress(vec![handle]) {
+                    Ok(DoProgressResponse::AnyCompleted) => {
+                        let invocation_id = match self.do_transition(CopyNotification(handle)) {
+                            Ok(Ok(Some(Value::InvocationId(invocation_id)))) => Ok(invocation_id),
+                            _ => panic!("Unexpected variant! If the id handle is completed, it must be an invocation id handle!")
+                        }?;
+
+                        // This handle is resolved
+                        self.tracked_invocation_ids[i].invocation_id = Some(invocation_id);
+                    }
+                    res => return res,
+                }
+            }
+
+            // Now we got all the invocation IDs, let's cancel!
+            for tracked_invocation_id in mem::take(&mut self.tracked_invocation_ids) {
+                self.sys_cancel_invocation(
+                    tracked_invocation_id
+                        .invocation_id
+                        .expect("We resolved before all the invocation ids"),
+                )
+                .map_err(SuspendedOrVMError::VM)?;
+            }
+
+            // Flip the cancellation
+            let _ = self.take_notification(CANCEL_NOTIFICATION_HANDLE);
+
+            // Done
+            return Ok(DoProgressResponse::CancelSignalReceived);
         }
+
+        if self.is_implicit_cancellation_enabled() {
+            // We want the runtime to wake us up in case cancel notification comes in.
+            any_handle.push(CANCEL_NOTIFICATION_HANDLE);
+        }
+        self._do_progress(any_handle)
     }
 
     #[instrument(
@@ -377,7 +459,28 @@ impl super::VM for CoreVM {
         handle: NotificationHandle,
     ) -> Result<Option<Value>, SuspendedOrVMError> {
         match self.do_transition(TakeNotification(handle)) {
-            Ok(Ok(opt_value)) => Ok(opt_value),
+            Ok(Ok(Some(value))) => {
+                if self.is_implicit_cancellation_enabled() {
+                    // Let's check if that's one of the tracked invocation ids
+                    // We can do binary search here because we assume tracked_invocation_ids is ordered, as handles are incremental numbers
+                    if let Ok(found) = self
+                        .tracked_invocation_ids
+                        .binary_search_by(|tracked| tracked.handle.cmp(&handle))
+                    {
+                        let Value::InvocationId(invocation_id) = &value else {
+                            panic!("Expecting an invocaiton id here, but got {value:?}");
+                        };
+                        // Keep track of this invocation id
+                        self.tracked_invocation_ids
+                            .get_mut(found)
+                            .unwrap()
+                            .invocation_id = Some(invocation_id.clone());
+                    }
+                }
+
+                Ok(Some(value))
+            }
+            Ok(Ok(None)) => Ok(None),
             Ok(Err(suspended)) => Err(SuspendedOrVMError::Suspended(suspended)),
             Err(e) => Err(SuspendedOrVMError::VM(e)),
         }
@@ -583,6 +686,19 @@ impl super::VM for CoreVM {
             vec![call_invocation_id_completion_id, result_completion_id],
         ))?;
 
+        if matches!(
+            self.options.implicit_cancellation,
+            ImplicitCancellationOption::Enabled {
+                cancel_children_calls: true,
+                ..
+            }
+        ) {
+            self.tracked_invocation_ids.push(TrackedInvocationId {
+                handle: handles[0],
+                invocation_id: None,
+            })
+        }
+
         Ok(CallHandle {
             invocation_id_notification_handle: handles[0],
             call_notification_handle: handles[1],
@@ -647,6 +763,19 @@ impl super::VM for CoreVM {
             },
             call_invocation_id_completion_id,
         ))?;
+
+        if matches!(
+            self.options.implicit_cancellation,
+            ImplicitCancellationOption::Enabled {
+                cancel_children_one_way_calls: true,
+                ..
+            }
+        ) {
+            self.tracked_invocation_ids.push(TrackedInvocationId {
+                handle: invocation_id_notification_handle,
+                invocation_id: None,
+            })
+        }
 
         Ok(SendHandle {
             invocation_id_notification_handle,

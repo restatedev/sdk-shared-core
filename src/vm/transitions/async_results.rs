@@ -30,6 +30,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
 
                 let notification_ids = async_results.resolve_notification_handles(awaiting_on);
                 if notification_ids.is_empty() {
+                    // This can happen if `do_progress` was called while the SDK has all the results already.
                     return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
                 }
 
@@ -127,6 +128,34 @@ impl TransitionAndReturn<Context, TakeNotification> for State {
             }
             State::Suspended => Ok((self, Err(SuspendedError))),
             s => Err(s.as_unexpected_state("TakeNotification")),
+        }
+    }
+}
+
+pub(crate) struct CopyNotification(pub(crate) NotificationHandle);
+
+impl TransitionAndReturn<Context, CopyNotification> for State {
+    type Output = Result<Option<Value>, SuspendedError>;
+
+    fn transition_and_return(
+        mut self,
+        _: &mut Context,
+        CopyNotification(handle): CopyNotification,
+    ) -> Result<(Self, Self::Output), Error> {
+        match self {
+            State::Processing {
+                ref mut async_results,
+                ..
+            }
+            | State::Replaying {
+                ref mut async_results,
+                ..
+            } => {
+                let opt = async_results.copy_handle(handle);
+                Ok((self, Ok(opt.map(Into::into))))
+            }
+            State::Suspended => Ok((self, Err(SuspendedError))),
+            s => Err(s.as_unexpected_state("CopyNotification")),
         }
     }
 }
