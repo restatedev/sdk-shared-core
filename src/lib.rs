@@ -380,6 +380,12 @@ pub trait VM: Sized {
 
     fn sys_end(&mut self) -> VMResult<()>;
 
+    // Returns true if the state machine is waiting pre-flight to complete
+    fn is_waiting_preflight(&self) -> bool;
+
+    // Returns true if the state machine is replaying
+    fn is_replaying(&self) -> bool;
+
     /// Returns true if the state machine is in processing state
     fn is_processing(&self) -> bool;
 }
