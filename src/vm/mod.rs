@@ -1216,6 +1216,17 @@ impl super::VM for CoreVM {
         self.do_transition(SysEnd)
     }
 
+    fn is_waiting_preflight(&self) -> bool {
+        matches!(
+            &self.last_transition,
+            Ok(State::WaitingStart) | Ok(State::WaitingReplayEntries { .. })
+        )
+    }
+
+    fn is_replaying(&self) -> bool {
+        matches!(&self.last_transition, Ok(State::Replaying { .. }))
+    }
+
     fn is_processing(&self) -> bool {
         matches!(&self.last_transition, Ok(State::Processing { .. }))
     }
