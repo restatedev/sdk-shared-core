@@ -188,7 +188,7 @@ macro_rules! invocation_debug_logs {
 }
 
 impl super::VM for CoreVM {
-    #[instrument(level = "trace", skip_all, ret)]
+    #[instrument(level = "trace", skip(request_headers), ret)]
     fn new(request_headers: impl HeaderMap, options: VMOptions) -> Result<Self, Error> {
         let version = request_headers
             .extract(CONTENT_TYPE)
@@ -394,54 +394,62 @@ impl super::VM for CoreVM {
         &mut self,
         mut any_handle: Vec<NotificationHandle>,
     ) -> Result<DoProgressResponse, SuspendedOrVMError> {
-        // Is it time to cancel?
-        if self.is_implicit_cancellation_enabled() && self._is_completed(CANCEL_NOTIFICATION_HANDLE)
-        {
-            // Loop once over the tracked invocation ids to resolve the unresolved ones
-            for i in 0..self.tracked_invocation_ids.len() {
-                if self.tracked_invocation_ids[i].is_resolved() {
-                    continue;
-                }
-
-                let handle = self.tracked_invocation_ids[i].handle;
-
-                // Try to resolve it
-                match self._do_progress(vec![handle]) {
-                    Ok(DoProgressResponse::AnyCompleted) => {
-                        let invocation_id = match self.do_transition(CopyNotification(handle)) {
-                            Ok(Ok(Some(Value::InvocationId(invocation_id)))) => Ok(invocation_id),
-                            _ => panic!("Unexpected variant! If the id handle is completed, it must be an invocation id handle!")
-                        }?;
-
-                        // This handle is resolved
-                        self.tracked_invocation_ids[i].invocation_id = Some(invocation_id);
-                    }
-                    res => return res,
-                }
-            }
-
-            // Now we got all the invocation IDs, let's cancel!
-            for tracked_invocation_id in mem::take(&mut self.tracked_invocation_ids) {
-                self.sys_cancel_invocation(
-                    tracked_invocation_id
-                        .invocation_id
-                        .expect("We resolved before all the invocation ids"),
-                )
-                .map_err(SuspendedOrVMError::VM)?;
-            }
-
-            // Flip the cancellation
-            let _ = self.take_notification(CANCEL_NOTIFICATION_HANDLE);
-
-            // Done
-            return Ok(DoProgressResponse::CancelSignalReceived);
-        }
-
         if self.is_implicit_cancellation_enabled() {
             // We want the runtime to wake us up in case cancel notification comes in.
-            any_handle.push(CANCEL_NOTIFICATION_HANDLE);
+            any_handle.insert(0, CANCEL_NOTIFICATION_HANDLE);
+
+            match self._do_progress(any_handle) {
+                Ok(DoProgressResponse::AnyCompleted) => {
+                    // If it's cancel signal, then let's go on with the cancellation logic
+                    if self._is_completed(CANCEL_NOTIFICATION_HANDLE) {
+                        // Loop once over the tracked invocation ids to resolve the unresolved ones
+                        for i in 0..self.tracked_invocation_ids.len() {
+                            if self.tracked_invocation_ids[i].is_resolved() {
+                                continue;
+                            }
+
+                            let handle = self.tracked_invocation_ids[i].handle;
+
+                            // Try to resolve it
+                            match self._do_progress(vec![handle]) {
+                                Ok(DoProgressResponse::AnyCompleted) => {
+                                    let invocation_id = match self.do_transition(CopyNotification(handle)) {
+                                        Ok(Ok(Some(Value::InvocationId(invocation_id)))) => Ok(invocation_id),
+                                        _ => panic!("Unexpected variant! If the id handle is completed, it must be an invocation id handle!")
+                                    }?;
+
+                                    // This handle is resolved
+                                    self.tracked_invocation_ids[i].invocation_id =
+                                        Some(invocation_id);
+                                }
+                                res => return res,
+                            }
+                        }
+
+                        // Now we got all the invocation IDs, let's cancel!
+                        for tracked_invocation_id in mem::take(&mut self.tracked_invocation_ids) {
+                            self.sys_cancel_invocation(
+                                tracked_invocation_id
+                                    .invocation_id
+                                    .expect("We resolved before all the invocation ids"),
+                            )
+                            .map_err(SuspendedOrVMError::VM)?;
+                        }
+
+                        // Flip the cancellation
+                        let _ = self.take_notification(CANCEL_NOTIFICATION_HANDLE);
+
+                        // Done
+                        Ok(DoProgressResponse::CancelSignalReceived)
+                    } else {
+                        Ok(DoProgressResponse::AnyCompleted)
+                    }
+                }
+                res => res,
+            }
+        } else {
+            self._do_progress(any_handle)
         }
-        self._do_progress(any_handle)
     }
 
     #[instrument(
@@ -468,7 +476,7 @@ impl super::VM for CoreVM {
                         .binary_search_by(|tracked| tracked.handle.cmp(&handle))
                     {
                         let Value::InvocationId(invocation_id) = &value else {
-                            panic!("Expecting an invocaiton id here, but got {value:?}");
+                            panic!("Expecting an invocation id here, but got {value:?}");
                         };
                         // Keep track of this invocation id
                         self.tracked_invocation_ids

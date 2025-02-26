@@ -46,12 +46,6 @@ fn call_then_get_invocation_id_then_cancel() {
             );
             assert_eq!(invocation_id, "my-id");
 
-            // First time, responds with any completed, then it actually cancels
-            assert_eq!(
-                vm.do_progress(vec![call_handle.call_notification_handle])
-                    .unwrap(),
-                DoProgressResponse::AnyCompleted
-            );
             assert_eq!(
                 vm.do_progress(vec![call_handle.call_notification_handle])
                     .unwrap(),
@@ -111,12 +105,6 @@ fn call_then_cancel() {
                 )
                 .unwrap();
 
-            // First time, responds with any completed, then it actually cancels
-            assert_eq!(
-                vm.do_progress(vec![call_handle.call_notification_handle])
-                    .unwrap(),
-                DoProgressResponse::AnyCompleted
-            );
             assert_eq!(
                 vm.do_progress(vec![call_handle.call_notification_handle])
                     .unwrap(),
@@ -151,7 +139,7 @@ fn call_then_cancel() {
 }
 
 #[test]
-fn call_then_then_cancel_without_invocation_id() {
+fn call_then_cancel_without_invocation_id() {
     let mut output = VMTestCase::new()
         .input(start_message(1))
         .input(input_entry_message(b"my-data"))
@@ -172,12 +160,7 @@ fn call_then_then_cancel_without_invocation_id() {
                 )
                 .unwrap();
 
-            // First time, responds with any completed, then suspends because it's missing the invocation id to complete the cancellation
-            assert_eq!(
-                vm.do_progress(vec![call_handle.call_notification_handle])
-                    .unwrap(),
-                DoProgressResponse::AnyCompleted
-            );
+            // Suspends because it's missing the invocation id to complete the cancellation
             assert_that!(
                 vm.do_progress(vec![call_handle.call_notification_handle]),
                 err(is_suspended())
@@ -229,12 +212,6 @@ fn call_then_then_cancel_disabling_children_cancellation() {
             )
             .unwrap();
 
-        // First time, responds with any completed, then suspends because it's missing the invocation id to complete the cancellation
-        assert_eq!(
-            vm.do_progress(vec![call_handle.call_notification_handle])
-                .unwrap(),
-            DoProgressResponse::AnyCompleted
-        );
         assert_eq!(
             vm.do_progress(vec![call_handle.call_notification_handle])
                 .unwrap(),
@@ -305,6 +282,98 @@ fn disabled_implicit_cancellation() {
             waiting_completions: eq(vec![2]),
             waiting_signals: empty()
         })
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn replay_while_cancelling() {
+    let mut output = VMTestCase::new()
+        .input(start_message(7))
+        .input(input_entry_message(b"my-data"))
+        .input(CallCommandMessage {
+            service_name: "MySvc".to_string(),
+            handler_name: "MyHandler".to_string(),
+            invocation_id_notification_idx: 1,
+            result_completion_id: 2,
+            ..CallCommandMessage::default()
+        })
+        .input(CallInvocationIdCompletionNotificationMessage {
+            completion_id: 1,
+            invocation_id: "my-id-1".to_string(),
+        })
+        .input(CallCommandMessage {
+            service_name: "MySvc".to_string(),
+            handler_name: "MyHandler".to_string(),
+            invocation_id_notification_idx: 3,
+            result_completion_id: 4,
+            ..CallCommandMessage::default()
+        })
+        .input(CallInvocationIdCompletionNotificationMessage {
+            completion_id: 3,
+            invocation_id: "my-id-2".to_string(),
+        })
+        .input(cancel_signal_notification())
+        .input(SendSignalCommandMessage {
+            target_invocation_id: "my-id-1".to_string(),
+            signal_id: Some(send_signal_command_message::SignalId::Idx(CANCEL_SIGNAL_ID)),
+            result: Some(send_signal_command_message::Result::Void(Default::default())),
+            ..Default::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            let call_handle_1 = vm
+                .sys_call(
+                    Target {
+                        service: "MySvc".to_string(),
+                        handler: "MyHandler".to_string(),
+                        key: None,
+                        idempotency_key: None,
+                        headers: Vec::new(),
+                    },
+                    Bytes::new(),
+                )
+                .unwrap();
+
+            let call_handle_2 = vm
+                .sys_call(
+                    Target {
+                        service: "MySvc".to_string(),
+                        handler: "MyHandler".to_string(),
+                        key: None,
+                        idempotency_key: None,
+                        headers: Vec::new(),
+                    },
+                    Bytes::new(),
+                )
+                .unwrap();
+
+            // First time, responds with any completed, then suspends because it's missing the invocation id to complete the cancellation
+            assert_eq!(
+                vm.do_progress(vec![
+                    call_handle_1.call_notification_handle,
+                    call_handle_2.call_notification_handle
+                ])
+                .unwrap(),
+                DoProgressResponse::CancelSignalReceived
+            );
+
+            vm.sys_end().unwrap();
+        });
+
+    assert_eq!(
+        output.next_decoded::<SendSignalCommandMessage>().unwrap(),
+        SendSignalCommandMessage {
+            target_invocation_id: "my-id-2".to_string(),
+            signal_id: Some(send_signal_command_message::SignalId::Idx(CANCEL_SIGNAL_ID)),
+            result: Some(send_signal_command_message::Result::Void(Default::default())),
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
     );
     assert_eq!(output.next(), None);
 }
