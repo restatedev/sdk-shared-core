@@ -245,7 +245,7 @@ impl Default for VMOptions {
         Self {
             implicit_cancellation: ImplicitCancellationOption::Enabled {
                 cancel_children_calls: true,
-                cancel_children_one_way_calls: true,
+                cancel_children_one_way_calls: false,
             },
         }
     }
