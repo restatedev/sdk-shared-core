@@ -151,7 +151,7 @@ pub struct SendHandle {
     pub invocation_id_notification_handle: NotificationHandle,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, strum::IntoStaticStr)]
 pub enum Value {
     /// a void/None/undefined success
     Void,
