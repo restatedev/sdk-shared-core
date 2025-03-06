@@ -845,15 +845,17 @@ pub enum ServiceProtocolVersion {
     /// Added
     /// * Entry retry mechanism: ErrorMessage.next_retry_delay, StartMessage.retry_count_since_last_stored_entry and StartMessage.duration_since_last_stored_entry
     V2 = 2,
-    /// Added
-    /// * New entry to cancel invocations: CancelInvocationEntryMessage
-    /// * New entry to retrieve the invocation id: GetCallInvocationIdEntryMessage
-    /// * New field to set idempotency key for Call entries
-    /// * New entry to attach to existing invocation: AttachInvocationEntryMessage
-    /// * New entry to get output of existing invocation: GetInvocationOutputEntryMessage
+    /// **Yanked**
     V3 = 3,
-    /// Immutable journal.
+    /// **Yanked**
     V4 = 4,
+    /// Immutable journal. Added:
+    /// * New command to cancel invocations
+    /// * Both Call and Send commands now return an additional notification to return the invocation id
+    /// * New field to set idempotency key for Call/Send commands
+    /// * New command to attach to existing invocation
+    /// * New command to get output of existing invocation
+    V5 = 5,
 }
 impl ServiceProtocolVersion {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -867,6 +869,7 @@ impl ServiceProtocolVersion {
             Self::V2 => "V2",
             Self::V3 => "V3",
             Self::V4 => "V4",
+            Self::V5 => "V5",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -877,6 +880,7 @@ impl ServiceProtocolVersion {
             "V2" => Some(Self::V2),
             "V3" => Some(Self::V3),
             "V4" => Some(Self::V4),
+            "V5" => Some(Self::V5),
             _ => None,
         }
     }

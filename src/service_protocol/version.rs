@@ -7,12 +7,14 @@ pub enum Version {
     V2 = 2,
     V3 = 3,
     V4 = 4,
+    V5 = 5,
 }
 
 const CONTENT_TYPE_V1: &str = "application/vnd.restate.invocation.v1";
 const CONTENT_TYPE_V2: &str = "application/vnd.restate.invocation.v2";
 const CONTENT_TYPE_V3: &str = "application/vnd.restate.invocation.v3";
 const CONTENT_TYPE_V4: &str = "application/vnd.restate.invocation.v4";
+const CONTENT_TYPE_V5: &str = "application/vnd.restate.invocation.v5";
 
 impl Version {
     pub const fn content_type(&self) -> &'static str {
@@ -21,15 +23,16 @@ impl Version {
             Version::V2 => CONTENT_TYPE_V2,
             Version::V3 => CONTENT_TYPE_V3,
             Version::V4 => CONTENT_TYPE_V4,
+            Version::V5 => CONTENT_TYPE_V5,
         }
     }
 
     pub const fn minimum_supported_version() -> Self {
-        Version::V4
+        Version::V5
     }
 
     pub const fn maximum_supported_version() -> Self {
-        Version::V4
+        Version::V5
     }
 }
 
@@ -57,6 +60,7 @@ impl FromStr for Version {
             CONTENT_TYPE_V2 => Ok(Version::V2),
             CONTENT_TYPE_V3 => Ok(Version::V3),
             CONTENT_TYPE_V4 => Ok(Version::V4),
+            CONTENT_TYPE_V5 => Ok(Version::V5),
             s if s.starts_with("application/vnd.restate.invocation.") => {
                 Err(ContentTypeError::RestateContentType(s.to_owned()))
             }
