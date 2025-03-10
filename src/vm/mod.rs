@@ -614,17 +614,30 @@ impl super::VM for CoreVM {
     )]
     fn sys_sleep(
         &mut self,
+        name: String,
         wake_up_time_since_unix_epoch: Duration,
         now_since_unix_epoch: Option<Duration>,
     ) -> VMResult<NotificationHandle> {
         if self.is_processing() {
-            if let Some(now_since_unix_epoch) = now_since_unix_epoch {
-                debug!(
-                    "Executing 'Sleeping for {:?}'",
-                    wake_up_time_since_unix_epoch - now_since_unix_epoch
-                );
-            } else {
-                debug!("Executing 'Sleeping");
+            match (&name, now_since_unix_epoch) {
+                (name, Some(now_since_unix_epoch)) if name.is_empty() => {
+                    debug!(
+                        "Executing 'Timer with duration {:?}'",
+                        wake_up_time_since_unix_epoch - now_since_unix_epoch
+                    );
+                }
+                (name, Some(now_since_unix_epoch)) => {
+                    debug!(
+                        "Executing 'Timer {name} with duration {:?}'",
+                        wake_up_time_since_unix_epoch - now_since_unix_epoch
+                    );
+                }
+                (name, None) if name.is_empty() => {
+                    debug!("Executing 'Timer'");
+                }
+                (name, None) => {
+                    debug!("Executing 'Timer named {name}'");
+                }
             }
         }
 
@@ -636,7 +649,7 @@ impl super::VM for CoreVM {
                 wake_up_time: u64::try_from(wake_up_time_since_unix_epoch.as_millis())
                     .expect("millis since Unix epoch should fit in u64"),
                 result_completion_id: completion_id,
-                ..Default::default()
+                name,
             },
             completion_id,
         ))
