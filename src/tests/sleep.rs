@@ -9,7 +9,9 @@ use test_log::test;
 fn sleep_handler(vm: &mut CoreVM) {
     vm.sys_input().unwrap();
 
-    let h1 = vm.sys_sleep(Duration::from_secs(1), None).unwrap();
+    let h1 = vm
+        .sys_sleep(String::default(), Duration::from_secs(1), None)
+        .unwrap();
 
     if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
         assert_that!(

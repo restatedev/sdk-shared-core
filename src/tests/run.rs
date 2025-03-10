@@ -619,7 +619,8 @@ mod retry_policy {
                 vm.sys_input().unwrap();
 
                 // Just create another journal entry
-                vm.sys_sleep(Duration::from_secs(100), None).unwrap();
+                vm.sys_sleep(String::default(), Duration::from_secs(100), None)
+                    .unwrap();
 
                 // Now try to enter run
                 let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();

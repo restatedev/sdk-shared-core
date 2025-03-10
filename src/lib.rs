@@ -319,6 +319,7 @@ pub trait VM: Sized {
     /// Note: `now_since_unix_epoch` is only used for debugging purposes
     fn sys_sleep(
         &mut self,
+        name: String,
         wake_up_time_since_unix_epoch: Duration,
         now_since_unix_epoch: Option<Duration>,
     ) -> VMResult<NotificationHandle>;
