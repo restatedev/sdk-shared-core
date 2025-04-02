@@ -102,6 +102,13 @@ impl CoreVM {
         }
     }
 
+    fn debug_state(&self) -> &'static str {
+        match &self.last_transition {
+            Ok(s) => s.into(),
+            Err(_) => "Failed",
+        }
+    }
+
     fn verify_feature_support(
         &mut self,
         feature: &'static str,
@@ -237,6 +244,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -258,6 +266,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -295,6 +304,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -310,6 +320,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -327,6 +338,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -352,6 +364,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -371,6 +384,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -385,6 +399,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -457,6 +472,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -499,6 +515,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -513,6 +530,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -528,6 +546,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -543,6 +562,7 @@ impl super::VM for CoreVM {
         skip(self, value),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -566,6 +586,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -588,6 +609,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -607,6 +629,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -660,6 +683,7 @@ impl super::VM for CoreVM {
         skip(self, input),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -731,6 +755,7 @@ impl super::VM for CoreVM {
         skip(self, input),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -808,6 +833,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -834,6 +860,7 @@ impl super::VM for CoreVM {
         skip(self, value),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -863,6 +890,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -882,6 +910,7 @@ impl super::VM for CoreVM {
         skip(self, value),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -917,6 +946,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -942,6 +972,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -967,6 +998,7 @@ impl super::VM for CoreVM {
         skip(self, value),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -1004,6 +1036,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -1018,6 +1051,7 @@ impl super::VM for CoreVM {
         skip(self, value, retry_policy),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -1055,6 +1089,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -1082,6 +1117,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -1134,6 +1170,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -1188,6 +1225,7 @@ impl super::VM for CoreVM {
         skip(self, value),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
@@ -1219,6 +1257,7 @@ impl super::VM for CoreVM {
         skip(self),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
             restate.protocol.version = %self.version
         ),
