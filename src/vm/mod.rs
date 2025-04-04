@@ -217,7 +217,8 @@ impl super::VM for CoreVM {
             return Err(Error::new(
                 errors::codes::UNSUPPORTED_MEDIA_TYPE,
                 format!(
-                    "Unsupported protocol version {:?}. Supported versions: {:?} to {:?}",
+                    "Unsupported protocol version {:?}, not within [{:?} to {:?}]. \
+                    You might need to rediscover the service, check https://docs.restate.dev/references/errors/#RT0015",
                     version,
                     Version::minimum_supported_version(),
                     Version::maximum_supported_version()
