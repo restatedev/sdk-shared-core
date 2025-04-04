@@ -18,14 +18,14 @@ use crate::{
     AttachInvocationTarget, CallHandle, DoProgressResponse, Error, Header,
     ImplicitCancellationOption, Input, NonEmptyValue, NotificationHandle, ResponseHead,
     RetryPolicy, RunExitResult, SendHandle, SuspendedOrVMError, TakeOutputResult, Target,
-    VMOptions, VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
+    TerminalFailure, VMOptions, VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use context::{AsyncResultsState, Context, Output, RunState};
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
 use std::time::Duration;
 use std::{fmt, mem};
@@ -90,6 +90,9 @@ pub struct CoreVM {
 
     // Implicit cancellation tracking
     tracked_invocation_ids: Vec<TrackedInvocationId>,
+
+    // Run names, useful for debugging
+    sys_run_names: HashMap<NotificationHandle, String>,
 }
 
 impl CoreVM {
@@ -236,6 +239,7 @@ impl super::VM for CoreVM {
             },
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],
+            sys_run_names: HashMap::with_capacity(0),
         })
     }
 
@@ -1043,7 +1047,16 @@ impl super::VM for CoreVM {
         ret
     )]
     fn sys_run(&mut self, name: String) -> VMResult<NotificationHandle> {
-        self.do_transition(SysRun(name))
+        match self.do_transition(SysRun(name.clone())) {
+            Ok(handle) => {
+                if enabled!(Level::DEBUG) {
+                    // Store the name, we need it later when completing
+                    self.sys_run_names.insert(handle, name);
+                }
+                Ok(handle)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     #[instrument(
@@ -1064,15 +1077,23 @@ impl super::VM for CoreVM {
         retry_policy: RetryPolicy,
     ) -> VMResult<()> {
         if enabled!(Level::DEBUG) {
+            let name: &str = self
+                .sys_run_names
+                .get(&notification_handle)
+                .map(String::as_str)
+                .unwrap_or_default();
             match &value {
                 RunExitResult::Success(_) => {
-                    invocation_debug_logs!(self, "Journaling 'run' success result");
+                    invocation_debug_logs!(self, "Journaling run '{name}' success result");
                 }
-                RunExitResult::TerminalFailure(_) => {
-                    invocation_debug_logs!(self, "Journaling 'run' terminal failure result");
+                RunExitResult::TerminalFailure(TerminalFailure { code, .. }) => {
+                    invocation_debug_logs!(
+                        self,
+                        "Journaling run '{name}' terminal failure {code} result"
+                    );
                 }
                 RunExitResult::RetryableFailure { .. } => {
-                    invocation_debug_logs!(self, "Propagating 'run' failure");
+                    invocation_debug_logs!(self, "Propagating run '{name}' retryable failure");
                 }
             }
         }
