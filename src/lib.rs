@@ -1,3 +1,4 @@
+pub mod error;
 mod headers;
 #[cfg(feature = "request_identity")]
 mod request_identity;
@@ -10,16 +11,12 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 pub use crate::retries::RetryPolicy;
+pub use error::Error;
 pub use headers::HeaderMap;
 #[cfg(feature = "request_identity")]
 pub use request_identity::*;
 pub use service_protocol::Version;
 pub use vm::CoreVM;
-
-// Re-export only some stuff from vm::errors
-pub mod error {
-    pub use crate::vm::errors::{codes, InvocationErrorCode};
-}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Header {
@@ -32,68 +29,6 @@ pub struct ResponseHead {
     pub status_code: u16,
     pub headers: Vec<Header>,
     pub version: Version,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
-#[error("State machine error [{code}]: {message}. Stacktrace: {stacktrace}")]
-pub struct Error {
-    code: u16,
-    message: Cow<'static, str>,
-    stacktrace: Cow<'static, str>,
-}
-
-impl Error {
-    pub fn new(code: impl Into<u16>, message: impl Into<Cow<'static, str>>) -> Self {
-        Error {
-            code: code.into(),
-            message: message.into(),
-            stacktrace: Default::default(),
-        }
-    }
-
-    pub fn internal(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::new(error::codes::INTERNAL, message)
-    }
-
-    pub fn code(&self) -> u16 {
-        self.code
-    }
-
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-
-    pub fn description(&self) -> &str {
-        &self.stacktrace
-    }
-
-    pub fn with_stacktrace(mut self, stacktrace: impl Into<Cow<'static, str>>) -> Self {
-        self.stacktrace = stacktrace.into();
-        self
-    }
-
-    /// Append the given description to the original one, in case the code is the same
-    pub fn append_description_for_code(
-        mut self,
-        code: impl Into<u16>,
-        description: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        let c = code.into();
-        if self.code == c {
-            if self.stacktrace.is_empty() {
-                self.stacktrace = description.into();
-            } else {
-                self.stacktrace = format!("{}. {}", self.stacktrace, description.into()).into();
-            }
-            self
-        } else {
-            self
-        }
-    }
-
-    pub fn is_suspended_error(&self) -> bool {
-        self == &vm::errors::SUSPENDED
-    }
 }
 
 #[derive(Debug, Eq, PartialEq)]

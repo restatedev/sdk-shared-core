@@ -404,11 +404,9 @@ fn enter_then_notify_error() {
     );
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
-        error_message_as_vm_error(Error {
-            code: 500,
-            message: Cow::Borrowed("my-error"),
-            stacktrace: Cow::Borrowed("my-error-description"),
-        })
+        error_message_as_vm_error(
+            Error::new(500u16, "my-error").with_stacktrace("my-error-description")
+        )
     );
     assert_eq!(output.next(), None);
 }

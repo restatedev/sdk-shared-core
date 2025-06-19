@@ -118,15 +118,14 @@ impl CoreVM {
         minimum_required_protocol: Version,
     ) -> VMResult<()> {
         if self.version < minimum_required_protocol {
-            return self.do_transition(HitError {
-                error: UnsupportedFeatureForNegotiatedVersion::new(
+            return self.do_transition(HitError(
+                UnsupportedFeatureForNegotiatedVersion::new(
                     feature,
                     self.version,
                     minimum_required_protocol,
                 )
                 .into(),
-                next_retry_delay: None,
-            });
+            ));
         }
         Ok(())
     }
@@ -236,7 +235,6 @@ impl super::VM for CoreVM {
                 start_info: None,
                 journal: Default::default(),
                 eager_state: Default::default(),
-                next_retry_delay: None,
             },
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],
@@ -290,13 +288,7 @@ impl super::VM for CoreVM {
                     return;
                 }
                 Err(e) => {
-                    if self
-                        .do_transition(HitError {
-                            error: e.into(),
-                            next_retry_delay: None,
-                        })
-                        .is_err()
-                    {
+                    if self.do_transition(HitError(e.into())).is_err() {
                         return;
                     }
                 }
@@ -332,10 +324,7 @@ impl super::VM for CoreVM {
         ret
     )]
     fn notify_error(&mut self, error: Error, next_retry_delay: Option<Duration>) {
-        let _ = self.do_transition(HitError {
-            error,
-            next_retry_delay,
-        });
+        let _ = self.do_transition(HitError(error));
     }
 
     #[instrument(
@@ -701,10 +690,7 @@ impl super::VM for CoreVM {
         if let Some(idempotency_key) = &target.idempotency_key {
             self.verify_feature_support("attach idempotency key to call", Version::V3)?;
             if idempotency_key.is_empty() {
-                self.do_transition(HitError {
-                    error: EMPTY_IDEMPOTENCY_KEY,
-                    next_retry_delay: None,
-                })?;
+                self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
                 unreachable!();
             }
         }
@@ -778,10 +764,7 @@ impl super::VM for CoreVM {
         if let Some(idempotency_key) = &target.idempotency_key {
             self.verify_feature_support("attach idempotency key to one way call", Version::V3)?;
             if idempotency_key.is_empty() {
-                self.do_transition(HitError {
-                    error: EMPTY_IDEMPOTENCY_KEY,
-                    next_retry_delay: None,
-                })?;
+                self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
                 unreachable!();
             }
         }

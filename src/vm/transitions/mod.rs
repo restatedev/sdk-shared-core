@@ -75,29 +75,35 @@ impl CoreVM {
 
                         // We need to handle this error and register it!
                         self.last_transition = Err(e.clone());
-                        let msg = ErrorMessage {
-                            code: e.code as u32,
-                            message: e.message.clone().into_owned(),
-                            stacktrace: e.stacktrace.clone().into_owned(),
-                            related_command_index: Some(self.context.journal.command_index() as u32),
-                            related_command_name: Some(
-                                self.context.journal.current_entry_name.clone(),
-                            ),
-                            related_command_type: Some(u16::from(
-                                self.context.journal.current_entry_ty,
-                            ) as u32),
-                            next_retry_delay: self
-                                .context
-                                .next_retry_delay
-                                .map(|d| d.as_millis() as u64),
-                        };
-                        self.context.output.send(&msg);
+                        self.context.output.send(&e.as_error_message());
                         self.context.output.send_eof();
 
                         Err(e)
                     }
                 }
             }
+        }
+    }
+}
+
+impl Error {
+    fn as_error_message(&self) -> ErrorMessage {
+        ErrorMessage {
+            code: self.code as u32,
+            message: self.message.clone().into_owned(),
+            stacktrace: self.stacktrace.clone().into_owned(),
+            related_command_index: self.related_command.as_ref().and_then(|rc| rc.index),
+            related_command_name: self
+                .related_command
+                .as_ref()
+                .and_then(|rc| rc.name.as_ref())
+                .map(|name| name.clone().into_owned()),
+            related_command_type: self
+                .related_command
+                .as_ref()
+                .and_then(|rc| rc.ty)
+                .map(|ty| u16::from(ty).into()),
+            next_retry_delay: self.next_retry_delay.map(|d| d.as_millis() as u64),
         }
     }
 }

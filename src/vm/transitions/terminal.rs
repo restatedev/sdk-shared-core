@@ -5,24 +5,11 @@ use crate::vm::transitions::Transition;
 use crate::vm::State;
 use crate::Error;
 use std::collections::HashSet;
-use std::time::Duration;
 
-pub(crate) struct HitError {
-    pub(crate) error: Error,
-    pub(crate) next_retry_delay: Option<Duration>,
-}
+pub(crate) struct HitError(pub(crate) Error);
 
 impl Transition<Context, HitError> for State {
-    fn transition(
-        self,
-        ctx: &mut Context,
-        HitError {
-            error,
-            next_retry_delay,
-        }: HitError,
-    ) -> Result<Self, Error> {
-        ctx.next_retry_delay = next_retry_delay;
-
+    fn transition(self, _: &mut Context, HitError(error): HitError) -> Result<Self, Error> {
         // We let CoreVM::do_transition handle this
         Err(error)
     }

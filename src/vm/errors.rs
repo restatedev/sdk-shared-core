@@ -74,6 +74,8 @@ impl Error {
             code: code.0,
             message: Cow::Borrowed(message),
             stacktrace: Cow::Borrowed(""),
+            related_command: None,
+            next_retry_delay: None,
         }
     }
 }

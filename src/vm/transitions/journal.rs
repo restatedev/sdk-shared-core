@@ -1,3 +1,4 @@
+use crate::error::RelatedCommand;
 use crate::retries::NextRetry;
 use crate::service_protocol::messages::{
     get_eager_state_command_message, propose_run_completion_message, CommandMessageHeaderEq,
@@ -642,7 +643,11 @@ impl TransitionAndReturn<Context, SysRun> for State {
             );
             match &mut s {
                 State::Replaying { run_state, .. } | State::Processing { run_state, .. } => {
-                    run_state.insert_run_to_execute(handle)
+                    run_state.insert_run_to_execute(
+                        handle,
+                        context.journal.command_index() as u32,
+                        name,
+                    )
                 }
                 _ => {}
             };
@@ -672,7 +677,8 @@ impl Transition<Context, ProposeRunCompletion> for State {
             } => {
                 let notification_id =
                     async_results.must_resolve_notification_handle(&notification_handle);
-                run_state.notify_executed(notification_handle);
+                let (run_name, run_command_index) =
+                    run_state.notify_execution_completed(notification_handle);
 
                 let value = match run_exit_result {
                     RunExitResult::Success(s) => propose_run_completion_message::Result::Value(s),
@@ -693,9 +699,16 @@ impl Transition<Context, ProposeRunCompletion> for State {
 
                         match retry_policy.next_retry(retry_info) {
                             NextRetry::Retry(next_retry_interval) => {
+                                let mut error = Error::new(error.code, error.message);
+                                error.next_retry_delay = next_retry_interval;
+                                error.related_command = Some(RelatedCommand::new(
+                                    run_name,
+                                    run_command_index,
+                                    MessageType::RunCommand,
+                                ));
+
                                 // We need to retry!
-                                context.next_retry_delay = next_retry_interval;
-                                return Err(Error::new(error.code, error.message));
+                                return Err(error);
                             }
                             NextRetry::DoNotRetry => {
                                 // We don't retry, but convert the retryable error to actual error
