@@ -13,11 +13,11 @@ fn sleep_handler(vm: &mut CoreVM) {
         .sys_sleep(String::default(), Duration::from_secs(1), None)
         .unwrap();
 
-    if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-        assert_that!(
-            vm.take_notification(h1),
-            err(pat!(SuspendedOrVMError::Suspended(_)))
-        );
+    if vm
+        .do_progress(vec![h1])
+        .is_err_and(|e| e.is_suspended_error())
+    {
+        assert_that!(vm.take_notification(h1), err(is_suspended()));
         return;
     }
     let_assert!(Some(Value::Void) = vm.take_notification(h1).unwrap());

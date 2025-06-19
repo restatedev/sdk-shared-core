@@ -11,14 +11,14 @@ use crate::service_protocol::messages::{
 };
 use crate::service_protocol::{Decoder, NotificationId, RawMessage, Version, CANCEL_SIGNAL_ID};
 use crate::vm::errors::{
-    UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion, EMPTY_IDEMPOTENCY_KEY,
+    UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion, EMPTY_IDEMPOTENCY_KEY, SUSPENDED,
 };
 use crate::vm::transitions::*;
 use crate::{
     AttachInvocationTarget, CallHandle, DoProgressResponse, Error, Header,
     ImplicitCancellationOption, Input, NonEmptyValue, NotificationHandle, ResponseHead,
-    RetryPolicy, RunExitResult, SendHandle, SuspendedOrVMError, TakeOutputResult, Target,
-    TerminalFailure, VMOptions, VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
+    RetryPolicy, RunExitResult, SendHandle, TakeOutputResult, Target, TerminalFailure, VMOptions,
+    VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -144,11 +144,11 @@ impl CoreVM {
     fn _do_progress(
         &mut self,
         any_handle: Vec<NotificationHandle>,
-    ) -> Result<DoProgressResponse, SuspendedOrVMError> {
+    ) -> Result<DoProgressResponse, Error> {
         match self.do_transition(DoProgress(any_handle)) {
             Ok(Ok(do_progress_response)) => Ok(do_progress_response),
-            Ok(Err(suspended)) => Err(SuspendedOrVMError::Suspended(suspended)),
-            Err(e) => Err(SuspendedOrVMError::VM(e)),
+            Ok(Err(_)) => Err(SUSPENDED),
+            Err(e) => Err(e),
         }
     }
 
@@ -413,7 +413,7 @@ impl super::VM for CoreVM {
     fn do_progress(
         &mut self,
         mut any_handle: Vec<NotificationHandle>,
-    ) -> Result<DoProgressResponse, SuspendedOrVMError> {
+    ) -> VMResult<DoProgressResponse> {
         if self.is_implicit_cancellation_enabled() {
             // We want the runtime to wake us up in case cancel notification comes in.
             any_handle.insert(0, CANCEL_NOTIFICATION_HANDLE);
@@ -435,6 +435,7 @@ impl super::VM for CoreVM {
                                 Ok(DoProgressResponse::AnyCompleted) => {
                                     let invocation_id = match self.do_transition(CopyNotification(handle)) {
                                         Ok(Ok(Some(Value::InvocationId(invocation_id)))) => Ok(invocation_id),
+                                        Ok(Err(_)) => Err(SUSPENDED),
                                         _ => panic!("Unexpected variant! If the id handle is completed, it must be an invocation id handle!")
                                     }?;
 
@@ -452,8 +453,7 @@ impl super::VM for CoreVM {
                                 tracked_invocation_id
                                     .invocation_id
                                     .expect("We resolved before all the invocation ids"),
-                            )
-                            .map_err(SuspendedOrVMError::VM)?;
+                            )?;
                         }
 
                         // Flip the cancellation
@@ -483,10 +483,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn take_notification(
-        &mut self,
-        handle: NotificationHandle,
-    ) -> Result<Option<Value>, SuspendedOrVMError> {
+    fn take_notification(&mut self, handle: NotificationHandle) -> VMResult<Option<Value>> {
         match self.do_transition(TakeNotification(handle)) {
             Ok(Ok(Some(value))) => {
                 if self.is_implicit_cancellation_enabled() {
@@ -510,8 +507,8 @@ impl super::VM for CoreVM {
                 Ok(Some(value))
             }
             Ok(Ok(None)) => Ok(None),
-            Ok(Err(suspended)) => Err(SuspendedOrVMError::Suspended(suspended)),
-            Err(e) => Err(SuspendedOrVMError::VM(e)),
+            Ok(Err(_)) => Err(SUSPENDED),
+            Err(e) => Err(e),
         }
     }
 

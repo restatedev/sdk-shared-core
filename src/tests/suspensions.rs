@@ -22,10 +22,7 @@ fn trigger_suspension_with_get_state() {
 
             // Let's notify_input_closed now
             vm.notify_input_closed();
-            assert_that!(
-                vm.do_progress(vec![handle]),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+            assert_that!(vm.do_progress(vec![handle]), err(is_suspended()));
         });
 
     // Assert output
@@ -60,10 +57,7 @@ fn trigger_suspension_with_correct_awakeable() {
 
             // Let's notify_input_closed now
             vm.notify_input_closed();
-            assert_that!(
-                vm.do_progress(vec![h2]),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+            assert_that!(vm.do_progress(vec![h2]), err(is_suspended()));
         });
 
     assert_that!(
@@ -89,10 +83,7 @@ fn await_many_notifications() {
 
             // Let's notify_input_closed now
             vm.notify_input_closed();
-            assert_that!(
-                vm.do_progress(vec![h1, h2, h3]),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+            assert_that!(vm.do_progress(vec![h1, h2, h3]), err(is_suspended()));
         });
 
     assert_eq!(

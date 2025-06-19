@@ -63,6 +63,7 @@ pub mod codes {
     pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
     pub const AWAITING_TWO_ASYNC_RESULTS: InvocationErrorCode = InvocationErrorCode(572);
     pub const UNSUPPORTED_FEATURE: InvocationErrorCode = InvocationErrorCode(573);
+    pub const SUSPENDED: InvocationErrorCode = InvocationErrorCode(599);
 }
 
 // Const errors
@@ -104,6 +105,8 @@ pub const EMPTY_IDEMPOTENCY_KEY: Error = Error::new_const(
     codes::INTERNAL,
     "Trying to execute an idempotent request with an empty idempotency key. The idempotency key must be non-empty.",
 );
+
+pub const SUSPENDED: Error = Error::new_const(codes::SUSPENDED, "Suspended invocation");
 
 // Other errors
 

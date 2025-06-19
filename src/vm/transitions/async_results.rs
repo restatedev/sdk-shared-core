@@ -1,13 +1,15 @@
 use crate::vm::context::Context;
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::State;
-use crate::{DoProgressResponse, Error, NotificationHandle, SuspendedError, Value};
+use crate::{DoProgressResponse, Error, NotificationHandle, Value};
 use tracing::trace;
+
+pub(crate) struct Suspended;
 
 pub(crate) struct DoProgress(pub(crate) Vec<NotificationHandle>);
 
 impl TransitionAndReturn<Context, DoProgress> for State {
-    type Output = Result<DoProgressResponse, SuspendedError>;
+    type Output = Result<DoProgressResponse, Suspended>;
 
     fn transition_and_return(
         mut self,
@@ -43,7 +45,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 // Check suspension condition
                 if context.input_is_closed {
                     let state = self.transition(context, HitSuspensionPoint(notification_ids))?;
-                    return Ok((state, Err(SuspendedError)));
+                    return Ok((state, Err(Suspended)));
                 };
 
                 // Nothing else can be done, we need more input
@@ -92,13 +94,13 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                     }
 
                     let state = self.transition(context, HitSuspensionPoint(notification_ids))?;
-                    return Ok((state, Err(SuspendedError)));
+                    return Ok((state, Err(Suspended)));
                 };
 
                 // Nothing else can be done, we need more input
                 Ok((self, Ok(DoProgressResponse::ReadFromInput)))
             }
-            s @ State::Suspended => Ok((s, Err(SuspendedError))),
+            s @ State::Suspended => Ok((s, Err(Suspended))),
             s => Err(s.as_unexpected_state("DoProgress")),
         }
     }
@@ -107,7 +109,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
 pub(crate) struct TakeNotification(pub(crate) NotificationHandle);
 
 impl TransitionAndReturn<Context, TakeNotification> for State {
-    type Output = Result<Option<Value>, SuspendedError>;
+    type Output = Result<Option<Value>, Suspended>;
 
     fn transition_and_return(
         mut self,
@@ -126,7 +128,7 @@ impl TransitionAndReturn<Context, TakeNotification> for State {
                 let opt = async_results.take_handle(handle);
                 Ok((self, Ok(opt.map(Into::into))))
             }
-            State::Suspended => Ok((self, Err(SuspendedError))),
+            State::Suspended => Ok((self, Err(Suspended))),
             s => Err(s.as_unexpected_state("TakeNotification")),
         }
     }
@@ -135,7 +137,7 @@ impl TransitionAndReturn<Context, TakeNotification> for State {
 pub(crate) struct CopyNotification(pub(crate) NotificationHandle);
 
 impl TransitionAndReturn<Context, CopyNotification> for State {
-    type Output = Result<Option<Value>, SuspendedError>;
+    type Output = Result<Option<Value>, Suspended>;
 
     fn transition_and_return(
         mut self,
@@ -154,7 +156,7 @@ impl TransitionAndReturn<Context, CopyNotification> for State {
                 let opt = async_results.copy_handle(handle);
                 Ok((self, Ok(opt.map(Into::into))))
             }
-            State::Suspended => Ok((self, Err(SuspendedError))),
+            State::Suspended => Ok((self, Err(Suspended))),
             s => Err(s.as_unexpected_state("CopyNotification")),
         }
     }

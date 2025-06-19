@@ -157,8 +157,9 @@ pub fn suspended_waiting_signal(signal_idx: u32) -> impl Matcher<ActualT = Suspe
     })
 }
 
-pub fn is_suspended() -> impl Matcher<ActualT = SuspendedOrVMError> {
-    pat!(SuspendedOrVMError::Suspended(_))
+pub fn is_suspended() -> impl Matcher<ActualT = Error> {
+    predicate(|e: &Error| e.is_suspended_error())
+        .with_description("is suspended error", "is not suspended error")
 }
 
 pub fn is_output_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = OutputCommandMessage> {

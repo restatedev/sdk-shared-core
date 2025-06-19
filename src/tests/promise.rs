@@ -13,11 +13,11 @@ mod get_promise {
 
         let h1 = vm.sys_get_promise("my-prom".to_owned()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-            assert_that!(
-                vm.take_notification(h1),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h1])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h1), err(is_suspended()));
             return;
         }
         let output = match vm.take_notification(h1).unwrap().expect("Should be ready") {
@@ -122,11 +122,11 @@ mod peek_promise {
 
         let h1 = vm.sys_peek_promise("my-prom".to_owned()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-            assert_that!(
-                vm.take_notification(h1),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h1])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h1), err(is_suspended()));
             return;
         }
         let output = match vm.take_notification(h1).unwrap().expect("Should be ready") {
@@ -274,11 +274,11 @@ mod complete_promise {
                 .sys_complete_promise("my-prom".to_owned(), result)
                 .unwrap();
 
-            if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-                assert_that!(
-                    vm.take_notification(h1),
-                    err(pat!(SuspendedOrVMError::Suspended(_)))
-                );
+            if vm
+                .do_progress(vec![h1])
+                .is_err_and(|e| e.is_suspended_error())
+            {
+                assert_that!(vm.take_notification(h1), err(is_suspended()));
                 return;
             }
             let output = match vm.take_notification(h1).unwrap().expect("Should be ready") {

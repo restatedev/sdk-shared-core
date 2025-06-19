@@ -18,8 +18,7 @@ pub use vm::CoreVM;
 
 // Re-export only some stuff from vm::errors
 pub mod error {
-    pub use crate::vm::errors::codes;
-    pub use crate::vm::errors::InvocationErrorCode;
+    pub use crate::vm::errors::{codes, InvocationErrorCode};
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -35,11 +34,7 @@ pub struct ResponseHead {
     pub version: Version,
 }
 
-#[derive(Debug, Clone, Copy, thiserror::Error)]
-#[error("Suspended execution")]
-pub struct SuspendedError;
-
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 #[error("State machine error [{code}]: {message}. Stacktrace: {stacktrace}")]
 pub struct Error {
     code: u16,
@@ -95,14 +90,10 @@ impl Error {
             self
         }
     }
-}
 
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum SuspendedOrVMError {
-    #[error(transparent)]
-    Suspended(SuspendedError),
-    #[error(transparent)]
-    VM(Error),
+    pub fn is_suspended_error(&self) -> bool {
+        self == &vm::errors::SUSPENDED
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -292,15 +283,9 @@ pub trait VM: Sized {
 
     fn is_completed(&self, handle: NotificationHandle) -> bool;
 
-    fn do_progress(
-        &mut self,
-        any_handle: Vec<NotificationHandle>,
-    ) -> Result<DoProgressResponse, SuspendedOrVMError>;
+    fn do_progress(&mut self, any_handle: Vec<NotificationHandle>) -> VMResult<DoProgressResponse>;
 
-    fn take_notification(
-        &mut self,
-        handle: NotificationHandle,
-    ) -> Result<Option<Value>, SuspendedOrVMError>;
+    fn take_notification(&mut self, handle: NotificationHandle) -> VMResult<Option<Value>>;
 
     // --- Syscall(s)
 

@@ -132,7 +132,7 @@ mod do_progress {
 
                 vm.notify_input_closed();
 
-                let_assert!(Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h]));
+                assert_that!(vm.do_progress(vec![h]), err(is_suspended()));
             });
 
         assert_that!(
@@ -158,12 +158,13 @@ mod reverse_await_order {
             .sys_call(greeter_target(), Bytes::from_static(b"Till"))
             .unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) =
-            vm.do_progress(vec![h2.call_notification_handle])
+        if vm
+            .do_progress(vec![h2.call_notification_handle])
+            .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(
                 vm.take_notification(h2.call_notification_handle),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
+                err(is_suspended())
             );
             return;
         }
@@ -174,12 +175,13 @@ mod reverse_await_order {
 
         vm.sys_state_set("A2".to_owned(), h2_value.clone()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) =
-            vm.do_progress(vec![h1.call_notification_handle])
+        if vm
+            .do_progress(vec![h1.call_notification_handle])
+            .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(
                 vm.take_notification(h1.call_notification_handle),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
+                err(is_suspended())
             );
             return;
         }
