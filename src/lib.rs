@@ -60,6 +60,7 @@ pub enum CommandType {
     AttachInvocation,
     GetInvocationOutput,
     CompleteAwakeable,
+    CancelInvocation,
 }
 
 /// Used in `notify_error` to specify which command this error relates to.
