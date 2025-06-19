@@ -15,7 +15,7 @@ use crate::vm::errors::{
 };
 use crate::vm::transitions::*;
 use crate::{
-    AttachInvocationTarget, CallHandle, DoProgressResponse, Error, Header,
+    AttachInvocationTarget, CallHandle, CommandRelationship, DoProgressResponse, Error, Header,
     ImplicitCancellationOption, Input, NonEmptyValue, NotificationHandle, ResponseHead,
     RetryPolicy, RunExitResult, SendHandle, TakeOutputResult, Target, TerminalFailure, VMOptions,
     VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
@@ -323,7 +323,19 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn notify_error(&mut self, error: Error, next_retry_delay: Option<Duration>) {
+    fn notify_error(
+        &mut self,
+        mut error: Error,
+        command_relationship: Option<CommandRelationship>,
+    ) {
+        if let Some(command_relationship) = command_relationship {
+            error = error.with_related_command_metadata(
+                self.context
+                    .journal
+                    .resolve_related_command(command_relationship),
+            );
+        }
+
         let _ = self.do_transition(HitError(error));
     }
 
@@ -1283,6 +1295,10 @@ impl super::VM for CoreVM {
 
     fn is_processing(&self) -> bool {
         matches!(&self.last_transition, Ok(State::Processing { .. }))
+    }
+
+    fn last_command_index(&self) -> i64 {
+        self.context.journal.command_index()
     }
 }
 

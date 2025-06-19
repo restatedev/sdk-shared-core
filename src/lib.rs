@@ -40,6 +40,43 @@ pub struct Input {
     pub input: Bytes,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CommandType {
+    Input,
+    Output,
+    GetState,
+    GetStateKeys,
+    SetState,
+    ClearState,
+    ClearAllState,
+    GetPromise,
+    PeekPromise,
+    CompletePromise,
+    Sleep,
+    Call,
+    OneWayCall,
+    SendSignal,
+    RunCommand,
+    AttachInvocation,
+    GetInvocationOutput,
+    CompleteAwakeable,
+}
+
+/// Used in `notify_error` to specify which command this error relates to.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CommandRelationship {
+    Last,
+    Next {
+        ty: CommandType,
+        name: Option<Cow<'static, str>>,
+    },
+    Specific {
+        command_index: u32,
+        ty: CommandType,
+        name: Option<Cow<'static, str>>,
+    },
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Target {
     pub service: String,
@@ -204,7 +241,7 @@ pub trait VM: Sized {
 
     // --- Errors
 
-    fn notify_error(&mut self, error: Error, next_retry_delay: Option<Duration>);
+    fn notify_error(&mut self, error: Error, related_command: Option<CommandRelationship>);
 
     // --- Output stream
 
@@ -309,6 +346,9 @@ pub trait VM: Sized {
 
     /// Returns true if the state machine is in processing state
     fn is_processing(&self) -> bool;
+
+    /// Returns last command index. Returns `-1` if there was no progress in the journal.
+    fn last_command_index(&self) -> i64;
 }
 
 // HOW TO USE THIS API

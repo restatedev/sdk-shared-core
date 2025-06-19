@@ -1,9 +1,9 @@
-use crate::error::RelatedCommand;
+use crate::error::CommandMetadata;
 use crate::service_protocol::messages::{NamedCommandMessage, RestateMessage};
 use crate::service_protocol::{
     Encoder, MessageType, Notification, NotificationId, NotificationResult, Version,
 };
-use crate::{EntryRetryInfo, NotificationHandle, CANCEL_NOTIFICATION_HANDLE};
+use crate::{CommandRelationship, EntryRetryInfo, NotificationHandle, CANCEL_NOTIFICATION_HANDLE};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -61,8 +61,39 @@ impl Journal {
         next
     }
 
-    pub(crate) fn current_related_command(&self) -> RelatedCommand {
-        RelatedCommand::new(self.command_index() as u32, self.current_entry_ty)
+    pub(crate) fn resolve_related_command(
+        &self,
+        related_command: CommandRelationship,
+    ) -> CommandMetadata {
+        match related_command {
+            CommandRelationship::Last => CommandMetadata {
+                index: self.command_index.unwrap_or_default(),
+                ty: self.current_entry_ty,
+                name: if self.current_entry_name.is_empty() {
+                    None
+                } else {
+                    Some(self.current_entry_name.clone().into())
+                },
+            },
+            CommandRelationship::Next { ty, name } => CommandMetadata {
+                index: self.command_index.unwrap_or_default() + 1,
+                ty: ty.into(),
+                name,
+            },
+            CommandRelationship::Specific {
+                command_index,
+                name,
+                ty,
+            } => CommandMetadata {
+                index: command_index,
+                ty: ty.into(),
+                name,
+            },
+        }
+    }
+
+    pub(crate) fn last_command_metadata(&self) -> CommandMetadata {
+        self.resolve_related_command(CommandRelationship::Last)
     }
 }
 

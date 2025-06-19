@@ -1,4 +1,4 @@
-use crate::error::RelatedCommand;
+use crate::error::CommandMetadata;
 use crate::retries::NextRetry;
 use crate::service_protocol::messages::{
     get_eager_state_command_message, propose_run_completion_message, CommandMessageHeaderEq,
@@ -17,7 +17,10 @@ use crate::vm::errors::{
 };
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
-use crate::{EntryRetryInfo, Error, Header, Input, NotificationHandle, RetryPolicy, RunExitResult};
+use crate::{
+    CommandRelationship, CommandType, EntryRetryInfo, Error, Header, Input, NotificationHandle,
+    RetryPolicy, RunExitResult,
+};
 use bytes::Bytes;
 use std::collections::VecDeque;
 use std::fmt;
@@ -39,7 +42,13 @@ impl TransitionAndReturn<Context, SysInput> for State {
             context,
             PopJournalEntry("SysInput", InputCommandMessage::default()),
         )
-        .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
+        .map_err(|e| {
+            e.with_related_command_metadata(
+                context
+                    .journal
+                    .resolve_related_command(CommandRelationship::Last),
+            )
+        })?;
         let start_info = context.expect_start_info();
 
         Ok((
@@ -87,7 +96,9 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
         context.journal.transition(&expected);
         let (s, _) = self
             .transition_and_return(context, PopOrWriteJournalEntry(sys_name, expected))
-            .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
+            .map_err(|e| {
+                e.with_related_command_metadata(context.journal.last_command_metadata())
+            })?;
         Ok(s)
     }
 }
@@ -111,7 +122,9 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
         context.journal.transition(&expected);
         let (mut s, _) = self
             .transition_and_return(context, PopOrWriteJournalEntry(sys_name, expected))
-            .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
+            .map_err(|e| {
+                e.with_related_command_metadata(context.journal.last_command_metadata())
+            })?;
         match s {
             State::WaitingReplayEntries {
                 ref mut async_results,
@@ -131,7 +144,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
             }
             s => Err(s
                 .as_unexpected_state(sys_name)
-                .with_related_command(context.journal.current_related_command())),
+                .with_related_command_metadata(context.journal.last_command_metadata())),
         }
     }
 }
@@ -183,7 +196,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
             context,
             PopOrWriteJournalEntry(sys_name, expected),
         )
-        .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
+        .map_err(|e| e.with_related_command_metadata(context.journal.last_command_metadata()))?;
 
         match s {
             State::Replaying {
@@ -207,7 +220,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
             }
             s => Err(s
                 .as_unexpected_state(sys_name)
-                .with_related_command(context.journal.current_related_command())),
+                .with_related_command_metadata(context.journal.last_command_metadata())),
         }
     }
 }
@@ -324,16 +337,18 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                     async_results,
                     run_state,
                 )
-                .map_err(|e| e.with_related_command(context.journal.current_related_command()))
+                .map_err(|e| {
+                    e.with_related_command_metadata(context.journal.last_command_metadata())
+                })
             }
-            s => {
-                Err(s
-                    .as_unexpected_state("SysStateGet")
-                    .with_related_command(RelatedCommand::new(
-                        (context.journal.command_index() + 1) as u32,
-                        MessageType::GetEagerStateCommand,
-                    )))
-            }
+            s => Err(s
+                .as_unexpected_state("SysStateGet")
+                .with_related_command_metadata(context.journal.resolve_related_command(
+                    CommandRelationship::Next {
+                        ty: CommandType::GetState,
+                        name: None,
+                    },
+                ))),
         }
     }
 }
@@ -498,13 +513,17 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                     async_results,
                     run_state,
                 )
-                .map_err(|e| e.with_related_command(context.journal.current_related_command()))
+                .map_err(|e| {
+                    e.with_related_command_metadata(context.journal.last_command_metadata())
+                })
             }
             s => Err(s
                 .as_unexpected_state("SysStateGetKeys")
-                .with_related_command(RelatedCommand::new(
-                    (context.journal.command_index() + 1) as u32,
-                    MessageType::GetEagerStateKeysCommand,
+                .with_related_command_metadata(context.journal.resolve_related_command(
+                    CommandRelationship::Next {
+                        ty: CommandType::GetStateKeys,
+                        name: None,
+                    },
                 ))),
         }
     }
@@ -606,7 +625,7 @@ impl TransitionAndReturn<Context, SysRun> for State {
             context,
             SysSimpleCompletableEntry("SysRun", expected, result_completion_id),
         )
-        .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
+        .map_err(|e| e.with_related_command_metadata(context.journal.last_command_metadata()))?;
 
         let notification_id = NotificationId::CompletionId(result_completion_id);
         let mut needs_execution = true;
@@ -686,7 +705,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
                             NextRetry::Retry(next_retry_interval) => {
                                 let mut error = Error::new(error.code, error.message);
                                 error.next_retry_delay = next_retry_interval;
-                                error.related_command = Some(RelatedCommand::new_named(
+                                error.related_command = Some(CommandMetadata::new_named(
                                     run_name,
                                     run_command_index,
                                     MessageType::RunCommand,

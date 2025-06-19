@@ -92,17 +92,17 @@ impl Error {
             code: self.code as u32,
             message: self.message.clone().into_owned(),
             stacktrace: self.stacktrace.clone().into_owned(),
-            related_command_index: self.related_command.as_ref().and_then(|rc| rc.index),
+            related_command_index: self.related_command.as_ref().map(|cmd| cmd.index),
             related_command_name: self
                 .related_command
                 .as_ref()
                 .and_then(|rc| rc.name.as_ref())
+                .and_then(|name| if name.is_empty() { None } else { Some(name) })
                 .map(|name| name.clone().into_owned()),
             related_command_type: self
                 .related_command
                 .as_ref()
-                .and_then(|rc| rc.ty)
-                .map(|ty| u16::from(ty).into()),
+                .map(|cmd| u16::from(cmd.ty).into()),
             next_retry_delay: self.next_retry_delay.map(|d| d.as_millis() as u64),
         }
     }

@@ -1,10 +1,42 @@
 use crate::service_protocol::MessageType;
+use crate::CommandType;
 use std::borrow::Cow;
 use std::time::Duration;
+
 // Export some stuff we need from the internal package
 pub use crate::vm::errors::{codes, InvocationErrorCode};
 
 // -- Error type
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct CommandMetadata {
+    pub(crate) index: u32,
+    pub(crate) ty: MessageType,
+    pub(crate) name: Option<Cow<'static, str>>,
+}
+
+impl CommandMetadata {
+    pub(crate) fn new_named(
+        name: impl Into<Cow<'static, str>>,
+        index: u32,
+        ty: MessageType,
+    ) -> Self {
+        Self {
+            name: Some(name.into()),
+            index,
+            ty,
+        }
+    }
+
+    #[allow(unused)]
+    pub(crate) fn new(index: u32, ty: MessageType) -> Self {
+        Self {
+            name: None,
+            index,
+            ty,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 #[error("State machine error [{code}]: {message}. Stacktrace: {stacktrace}")]
@@ -12,7 +44,7 @@ pub struct Error {
     pub(crate) code: u16,
     pub(crate) message: Cow<'static, str>,
     pub(crate) stacktrace: Cow<'static, str>,
-    pub(crate) related_command: Option<RelatedCommand>,
+    pub(crate) related_command: Option<CommandMetadata>,
     pub(crate) next_retry_delay: Option<Duration>,
 }
 
@@ -48,11 +80,6 @@ impl Error {
         self
     }
 
-    pub fn with_related_command(mut self, related_command: RelatedCommand) -> Self {
-        self.related_command = Some(related_command);
-        self
-    }
-
     pub fn with_next_retry_delay_override(mut self, delay: Duration) -> Self {
         self.next_retry_delay = Some(delay);
         self
@@ -81,35 +108,37 @@ impl Error {
     pub fn is_suspended_error(&self) -> bool {
         self == &crate::vm::errors::SUSPENDED
     }
-}
 
-// -- Error relationships
-
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct RelatedCommand {
-    pub(crate) name: Option<Cow<'static, str>>,
-    pub(crate) index: Option<u32>,
-    pub(crate) ty: Option<MessageType>,
-}
-
-impl RelatedCommand {
-    pub(crate) fn new_named(
-        name: impl Into<Cow<'static, str>>,
-        index: u32,
-        ty: MessageType,
+    pub(crate) fn with_related_command_metadata(
+        mut self,
+        related_command: CommandMetadata,
     ) -> Self {
-        Self {
-            name: Some(name.into()),
-            index: Some(index),
-            ty: Some(ty),
-        }
+        self.related_command = Some(related_command);
+        self
     }
+}
 
-    pub(crate) fn new(index: u32, ty: MessageType) -> Self {
-        Self {
-            name: None,
-            index: Some(index),
-            ty: Some(ty),
+impl From<CommandType> for MessageType {
+    fn from(value: CommandType) -> Self {
+        match value {
+            CommandType::Input => MessageType::InputCommand,
+            CommandType::Output => MessageType::OutputCommand,
+            CommandType::GetState => MessageType::GetLazyStateCommand,
+            CommandType::GetStateKeys => MessageType::GetLazyStateKeysCommand,
+            CommandType::SetState => MessageType::SetStateCommand,
+            CommandType::ClearState => MessageType::ClearStateCommand,
+            CommandType::ClearAllState => MessageType::ClearAllStateCommand,
+            CommandType::GetPromise => MessageType::GetPromiseCommand,
+            CommandType::PeekPromise => MessageType::PeekPromiseCommand,
+            CommandType::CompletePromise => MessageType::CompletePromiseCommand,
+            CommandType::Sleep => MessageType::SleepCommand,
+            CommandType::Call => MessageType::CallCommand,
+            CommandType::OneWayCall => MessageType::OneWayCallCommand,
+            CommandType::SendSignal => MessageType::SendSignalCommand,
+            CommandType::RunCommand => MessageType::RunCommand,
+            CommandType::AttachInvocation => MessageType::AttachInvocationCommand,
+            CommandType::GetInvocationOutput => MessageType::GetInvocationOutputCommand,
+            CommandType::CompleteAwakeable => MessageType::CompleteAwakeableCommand,
         }
     }
 }

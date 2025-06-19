@@ -1,9 +1,10 @@
 use super::*;
 
-use crate::error::RelatedCommand;
+use crate::error::CommandMetadata;
 use crate::service_protocol::messages::{
     ErrorMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage, StartMessage,
 };
+use crate::service_protocol::MessageType;
 use std::fmt;
 use std::result::Result;
 use test_log::test;
@@ -35,6 +36,36 @@ fn got_closed_stream_before_end_of_replay() {
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
         error_message_as_error(vm::errors::INPUT_CLOSED_WHILE_WAITING_ENTRIES)
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn explicit_error_notification() {
+    let mut output = VMTestCase::new()
+        .input(start_message(1))
+        .input(input_entry_message(b"my-data"))
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.notify_error(
+                Error::internal(Cow::Borrowed("my-error"))
+                    .with_next_retry_delay_override(Duration::from_secs(10)),
+                Some(CommandRelationship::Next {
+                    ty: CommandType::Call,
+                    name: None,
+                }),
+            );
+        });
+    assert_that!(
+        output.next_decoded::<ErrorMessage>().unwrap(),
+        pat!(ErrorMessage {
+            code: eq(500u32),
+            message: eq("my-error".to_owned()),
+            related_command_type: eq(Some(u16::from(MessageType::CallCommand) as u32)),
+            related_command_index: eq(Some(1)),
+            next_retry_delay: eq(Some(Duration::from_secs(10).as_millis() as u64)),
+        })
     );
     assert_eq!(output.next(), None);
 }
@@ -114,7 +145,7 @@ fn test_entry_mismatch_on_replay<M: RestateMessage + Clone, T: fmt::Debug>(
                 expected.clone(),
                 actual.clone(),
             ))
-            .with_related_command(RelatedCommand::new(1, M::ty()));
+            .with_related_command_metadata(CommandMetadata::new(1, M::ty()));
             assert_that!(user_code(vm), err(eq(expected_error)));
         });
 
