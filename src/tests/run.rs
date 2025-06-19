@@ -404,7 +404,7 @@ fn enter_then_notify_error() {
     );
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
-        error_message_as_vm_error(
+        error_message_as_error(
             Error::new(500u16, "my-error").with_stacktrace("my-error-description")
         )
     );

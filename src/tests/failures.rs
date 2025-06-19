@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::error::RelatedCommand;
 use crate::service_protocol::messages::{
     ErrorMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage, StartMessage,
 };
@@ -27,13 +28,13 @@ fn got_closed_stream_before_end_of_replay() {
     // Try to check if input is ready, this should fail
     assert_that!(
         vm.is_ready_to_execute(),
-        err(eq_vm_error(vm::errors::INPUT_CLOSED_WHILE_WAITING_ENTRIES))
+        err(eq_error(vm::errors::INPUT_CLOSED_WHILE_WAITING_ENTRIES))
     );
 
     let mut output = OutputIterator::collect_vm(&mut vm);
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
-        error_message_as_vm_error(vm::errors::INPUT_CLOSED_WHILE_WAITING_ENTRIES)
+        error_message_as_error(vm::errors::INPUT_CLOSED_WHILE_WAITING_ENTRIES)
     );
     assert_eq!(output.next(), None);
 }
@@ -108,20 +109,18 @@ fn test_entry_mismatch_on_replay<M: RestateMessage + Clone, T: fmt::Debug>(
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            assert_that!(
-                user_code(vm),
-                err(eq_vm_error(
-                    vm::errors::CommandMismatchError::new(1, expected.clone(), actual.clone())
-                        .into()
-                ))
-            );
+            let expected_error = Error::from(vm::errors::CommandMismatchError::new(
+                1,
+                expected.clone(),
+                actual.clone(),
+            ))
+            .with_related_command(RelatedCommand::new(1, M::ty()));
+            assert_that!(user_code(vm), err(eq(expected_error)));
         });
 
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
-        error_message_as_vm_error(
-            vm::errors::CommandMismatchError::new(1, expected, actual).into()
-        )
+        error_message_as_error(vm::errors::CommandMismatchError::new(1, expected, actual).into())
     );
     assert_eq!(output.next(), None);
 }

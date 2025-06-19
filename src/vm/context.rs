@@ -1,3 +1,4 @@
+use crate::error::RelatedCommand;
 use crate::service_protocol::messages::{NamedCommandMessage, RestateMessage};
 use crate::service_protocol::{
     Encoder, MessageType, Notification, NotificationId, NotificationResult, Version,
@@ -58,6 +59,10 @@ impl Journal {
         let next = self.signal_index;
         self.signal_index += 1;
         next
+    }
+
+    pub(crate) fn current_related_command(&self) -> RelatedCommand {
+        RelatedCommand::new(self.command_index() as u32, self.current_entry_ty)
     }
 }
 

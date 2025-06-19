@@ -93,9 +93,21 @@ pub struct RelatedCommand {
 }
 
 impl RelatedCommand {
-    pub(crate) fn new(name: impl Into<Cow<'static, str>>, index: u32, ty: MessageType) -> Self {
+    pub(crate) fn new_named(
+        name: impl Into<Cow<'static, str>>,
+        index: u32,
+        ty: MessageType,
+    ) -> Self {
         Self {
             name: Some(name.into()),
+            index: Some(index),
+            ty: Some(ty),
+        }
+    }
+
+    pub(crate) fn new(index: u32, ty: MessageType) -> Self {
+        Self {
+            name: None,
             index: Some(index),
             ty: Some(ty),
         }

@@ -8,8 +8,9 @@ use crate::service_protocol::messages::{
 };
 use crate::service_protocol::{
     messages, CompletionId, MessageType, Notification, NotificationId, NotificationResult,
+    RawMessage,
 };
-use crate::vm::context::{Context, EagerGetState, EagerGetStateKeys};
+use crate::vm::context::{AsyncResultsState, Context, EagerGetState, EagerGetStateKeys, RunState};
 use crate::vm::errors::{
     CommandMismatchError, EmptyGetEagerState, EmptyGetEagerStateKeys, UnavailableEntryError,
     UnexpectedGetState, UnexpectedGetStateKeys,
@@ -18,79 +19,9 @@ use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{EntryRetryInfo, Error, Header, Input, NotificationHandle, RetryPolicy, RunExitResult};
 use bytes::Bytes;
+use std::collections::VecDeque;
 use std::fmt;
 use tracing::trace;
-
-pub(crate) struct PopJournalEntry<M>(pub(crate) &'static str, pub(crate) M);
-
-impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
-    TransitionAndReturn<Context, PopJournalEntry<M>> for State
-{
-    type Output = M;
-
-    fn transition_and_return(
-        self,
-        context: &mut Context,
-        PopJournalEntry(sys_name, expected): PopJournalEntry<M>,
-    ) -> Result<(Self, Self::Output), Error> {
-        match self {
-            State::Replaying {
-                mut commands,
-                run_state,
-                async_results,
-            } => {
-                let actual = commands
-                    .pop_front()
-                    .ok_or(UnavailableEntryError::new(M::ty()))?
-                    .decode_to::<M>()?;
-                let new_state = if commands.is_empty() {
-                    State::Processing {
-                        processing_first_entry: true,
-                        run_state,
-                        async_results,
-                    }
-                } else {
-                    State::Replaying {
-                        commands,
-                        run_state,
-                        async_results,
-                    }
-                };
-
-                check_entry_header_match(context.journal.command_index(), &actual, &expected)?;
-
-                Ok((new_state, actual))
-            }
-            s => Err(s.as_unexpected_state(sys_name)),
-        }
-    }
-}
-
-struct PopOrWriteJournalEntry<M>(&'static str, M);
-
-impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
-    TransitionAndReturn<Context, PopOrWriteJournalEntry<M>> for State
-{
-    type Output = M;
-
-    fn transition_and_return(
-        mut self,
-        context: &mut Context,
-        PopOrWriteJournalEntry(sys_name, expected): PopOrWriteJournalEntry<M>,
-    ) -> Result<(Self, Self::Output), Error> {
-        match self {
-            State::Processing {
-                ref mut processing_first_entry,
-                ..
-            } => {
-                *processing_first_entry = false;
-                context.output.send(&expected);
-                Ok((self, expected))
-            }
-            s => s.transition_and_return(context, PopJournalEntry(sys_name, expected)),
-        }
-    }
-}
 
 pub(crate) struct SysInput;
 
@@ -107,7 +38,8 @@ impl TransitionAndReturn<Context, SysInput> for State {
             self,
             context,
             PopJournalEntry("SysInput", InputCommandMessage::default()),
-        )?;
+        )
+        .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
         let start_info = context.expect_start_info();
 
         Ok((
@@ -153,8 +85,9 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
         SysNonCompletableEntry(sys_name, expected): SysNonCompletableEntry<M>,
     ) -> Result<Self, Error> {
         context.journal.transition(&expected);
-        let (s, _) =
-            self.transition_and_return(context, PopOrWriteJournalEntry(sys_name, expected))?;
+        let (s, _) = self
+            .transition_and_return(context, PopOrWriteJournalEntry(sys_name, expected))
+            .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
         Ok(s)
     }
 }
@@ -176,8 +109,9 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
         SysNonCompletableEntryWithCompletion(sys_name, expected, notification): SysNonCompletableEntryWithCompletion<M>,
     ) -> Result<(Self, Self::Output), Error> {
         context.journal.transition(&expected);
-        let (mut s, _) =
-            self.transition_and_return(context, PopOrWriteJournalEntry(sys_name, expected))?;
+        let (mut s, _) = self
+            .transition_and_return(context, PopOrWriteJournalEntry(sys_name, expected))
+            .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
         match s {
             State::WaitingReplayEntries {
                 ref mut async_results,
@@ -195,7 +129,9 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
                 async_results.insert_ready(notification);
                 Ok((s, handle))
             }
-            s => Err(s.as_unexpected_state(sys_name)),
+            s => Err(s
+                .as_unexpected_state(sys_name)
+                .with_related_command(context.journal.current_related_command())),
         }
     }
 }
@@ -246,7 +182,8 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
             self,
             context,
             PopOrWriteJournalEntry(sys_name, expected),
-        )?;
+        )
+        .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
 
         match s {
             State::Replaying {
@@ -268,7 +205,9 @@ impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
 
                 Ok((s, notification_handles))
             }
-            s => Err(s.as_unexpected_state(sys_name)),
+            s => Err(s
+                .as_unexpected_state(sys_name)
+                .with_related_command(context.journal.current_related_command())),
         }
     }
 }
@@ -369,90 +308,113 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                 }
             }
             State::Replaying {
-                mut commands,
-                mut async_results,
+                commands,
+                async_results,
                 run_state,
             } => {
                 context
                     .journal
                     .transition(&GetEagerStateCommandMessage::default());
-                let handle = async_results
-                    .create_handle_mapping(NotificationId::CompletionId(completion_id));
 
-                let actual = commands
-                    .pop_front()
-                    .ok_or(UnavailableEntryError::new(GetLazyStateCommandMessage::ty()))?;
-
-                match actual.ty() {
-                    MessageType::GetEagerStateCommand => {
-                        let get_eager_state_command =
-                            actual.decode_to::<GetEagerStateCommandMessage>()?;
-                        check_entry_header_match(
-                            context.journal.command_index(),
-                            &get_eager_state_command,
-                            &GetEagerStateCommandMessage {
-                                key: key.into_bytes().into(),
-                                result: get_eager_state_command.result.clone(),
-                                name: "".to_string(),
-                            },
-                        )?;
-
-                        let notification_result =
-                            match get_eager_state_command.result.ok_or(EmptyGetEagerState)? {
-                                get_eager_state_command_message::Result::Void(v) => {
-                                    NotificationResult::Void(v)
-                                }
-                                get_eager_state_command_message::Result::Value(v) => {
-                                    NotificationResult::Value(v)
-                                }
-                            };
-
-                        async_results.insert_ready(Notification {
-                            id: NotificationId::CompletionId(completion_id),
-                            result: notification_result,
-                        });
-                    }
-                    MessageType::GetLazyStateCommand => {
-                        let get_lazy_state_command =
-                            actual.decode_to::<GetLazyStateCommandMessage>()?;
-                        check_entry_header_match(
-                            context.journal.command_index(),
-                            &get_lazy_state_command,
-                            &GetLazyStateCommandMessage {
-                                key: key.into_bytes().into(),
-                                result_completion_id: completion_id,
-                                name: "".to_string(),
-                            },
-                        )?;
-                    }
-                    message_type => {
-                        return Err(UnexpectedGetState {
-                            command_index: context.journal.command_index(),
-                            actual: message_type,
-                        }
-                        .into())
-                    }
-                }
-
-                let new_state = if commands.is_empty() {
-                    State::Processing {
-                        processing_first_entry: true,
-                        run_state,
-                        async_results,
-                    }
-                } else {
-                    State::Replaying {
-                        commands,
-                        run_state,
-                        async_results,
-                    }
-                };
-
-                Ok((new_state, handle))
+                process_get_entry_during_replay(
+                    context,
+                    key,
+                    completion_id,
+                    commands,
+                    async_results,
+                    run_state,
+                )
+                .map_err(|e| e.with_related_command(context.journal.current_related_command()))
             }
-            s => Err(s.as_unexpected_state("SysStateGet")),
+            s => {
+                Err(s
+                    .as_unexpected_state("SysStateGet")
+                    .with_related_command(RelatedCommand::new(
+                        (context.journal.command_index() + 1) as u32,
+                        MessageType::GetEagerStateCommand,
+                    )))
+            }
         }
     }
+}
+
+fn process_get_entry_during_replay(
+    context: &mut Context,
+    key: String,
+    completion_id: u32,
+    mut commands: VecDeque<RawMessage>,
+    mut async_results: AsyncResultsState,
+    run_state: RunState,
+) -> Result<(State, NotificationHandle), Error> {
+    let handle = async_results.create_handle_mapping(NotificationId::CompletionId(completion_id));
+
+    let actual = commands
+        .pop_front()
+        .ok_or(UnavailableEntryError::new(GetLazyStateCommandMessage::ty()))?;
+
+    match actual.ty() {
+        MessageType::GetEagerStateCommand => {
+            context.journal.current_entry_ty = MessageType::GetEagerStateCommand;
+            let get_eager_state_command = actual.decode_to::<GetEagerStateCommandMessage>()?;
+            check_entry_header_match(
+                context.journal.command_index(),
+                &get_eager_state_command,
+                &GetEagerStateCommandMessage {
+                    key: key.into_bytes().into(),
+                    result: get_eager_state_command.result.clone(),
+                    name: "".to_string(),
+                },
+            )?;
+
+            let notification_result = match get_eager_state_command
+                .result
+                .ok_or(EmptyGetEagerState)?
+            {
+                get_eager_state_command_message::Result::Void(v) => NotificationResult::Void(v),
+                get_eager_state_command_message::Result::Value(v) => NotificationResult::Value(v),
+            };
+
+            async_results.insert_ready(Notification {
+                id: NotificationId::CompletionId(completion_id),
+                result: notification_result,
+            });
+        }
+        MessageType::GetLazyStateCommand => {
+            context.journal.current_entry_ty = MessageType::GetLazyStateCommand;
+            let get_lazy_state_command = actual.decode_to::<GetLazyStateCommandMessage>()?;
+            check_entry_header_match(
+                context.journal.command_index(),
+                &get_lazy_state_command,
+                &GetLazyStateCommandMessage {
+                    key: key.into_bytes().into(),
+                    result_completion_id: completion_id,
+                    name: "".to_string(),
+                },
+            )?;
+        }
+        message_type => {
+            return Err(UnexpectedGetState {
+                command_index: context.journal.command_index(),
+                actual: message_type,
+            }
+            .into())
+        }
+    }
+
+    let new_state = if commands.is_empty() {
+        State::Processing {
+            processing_first_entry: true,
+            run_state,
+            async_results,
+        }
+    } else {
+        State::Replaying {
+            commands,
+            run_state,
+            async_results,
+        }
+    };
+    Ok((new_state, handle))
 }
 
 pub(crate) struct SysStateGetKeys;
@@ -521,84 +483,106 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                 }
             }
             State::Replaying {
-                mut commands,
-                mut async_results,
+                commands,
+                async_results,
                 run_state,
             } => {
                 context
                     .journal
                     .transition(&GetEagerStateKeysCommandMessage::default());
-                let handle = async_results
-                    .create_handle_mapping(NotificationId::CompletionId(completion_id));
 
-                let actual = commands.pop_front().ok_or(UnavailableEntryError::new(
-                    GetLazyStateKeysCommandMessage::ty(),
-                ))?;
-
-                match actual.ty() {
-                    MessageType::GetEagerStateKeysCommand => {
-                        let get_eager_state_command =
-                            actual.decode_to::<GetEagerStateKeysCommandMessage>()?;
-                        check_entry_header_match(
-                            context.journal.command_index(),
-                            &get_eager_state_command,
-                            &GetEagerStateKeysCommandMessage {
-                                value: get_eager_state_command.value.clone(),
-                                name: "".to_string(),
-                            },
-                        )?;
-
-                        let notification_result = NotificationResult::StateKeys(
-                            get_eager_state_command
-                                .value
-                                .ok_or(EmptyGetEagerStateKeys)?,
-                        );
-
-                        async_results.insert_ready(Notification {
-                            id: NotificationId::CompletionId(completion_id),
-                            result: notification_result,
-                        });
-                    }
-                    MessageType::GetLazyStateKeysCommand => {
-                        let get_lazy_state_command =
-                            actual.decode_to::<GetLazyStateKeysCommandMessage>()?;
-                        check_entry_header_match(
-                            context.journal.command_index(),
-                            &get_lazy_state_command,
-                            &GetLazyStateKeysCommandMessage {
-                                result_completion_id: completion_id,
-                                name: "".to_string(),
-                            },
-                        )?;
-                    }
-                    message_type => {
-                        return Err(UnexpectedGetStateKeys {
-                            command_index: context.journal.command_index(),
-                            actual: message_type,
-                        }
-                        .into())
-                    }
-                }
-
-                let new_state = if commands.is_empty() {
-                    State::Processing {
-                        processing_first_entry: true,
-                        run_state,
-                        async_results,
-                    }
-                } else {
-                    State::Replaying {
-                        commands,
-                        run_state,
-                        async_results,
-                    }
-                };
-
-                Ok((new_state, handle))
+                process_get_entry_keys_during_replay(
+                    context,
+                    completion_id,
+                    commands,
+                    async_results,
+                    run_state,
+                )
+                .map_err(|e| e.with_related_command(context.journal.current_related_command()))
             }
-            s => Err(s.as_unexpected_state("SysStateGetKeys")),
+            s => Err(s
+                .as_unexpected_state("SysStateGetKeys")
+                .with_related_command(RelatedCommand::new(
+                    (context.journal.command_index() + 1) as u32,
+                    MessageType::GetEagerStateKeysCommand,
+                ))),
         }
     }
+}
+
+fn process_get_entry_keys_during_replay(
+    context: &mut Context,
+    completion_id: u32,
+    mut commands: VecDeque<RawMessage>,
+    mut async_results: AsyncResultsState,
+    run_state: RunState,
+) -> Result<(State, NotificationHandle), Error> {
+    let handle = async_results.create_handle_mapping(NotificationId::CompletionId(completion_id));
+
+    let actual = commands.pop_front().ok_or(UnavailableEntryError::new(
+        GetLazyStateKeysCommandMessage::ty(),
+    ))?;
+
+    match actual.ty() {
+        MessageType::GetEagerStateKeysCommand => {
+            context.journal.current_entry_ty = MessageType::GetEagerStateKeysCommand;
+            let get_eager_state_command = actual.decode_to::<GetEagerStateKeysCommandMessage>()?;
+            check_entry_header_match(
+                context.journal.command_index(),
+                &get_eager_state_command,
+                &GetEagerStateKeysCommandMessage {
+                    value: get_eager_state_command.value.clone(),
+                    name: "".to_string(),
+                },
+            )?;
+
+            let notification_result = NotificationResult::StateKeys(
+                get_eager_state_command
+                    .value
+                    .ok_or(EmptyGetEagerStateKeys)?,
+            );
+
+            async_results.insert_ready(Notification {
+                id: NotificationId::CompletionId(completion_id),
+                result: notification_result,
+            });
+        }
+        MessageType::GetLazyStateKeysCommand => {
+            context.journal.current_entry_ty = MessageType::GetLazyStateKeysCommand;
+            let get_lazy_state_command = actual.decode_to::<GetLazyStateKeysCommandMessage>()?;
+            check_entry_header_match(
+                context.journal.command_index(),
+                &get_lazy_state_command,
+                &GetLazyStateKeysCommandMessage {
+                    result_completion_id: completion_id,
+                    name: "".to_string(),
+                },
+            )?;
+        }
+        message_type => {
+            return Err(UnexpectedGetStateKeys {
+                command_index: context.journal.command_index(),
+                actual: message_type,
+            }
+            .into())
+        }
+    }
+
+    let new_state = if commands.is_empty() {
+        State::Processing {
+            processing_first_entry: true,
+            run_state,
+            async_results,
+        }
+    } else {
+        State::Replaying {
+            commands,
+            run_state,
+            async_results,
+        }
+    };
+
+    Ok((new_state, handle))
 }
 
 pub(crate) struct SysRun(pub(crate) String);
@@ -621,7 +605,8 @@ impl TransitionAndReturn<Context, SysRun> for State {
             self,
             context,
             SysSimpleCompletableEntry("SysRun", expected, result_completion_id),
-        )?;
+        )
+        .map_err(|e| e.with_related_command(context.journal.current_related_command()))?;
 
         let notification_id = NotificationId::CompletionId(result_completion_id);
         let mut needs_execution = true;
@@ -701,7 +686,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
                             NextRetry::Retry(next_retry_interval) => {
                                 let mut error = Error::new(error.code, error.message);
                                 error.next_retry_delay = next_retry_interval;
-                                error.related_command = Some(RelatedCommand::new(
+                                error.related_command = Some(RelatedCommand::new_named(
                                     run_name,
                                     run_command_index,
                                     MessageType::RunCommand,
@@ -739,6 +724,79 @@ impl Transition<Context, ProposeRunCompletion> for State {
                 trace!("Going to ignore proposed completion for run with handle {notification_handle:?}, because state is {}", <&'static str>::from(&s));
                 Ok(s)
             }
+        }
+    }
+}
+
+// --- Few reusable transitions
+
+struct PopJournalEntry<M>(pub(crate) &'static str, pub(crate) M);
+
+impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
+    TransitionAndReturn<Context, PopJournalEntry<M>> for State
+{
+    type Output = M;
+
+    fn transition_and_return(
+        self,
+        context: &mut Context,
+        PopJournalEntry(sys_name, expected): PopJournalEntry<M>,
+    ) -> Result<(Self, Self::Output), Error> {
+        match self {
+            State::Replaying {
+                mut commands,
+                run_state,
+                async_results,
+            } => {
+                let actual = commands
+                    .pop_front()
+                    .ok_or(UnavailableEntryError::new(M::ty()))?
+                    .decode_to::<M>()?;
+                let new_state = if commands.is_empty() {
+                    State::Processing {
+                        processing_first_entry: true,
+                        run_state,
+                        async_results,
+                    }
+                } else {
+                    State::Replaying {
+                        commands,
+                        run_state,
+                        async_results,
+                    }
+                };
+
+                check_entry_header_match(context.journal.command_index(), &actual, &expected)?;
+
+                Ok((new_state, actual))
+            }
+            s => Err(s.as_unexpected_state(sys_name)),
+        }
+    }
+}
+
+struct PopOrWriteJournalEntry<M>(&'static str, M);
+
+impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
+    TransitionAndReturn<Context, PopOrWriteJournalEntry<M>> for State
+{
+    type Output = M;
+
+    fn transition_and_return(
+        mut self,
+        context: &mut Context,
+        PopOrWriteJournalEntry(sys_name, expected): PopOrWriteJournalEntry<M>,
+    ) -> Result<(Self, Self::Output), Error> {
+        match self {
+            State::Processing {
+                ref mut processing_first_entry,
+                ..
+            } => {
+                *processing_first_entry = false;
+                context.output.send(&expected);
+                Ok((self, expected))
+            }
+            s => s.transition_and_return(context, PopJournalEntry(sys_name, expected)),
         }
     }
 }
