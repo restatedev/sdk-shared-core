@@ -56,7 +56,7 @@ pub enum CommandType {
     Call,
     OneWayCall,
     SendSignal,
-    RunCommand,
+    Run,
     AttachInvocation,
     GetInvocationOutput,
     CompleteAwakeable,

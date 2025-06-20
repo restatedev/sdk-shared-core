@@ -135,7 +135,7 @@ impl From<CommandType> for MessageType {
             CommandType::Call => MessageType::CallCommand,
             CommandType::OneWayCall => MessageType::OneWayCallCommand,
             CommandType::SendSignal => MessageType::SendSignalCommand,
-            CommandType::RunCommand => MessageType::RunCommand,
+            CommandType::Run => MessageType::RunCommand,
             CommandType::AttachInvocation => MessageType::AttachInvocationCommand,
             CommandType::GetInvocationOutput => MessageType::GetInvocationOutputCommand,
             CommandType::CompleteAwakeable => MessageType::CompleteAwakeableCommand,
