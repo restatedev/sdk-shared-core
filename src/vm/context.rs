@@ -1,8 +1,9 @@
+use crate::error::CommandMetadata;
 use crate::service_protocol::messages::{NamedCommandMessage, RestateMessage};
 use crate::service_protocol::{
     Encoder, MessageType, Notification, NotificationId, NotificationResult, Version,
 };
-use crate::{EntryRetryInfo, NotificationHandle, CANCEL_NOTIFICATION_HANDLE};
+use crate::{CommandRelationship, EntryRetryInfo, NotificationHandle, CANCEL_NOTIFICATION_HANDLE};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -58,6 +59,41 @@ impl Journal {
         let next = self.signal_index;
         self.signal_index += 1;
         next
+    }
+
+    pub(crate) fn resolve_related_command(
+        &self,
+        related_command: CommandRelationship,
+    ) -> CommandMetadata {
+        match related_command {
+            CommandRelationship::Last => CommandMetadata {
+                index: self.command_index.unwrap_or_default(),
+                ty: self.current_entry_ty,
+                name: if self.current_entry_name.is_empty() {
+                    None
+                } else {
+                    Some(self.current_entry_name.clone().into())
+                },
+            },
+            CommandRelationship::Next { ty, name } => CommandMetadata {
+                index: self.command_index.unwrap_or_default() + 1,
+                ty: ty.into(),
+                name,
+            },
+            CommandRelationship::Specific {
+                command_index,
+                name,
+                ty,
+            } => CommandMetadata {
+                index: command_index,
+                ty: ty.into(),
+                name,
+            },
+        }
+    }
+
+    pub(crate) fn last_command_metadata(&self) -> CommandMetadata {
+        self.resolve_related_command(CommandRelationship::Last)
     }
 }
 
@@ -250,37 +286,66 @@ impl AsyncResultsState {
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct RunState {
-    to_execute: HashSet<NotificationHandle>,
-    executing: HashSet<NotificationHandle>,
+#[derive(Debug)]
+struct Run {
+    command_index: u32,
+    command_name: String,
+    state: RunStateInner,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+enum RunStateInner {
+    ToExecute,
+    Executing,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RunState(HashMap<NotificationHandle, Run>);
+
 impl RunState {
-    pub fn insert_run_to_execute(&mut self, handle: NotificationHandle) {
-        self.to_execute.insert(handle);
+    pub fn insert_run_to_execute(
+        &mut self,
+        handle: NotificationHandle,
+        command_index: u32,
+        command_name: String,
+    ) {
+        self.0.insert(
+            handle,
+            Run {
+                command_index,
+                command_name,
+                state: RunStateInner::ToExecute,
+            },
+        );
     }
 
     pub fn try_execute_run(
         &mut self,
         any_handle: &HashSet<NotificationHandle>,
     ) -> Option<NotificationHandle> {
-        if let Some(runnable) = self.to_execute.intersection(any_handle).next() {
-            let runnable = *runnable;
-            self.to_execute.remove(&runnable);
-            self.executing.insert(runnable);
-            return Some(runnable);
+        if let Some((handle, run)) = self.0.iter_mut().find(|(handle, run)| {
+            run.state == RunStateInner::ToExecute && any_handle.contains(handle)
+        }) {
+            run.state = RunStateInner::Executing;
+            return Some(*handle);
         }
         None
     }
 
     pub fn any_executing(&self, any_handle: &[NotificationHandle]) -> bool {
-        any_handle.iter().any(|h| self.executing.contains(h))
+        any_handle.iter().any(|h| {
+            self.0
+                .get(h)
+                .is_some_and(|r| r.state == RunStateInner::Executing)
+        })
     }
 
-    pub fn notify_executed(&mut self, executed: NotificationHandle) {
-        self.to_execute.remove(&executed);
-        self.executing.remove(&executed);
+    pub fn notify_execution_completed(&mut self, executed: NotificationHandle) -> (String, u32) {
+        let run = self
+            .0
+            .remove(&executed)
+            .expect("There must be a corresponding run for the given handle");
+        (run.command_name, run.command_index)
     }
 }
 
@@ -373,9 +438,6 @@ pub(crate) struct Context {
     pub(crate) input_is_closed: bool,
     pub(crate) output: Output,
     pub(crate) eager_state: EagerState,
-
-    // Used by the error handler to set ErrorMessage.next_retry_delay
-    pub(crate) next_retry_delay: Option<Duration>,
 }
 
 impl Context {

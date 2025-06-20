@@ -1,6 +1,6 @@
 use crate::service_protocol::messages::{start_message::StateEntry, *};
-use crate::tests::VMTestCase;
-use crate::{CoreVM, NonEmptyValue, SuspendedOrVMError, Value, VM};
+use crate::tests::{is_suspended, VMTestCase};
+use crate::{CoreVM, NonEmptyValue, Value, VM};
 use assert2::let_assert;
 use bytes::Bytes;
 use googletest::assert_that;
@@ -13,11 +13,11 @@ fn get_state_handler(vm: &mut CoreVM) {
 
     let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-    if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-        assert_that!(
-            vm.take_notification(h1),
-            err(pat!(SuspendedOrVMError::Suspended(_)))
-        );
+    if vm
+        .do_progress(vec![h1])
+        .is_err_and(|e| e.is_suspended_error())
+    {
+        assert_that!(vm.take_notification(h1), err(is_suspended()));
         return;
     }
 
@@ -253,7 +253,9 @@ mod only_lazy_state {
 mod eager {
     use super::*;
 
-    use crate::tests::{input_entry_message, is_output_with_success, suspended_waiting_completion};
+    use crate::tests::{
+        input_entry_message, is_output_with_success, is_suspended, suspended_waiting_completion,
+    };
     use test_log::test;
 
     fn get_empty_state_handler(vm: &mut CoreVM) {
@@ -261,11 +263,11 @@ mod eager {
 
         let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-            assert_that!(
-                vm.take_notification(h1),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h1])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h1), err(is_suspended()));
             return;
         }
 
@@ -491,11 +493,11 @@ mod eager {
 
         let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-            assert_that!(
-                vm.take_notification(h1),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h1])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h1), err(is_suspended()));
             return;
         }
 
@@ -520,11 +522,11 @@ mod eager {
 
         let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h2]) {
-            assert_that!(
-                vm.take_notification(h2),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h2])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h2), err(is_suspended()));
             return;
         }
 
@@ -672,11 +674,11 @@ mod eager {
 
         let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-            assert_that!(
-                vm.take_notification(h1),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h1])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h1), err(is_suspended()));
             return;
         }
         let first_get_result = match vm.take_notification(h1).unwrap().unwrap() {
@@ -691,11 +693,11 @@ mod eager {
 
         let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h2]) {
-            assert_that!(
-                vm.take_notification(h2),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h2])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h2), err(is_suspended()));
             return;
         }
         let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
@@ -829,11 +831,11 @@ mod eager {
 
         let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-            assert_that!(
-                vm.take_notification(h1),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h1])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h1), err(is_suspended()));
             return;
         }
         let first_get_result = match vm.take_notification(h1).unwrap().unwrap() {
@@ -1116,7 +1118,9 @@ mod state_keys {
     use super::*;
 
     use crate::service_protocol::messages::StateKeys;
-    use crate::tests::{input_entry_message, is_output_with_success, suspended_waiting_completion};
+    use crate::tests::{
+        input_entry_message, is_output_with_success, is_suspended, suspended_waiting_completion,
+    };
     use googletest::prelude::*;
     use test_log::test;
 
@@ -1125,11 +1129,11 @@ mod state_keys {
 
         let h1 = vm.sys_state_get_keys().unwrap();
 
-        if let Err(SuspendedOrVMError::Suspended(_)) = vm.do_progress(vec![h1]) {
-            assert_that!(
-                vm.take_notification(h1),
-                err(pat!(SuspendedOrVMError::Suspended(_)))
-            );
+        if vm
+            .do_progress(vec![h1])
+            .is_err_and(|e| e.is_suspended_error())
+        {
+            assert_that!(vm.take_notification(h1), err(is_suspended()));
             return;
         }
         let output = match vm.take_notification(h1).unwrap().unwrap() {

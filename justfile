@@ -64,7 +64,7 @@ print-target:
     @echo {{ _resolved_target }}
 
 test: (_target-installed target)
-    cargo nextest run {{ _target-option }} {{ _features }}
+    cargo nextest run --no-fail-fast {{ _target-option }} {{ _features }}
 
 # Runs lints and tests
 verify: lint test

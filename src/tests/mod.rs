@@ -124,8 +124,8 @@ impl Iterator for OutputIterator {
 
 // --- Matchers
 
-/// Matcher for VMError
-pub fn eq_vm_error(vm_error: Error) -> impl Matcher<ActualT = Error> {
+/// Matcher for Error
+pub fn eq_error(vm_error: Error) -> impl Matcher<ActualT = Error> {
     pat!(Error {
         code: eq(vm_error.code),
         message: eq(vm_error.message),
@@ -133,8 +133,8 @@ pub fn eq_vm_error(vm_error: Error) -> impl Matcher<ActualT = Error> {
     })
 }
 
-/// Matcher for ErrorMessage to equal VMError
-pub fn error_message_as_vm_error(vm_error: Error) -> impl Matcher<ActualT = ErrorMessage> {
+/// Matcher for ErrorMessage to equal Error
+pub fn error_message_as_error(vm_error: Error) -> impl Matcher<ActualT = ErrorMessage> {
     pat!(ErrorMessage {
         code: eq(vm_error.code as u32),
         message: eq(vm_error.message),
@@ -157,8 +157,9 @@ pub fn suspended_waiting_signal(signal_idx: u32) -> impl Matcher<ActualT = Suspe
     })
 }
 
-pub fn is_suspended() -> impl Matcher<ActualT = SuspendedOrVMError> {
-    pat!(SuspendedOrVMError::Suspended(_))
+pub fn is_suspended() -> impl Matcher<ActualT = Error> {
+    predicate(|e: &Error| e.is_suspended_error())
+        .with_description("is suspended error", "is not suspended error")
 }
 
 pub fn is_output_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = OutputCommandMessage> {

@@ -1,3 +1,4 @@
+pub mod error;
 mod headers;
 #[cfg(feature = "request_identity")]
 mod request_identity;
@@ -10,17 +11,12 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 pub use crate::retries::RetryPolicy;
+pub use error::Error;
 pub use headers::HeaderMap;
 #[cfg(feature = "request_identity")]
 pub use request_identity::*;
 pub use service_protocol::Version;
 pub use vm::CoreVM;
-
-// Re-export only some stuff from vm::errors
-pub mod error {
-    pub use crate::vm::errors::codes;
-    pub use crate::vm::errors::InvocationErrorCode;
-}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Header {
@@ -35,76 +31,6 @@ pub struct ResponseHead {
     pub version: Version,
 }
 
-#[derive(Debug, Clone, Copy, thiserror::Error)]
-#[error("Suspended execution")]
-pub struct SuspendedError;
-
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("State machine error [{code}]: {message}. Stacktrace: {stacktrace}")]
-pub struct Error {
-    code: u16,
-    message: Cow<'static, str>,
-    stacktrace: Cow<'static, str>,
-}
-
-impl Error {
-    pub fn new(code: impl Into<u16>, message: impl Into<Cow<'static, str>>) -> Self {
-        Error {
-            code: code.into(),
-            message: message.into(),
-            stacktrace: Default::default(),
-        }
-    }
-
-    pub fn internal(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::new(error::codes::INTERNAL, message)
-    }
-
-    pub fn code(&self) -> u16 {
-        self.code
-    }
-
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-
-    pub fn description(&self) -> &str {
-        &self.stacktrace
-    }
-
-    pub fn with_stacktrace(mut self, stacktrace: impl Into<Cow<'static, str>>) -> Self {
-        self.stacktrace = stacktrace.into();
-        self
-    }
-
-    /// Append the given description to the original one, in case the code is the same
-    pub fn append_description_for_code(
-        mut self,
-        code: impl Into<u16>,
-        description: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        let c = code.into();
-        if self.code == c {
-            if self.stacktrace.is_empty() {
-                self.stacktrace = description.into();
-            } else {
-                self.stacktrace = format!("{}. {}", self.stacktrace, description.into()).into();
-            }
-            self
-        } else {
-            self
-        }
-    }
-}
-
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum SuspendedOrVMError {
-    #[error(transparent)]
-    Suspended(SuspendedError),
-    #[error(transparent)]
-    VM(Error),
-}
-
 #[derive(Debug, Eq, PartialEq)]
 pub struct Input {
     pub invocation_id: String,
@@ -112,6 +38,44 @@ pub struct Input {
     pub key: String,
     pub headers: Vec<Header>,
     pub input: Bytes,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CommandType {
+    Input,
+    Output,
+    GetState,
+    GetStateKeys,
+    SetState,
+    ClearState,
+    ClearAllState,
+    GetPromise,
+    PeekPromise,
+    CompletePromise,
+    Sleep,
+    Call,
+    OneWayCall,
+    SendSignal,
+    Run,
+    AttachInvocation,
+    GetInvocationOutput,
+    CompleteAwakeable,
+    CancelInvocation,
+}
+
+/// Used in `notify_error` to specify which command this error relates to.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum CommandRelationship {
+    Last,
+    Next {
+        ty: CommandType,
+        name: Option<Cow<'static, str>>,
+    },
+    Specific {
+        command_index: u32,
+        ty: CommandType,
+        name: Option<Cow<'static, str>>,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -278,7 +242,7 @@ pub trait VM: Sized {
 
     // --- Errors
 
-    fn notify_error(&mut self, error: Error, next_retry_delay: Option<Duration>);
+    fn notify_error(&mut self, error: Error, related_command: Option<CommandRelationship>);
 
     // --- Output stream
 
@@ -292,15 +256,9 @@ pub trait VM: Sized {
 
     fn is_completed(&self, handle: NotificationHandle) -> bool;
 
-    fn do_progress(
-        &mut self,
-        any_handle: Vec<NotificationHandle>,
-    ) -> Result<DoProgressResponse, SuspendedOrVMError>;
+    fn do_progress(&mut self, any_handle: Vec<NotificationHandle>) -> VMResult<DoProgressResponse>;
 
-    fn take_notification(
-        &mut self,
-        handle: NotificationHandle,
-    ) -> Result<Option<Value>, SuspendedOrVMError>;
+    fn take_notification(&mut self, handle: NotificationHandle) -> VMResult<Option<Value>>;
 
     // --- Syscall(s)
 
@@ -389,6 +347,9 @@ pub trait VM: Sized {
 
     /// Returns true if the state machine is in processing state
     fn is_processing(&self) -> bool;
+
+    /// Returns last command index. Returns `-1` if there was no progress in the journal.
+    fn last_command_index(&self) -> i64;
 }
 
 // HOW TO USE THIS API
