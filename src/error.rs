@@ -1,6 +1,7 @@
 use crate::service_protocol::MessageType;
 use crate::CommandType;
 use std::borrow::Cow;
+use std::fmt;
 use std::time::Duration;
 
 // Export some stuff we need from the internal package
@@ -13,6 +14,18 @@ pub(crate) struct CommandMetadata {
     pub(crate) index: u32,
     pub(crate) ty: MessageType,
     pub(crate) name: Option<Cow<'static, str>>,
+}
+
+impl fmt::Display for CommandMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?} ", self.ty)?;
+        if let Some(name) = &self.name {
+            write!(f, "[{}]", name)?;
+        } else {
+            write!(f, "[{}]", self.index)?;
+        }
+        Ok(())
+    }
 }
 
 impl CommandMetadata {
@@ -38,8 +51,7 @@ impl CommandMetadata {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
-#[error("State machine error [{code}]: {message}. Stacktrace: {stacktrace}")]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Error {
     pub(crate) code: u16,
     pub(crate) message: Cow<'static, str>,
@@ -47,6 +59,22 @@ pub struct Error {
     pub(crate) related_command: Option<CommandMetadata>,
     pub(crate) next_retry_delay: Option<Duration>,
 }
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}) {}", self.code, self.message)?;
+        if !self.stacktrace.is_empty() {
+            write!(f, "\nStacktrace: {}", self.stacktrace)?;
+        }
+        if let Some(related_command) = &self.related_command {
+            write!(f, "\nRelated command: {}", related_command)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl std::error::Error for Error {}
 
 impl Error {
     pub fn new(code: impl Into<u16>, message: impl Into<Cow<'static, str>>) -> Self {

@@ -11,7 +11,8 @@ use crate::service_protocol::messages::{
 };
 use crate::service_protocol::{Decoder, NotificationId, RawMessage, Version, CANCEL_SIGNAL_ID};
 use crate::vm::errors::{
-    UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion, EMPTY_IDEMPOTENCY_KEY, SUSPENDED,
+    ClosedError, UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion,
+    EMPTY_IDEMPOTENCY_KEY, SUSPENDED,
 };
 use crate::vm::transitions::*;
 use crate::{
@@ -56,12 +57,14 @@ pub(crate) enum State {
         run_state: RunState,
         async_results: AsyncResultsState,
     },
-    Ended,
-    Suspended,
+    Closed,
 }
 
 impl State {
     fn as_unexpected_state(&self, event: &'static str) -> Error {
+        if matches!(self, State::Closed) {
+            return ClosedError::new(event).into();
+        }
         UnexpectedStateError::new(self.into(), event).into()
     }
 }

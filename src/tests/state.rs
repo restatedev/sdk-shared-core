@@ -1,5 +1,5 @@
 use crate::service_protocol::messages::{start_message::StateEntry, *};
-use crate::tests::{is_suspended, VMTestCase};
+use crate::tests::{is_closed, VMTestCase};
 use crate::{CoreVM, NonEmptyValue, Value, VM};
 use assert2::let_assert;
 use bytes::Bytes;
@@ -17,7 +17,7 @@ fn get_state_handler(vm: &mut CoreVM) {
         .do_progress(vec![h1])
         .is_err_and(|e| e.is_suspended_error())
     {
-        assert_that!(vm.take_notification(h1), err(is_suspended()));
+        assert_that!(vm.take_notification(h1), err(is_closed()));
         return;
     }
 
@@ -267,7 +267,7 @@ mod eager {
             .do_progress(vec![h1])
             .is_err_and(|e| e.is_suspended_error())
         {
-            assert_that!(vm.take_notification(h1), err(is_suspended()));
+            assert_that!(vm.take_notification(h1), err(is_closed()));
             return;
         }
 
@@ -1119,7 +1119,7 @@ mod state_keys {
 
     use crate::service_protocol::messages::StateKeys;
     use crate::tests::{
-        input_entry_message, is_output_with_success, is_suspended, suspended_waiting_completion,
+        input_entry_message, is_closed, is_output_with_success, suspended_waiting_completion,
     };
     use googletest::prelude::*;
     use test_log::test;
@@ -1133,7 +1133,7 @@ mod state_keys {
             .do_progress(vec![h1])
             .is_err_and(|e| e.is_suspended_error())
         {
-            assert_that!(vm.take_notification(h1), err(is_suspended()));
+            assert_that!(vm.take_notification(h1), err(is_closed()));
             return;
         }
         let output = match vm.take_notification(h1).unwrap().unwrap() {

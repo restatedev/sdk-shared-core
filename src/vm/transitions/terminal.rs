@@ -23,7 +23,7 @@ impl Transition<Context, HitSuspensionPoint> for State {
         context: &mut Context,
         HitSuspensionPoint(awaiting_on): HitSuspensionPoint,
     ) -> Result<Self, Error> {
-        if matches!(self, State::Suspended | State::Ended) {
+        if matches!(self, State::Closed) {
             // Nothing to do
             return Ok(self);
         }
@@ -49,7 +49,7 @@ impl Transition<Context, HitSuspensionPoint> for State {
         context.output.send(&suspension_message);
         context.output.send_eof();
 
-        Ok(State::Suspended)
+        Ok(State::Closed)
     }
 }
 
@@ -61,9 +61,9 @@ impl Transition<Context, SysEnd> for State {
             State::Processing { .. } => {
                 context.output.send(&EndMessage {});
                 context.output.send_eof();
-                Ok(State::Ended)
+                Ok(State::Closed)
             }
-            s @ State::Ended | s @ State::Suspended => {
+            s @ State::Closed => {
                 // Tolerate the case where the state machine is already ended/suspended
                 Ok(s)
             }
