@@ -59,24 +59,21 @@ impl CoreVM {
                 Err(e)
             }
             Ok(s) => {
-                let was_closed = matches!(s, State::Ended | State::Suspended);
+                let was_closed = matches!(s, State::Closed);
                 match TransitionAndReturn::transition_and_return(s, &mut self.context, event) {
                     Ok((new_state, output)) => {
                         self.last_transition = Ok(new_state);
                         Ok(output)
                     }
                     Err(e) => {
-                        if was_closed {
-                            // Do nothing, it was already closed!
-                            return Err(e);
-                        }
-
+                        self.last_transition = Err(e.clone());
                         tracing::debug!("Failed with error {e}");
 
-                        // We need to handle this error and register it!
-                        self.last_transition = Err(e.clone());
-                        self.context.output.send(&e.as_error_message());
-                        self.context.output.send_eof();
+                        if !was_closed {
+                            // We write it out only if it wasn't closed before
+                            self.context.output.send(&e.as_error_message());
+                            self.context.output.send_eof();
+                        }
 
                         Err(e)
                     }

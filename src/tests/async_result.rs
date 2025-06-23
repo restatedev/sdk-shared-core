@@ -164,7 +164,7 @@ mod reverse_await_order {
         {
             assert_that!(
                 vm.take_notification(h2.call_notification_handle),
-                err(is_suspended())
+                err(is_closed())
             );
             return;
         }
@@ -181,7 +181,7 @@ mod reverse_await_order {
         {
             assert_that!(
                 vm.take_notification(h1.call_notification_handle),
-                err(is_suspended())
+                err(is_closed())
             );
             return;
         }

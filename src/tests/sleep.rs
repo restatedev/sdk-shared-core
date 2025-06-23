@@ -17,7 +17,7 @@ fn sleep_handler(vm: &mut CoreVM) {
         .do_progress(vec![h1])
         .is_err_and(|e| e.is_suspended_error())
     {
-        assert_that!(vm.take_notification(h1), err(is_suspended()));
+        assert_that!(vm.take_notification(h1), err(is_closed()));
         return;
     }
     let_assert!(Some(Value::Void) = vm.take_notification(h1).unwrap());

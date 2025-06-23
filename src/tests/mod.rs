@@ -162,6 +162,11 @@ pub fn is_suspended() -> impl Matcher<ActualT = Error> {
         .with_description("is suspended error", "is not suspended error")
 }
 
+pub fn is_closed() -> impl Matcher<ActualT = Error> {
+    predicate(|e: &Error| e.code == error::codes::CLOSED.code())
+        .with_description("is closed error", "is not closed error")
+}
+
 pub fn is_output_with_success(b: impl AsRef<[u8]>) -> impl Matcher<ActualT = OutputCommandMessage> {
     pat!(OutputCommandMessage {
         result: some(pat!(output_command_message::Result::Value(eq(

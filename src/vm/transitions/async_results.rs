@@ -100,7 +100,6 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 // Nothing else can be done, we need more input
                 Ok((self, Ok(DoProgressResponse::ReadFromInput)))
             }
-            s @ State::Suspended => Ok((s, Err(Suspended))),
             s => Err(s.as_unexpected_state("DoProgress")),
         }
     }
@@ -128,7 +127,6 @@ impl TransitionAndReturn<Context, TakeNotification> for State {
                 let opt = async_results.take_handle(handle);
                 Ok((self, Ok(opt.map(Into::into))))
             }
-            State::Suspended => Ok((self, Err(Suspended))),
             s => Err(s.as_unexpected_state("TakeNotification")),
         }
     }
@@ -156,7 +154,6 @@ impl TransitionAndReturn<Context, CopyNotification> for State {
                 let opt = async_results.copy_handle(handle);
                 Ok((self, Ok(opt.map(Into::into))))
             }
-            State::Suspended => Ok((self, Err(Suspended))),
             s => Err(s.as_unexpected_state("CopyNotification")),
         }
     }

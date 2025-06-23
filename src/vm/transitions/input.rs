@@ -83,7 +83,7 @@ impl Transition<Context, NewNotificationMessage> for State {
             | State::Processing { async_results, .. } => {
                 async_results.enqueue(msg.decode_as_notification()?);
             }
-            State::Ended | State::Suspended => {
+            State::Closed => {
                 // Can ignore
             }
             s => return Err(s.as_unexpected_state("NewNotificationMessage")),

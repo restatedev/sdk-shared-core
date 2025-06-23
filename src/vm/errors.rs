@@ -12,6 +12,10 @@ impl InvocationErrorCode {
     pub const fn new(code: u16) -> Self {
         InvocationErrorCode(code)
     }
+
+    pub const fn code(self) -> u16 {
+        self.0
+    }
 }
 
 impl fmt::Debug for InvocationErrorCode {
@@ -63,6 +67,7 @@ pub mod codes {
     pub const PROTOCOL_VIOLATION: InvocationErrorCode = InvocationErrorCode(571);
     pub const AWAITING_TWO_ASYNC_RESULTS: InvocationErrorCode = InvocationErrorCode(572);
     pub const UNSUPPORTED_FEATURE: InvocationErrorCode = InvocationErrorCode(573);
+    pub const CLOSED: InvocationErrorCode = InvocationErrorCode(598);
     pub const SUSPENDED: InvocationErrorCode = InvocationErrorCode(599);
 }
 
@@ -128,15 +133,24 @@ impl UnavailableEntryError {
 #[error("Unexpected state '{state:?}' when invoking '{event:?}'")]
 pub struct UnexpectedStateError {
     state: &'static str,
-    event: Box<dyn fmt::Debug + 'static>,
+    event: &'static str,
 }
 
 impl UnexpectedStateError {
-    pub fn new(state: &'static str, event: impl fmt::Debug + 'static) -> Self {
-        Self {
-            state,
-            event: Box::new(event),
-        }
+    pub fn new(state: &'static str, event: &'static str) -> Self {
+        Self { state, event }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("State machine was closed when invoking '{event:?}'")]
+pub struct ClosedError {
+    event: &'static str,
+}
+
+impl ClosedError {
+    pub fn new(event: &'static str) -> Self {
+        Self { event }
     }
 }
 
@@ -253,6 +267,7 @@ impl WithInvocationErrorCode for DecodingError {
 }
 impl_error_code!(UnavailableEntryError, PROTOCOL_VIOLATION);
 impl_error_code!(UnexpectedStateError, PROTOCOL_VIOLATION);
+impl_error_code!(ClosedError, CLOSED);
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
 impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);
