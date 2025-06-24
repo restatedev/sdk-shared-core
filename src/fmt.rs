@@ -70,8 +70,31 @@ impl<'a, 'b: 'a> DiffFormatter<'a, 'b> {
     ) -> fmt::Result {
         write!(
             self.fmt,
-            "{}{}: {actual} != {expected}",
-            self.indentation, field_name
+            "\n{}{field_name}: {actual} != {expected}",
+            self.indentation
         )
+    }
+
+    pub(crate) fn write_bytes_diff(
+        &mut self,
+        field_name: &'static str,
+        actual: &[u8],
+        expected: &[u8],
+    ) -> fmt::Result {
+        write!(self.fmt, "\n{}{field_name}: ", self.indentation)?;
+        match (std::str::from_utf8(actual), std::str::from_utf8(expected)) {
+            (Ok(actual), Ok(expected)) => {
+                write!(self.fmt, "'{actual}' != '{expected}'",)
+            }
+            (Ok(actual), Err(_)) => {
+                write!(self.fmt, "'{actual}' != {expected:?}")
+            }
+            (Err(_), Ok(expected)) => {
+                write!(self.fmt, "{actual:?} != '{expected}'")
+            }
+            (Err(_), Err(_)) => {
+                write!(self.fmt, "{actual:?} != {expected:?}")
+            }
+        }
     }
 }

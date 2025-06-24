@@ -176,11 +176,7 @@ impl CommandMessageHeaderDiff for OutputCommandMessage {
 impl CommandMessageHeaderDiff for GetLazyStateCommandMessage {
     fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
         if self.key != expected.key {
-            f.write_diff(
-                "key",
-                String::from_utf8_lossy(&self.key),
-                String::from_utf8_lossy(&expected.key),
-            )?;
+            f.write_bytes_diff("key", &self.key, &expected.key)?;
         }
 
         if self.result_completion_id != expected.result_completion_id {
@@ -198,11 +194,7 @@ impl CommandMessageHeaderDiff for GetLazyStateCommandMessage {
 impl CommandMessageHeaderDiff for SetStateCommandMessage {
     fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
         if self.key != expected.key {
-            f.write_diff(
-                "key",
-                String::from_utf8_lossy(&self.key),
-                String::from_utf8_lossy(&expected.key),
-            )?;
+            f.write_bytes_diff("key", &self.key, &expected.key)?;
         }
 
         if self.value != expected.value {
@@ -231,11 +223,7 @@ impl CommandMessageHeaderDiff for SetStateCommandMessage {
 impl CommandMessageHeaderDiff for ClearStateCommandMessage {
     fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
         if self.key != expected.key {
-            f.write_diff(
-                "key",
-                String::from_utf8_lossy(&self.key),
-                String::from_utf8_lossy(&expected.key),
-            )?;
+            f.write_bytes_diff("key", &self.key, &expected.key)?;
         }
 
         Ok(())
@@ -266,11 +254,7 @@ impl CommandMessageHeaderDiff for GetLazyStateKeysCommandMessage {
 impl CommandMessageHeaderDiff for GetEagerStateCommandMessage {
     fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
         if self.key != expected.key {
-            f.write_diff(
-                "key",
-                String::from_utf8_lossy(&self.key),
-                String::from_utf8_lossy(&expected.key),
-            )?;
+            f.write_bytes_diff("key", &self.key, &expected.key)?;
         }
 
         if self.result != expected.result {
@@ -426,11 +410,7 @@ impl CommandMessageHeaderDiff for CallCommandMessage {
         }
 
         if self.parameter != expected.parameter {
-            f.write_diff(
-                "parameter",
-                String::from_utf8_lossy(&self.parameter),
-                String::from_utf8_lossy(&expected.parameter),
-            )?;
+            f.write_bytes_diff("parameter", &self.parameter, &expected.parameter)?;
         }
 
         if self.key != expected.key {
@@ -494,11 +474,7 @@ impl CommandMessageHeaderDiff for OneWayCallCommandMessage {
         }
 
         if self.parameter != expected.parameter {
-            f.write_diff(
-                "parameter",
-                String::from_utf8_lossy(&self.parameter),
-                String::from_utf8_lossy(&expected.parameter),
-            )?;
+            f.write_bytes_diff("parameter", &self.parameter, &expected.parameter)?;
         }
 
         if self.invoke_time != expected.invoke_time {
@@ -741,7 +717,11 @@ impl<'a> fmt::Display for DisplayOptionalString<'a> {
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "'{}'", String::from_utf8_lossy(self.content.as_ref()))
+        if let Ok(content) = std::str::from_utf8(&self.content) {
+            write!(f, "'{}'", content)
+        } else {
+            write!(f, "{:?}", &self.content)
+        }
     }
 }
 

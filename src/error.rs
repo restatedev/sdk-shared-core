@@ -18,7 +18,7 @@ pub(crate) struct CommandMetadata {
 
 impl fmt::Display for CommandMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} ", self.ty)?;
+        write!(f, "{} ", self.ty)?;
         if let Some(name) = &self.name {
             write!(f, "[{}]", name)?;
         } else {

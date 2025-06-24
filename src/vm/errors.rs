@@ -172,11 +172,10 @@ impl fmt::Display for CommandTypeMismatchError {
         write!(f,
                "Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.
 This typically happens when some parts of the code are non-deterministic.
-
  - The previous execution ran and recorded the following: '{}'
  - The current execution attempts to perform the following: '{}'",
                self.expected,
-            self.actual,
+               self.actual,
         )
     }
 }
@@ -205,9 +204,8 @@ impl<M: RestateMessage + CommandMessageHeaderDiff> fmt::Display for CommandMisma
         write!(f,
 "Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.
 This typically happens when some parts of the code are non-deterministic.
-
 - The mismatch happened at index '{}' while executing '{}'
-- Difference: \n",
+- Difference:",
             self.command_index,
             M::ty(),
         )?;
