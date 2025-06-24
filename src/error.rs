@@ -171,3 +171,133 @@ impl From<CommandType> for MessageType {
         }
     }
 }
+
+impl TryFrom<MessageType> for CommandType {
+    type Error = MessageType;
+
+    fn try_from(value: MessageType) -> Result<Self, Self::Error> {
+        match value {
+            MessageType::InputCommand => Ok(CommandType::Input),
+            MessageType::OutputCommand => Ok(CommandType::Output),
+            MessageType::GetLazyStateCommand | MessageType::GetEagerStateCommand => {
+                Ok(CommandType::GetState)
+            }
+            MessageType::GetLazyStateKeysCommand | MessageType::GetEagerStateKeysCommand => {
+                Ok(CommandType::GetStateKeys)
+            }
+            MessageType::SetStateCommand => Ok(CommandType::SetState),
+            MessageType::ClearStateCommand => Ok(CommandType::ClearState),
+            MessageType::ClearAllStateCommand => Ok(CommandType::ClearAllState),
+            MessageType::GetPromiseCommand => Ok(CommandType::GetPromise),
+            MessageType::PeekPromiseCommand => Ok(CommandType::PeekPromise),
+            MessageType::CompletePromiseCommand => Ok(CommandType::CompletePromise),
+            MessageType::SleepCommand => Ok(CommandType::Sleep),
+            MessageType::CallCommand => Ok(CommandType::Call),
+            MessageType::OneWayCallCommand => Ok(CommandType::OneWayCall),
+            MessageType::SendSignalCommand => Ok(CommandType::SendSignal),
+            MessageType::RunCommand => Ok(CommandType::Run),
+            MessageType::AttachInvocationCommand => Ok(CommandType::AttachInvocation),
+            MessageType::GetInvocationOutputCommand => Ok(CommandType::GetInvocationOutput),
+            MessageType::CompleteAwakeableCommand => Ok(CommandType::CompleteAwakeable),
+            _ => Err(value),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_message_type_to_command_type_conversion() {
+        // Test successful conversions
+        assert_eq!(
+            CommandType::try_from(MessageType::InputCommand).unwrap(),
+            CommandType::Input
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::OutputCommand).unwrap(),
+            CommandType::Output
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::GetLazyStateCommand).unwrap(),
+            CommandType::GetState
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::GetLazyStateKeysCommand).unwrap(),
+            CommandType::GetStateKeys
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::SetStateCommand).unwrap(),
+            CommandType::SetState
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::ClearStateCommand).unwrap(),
+            CommandType::ClearState
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::ClearAllStateCommand).unwrap(),
+            CommandType::ClearAllState
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::GetPromiseCommand).unwrap(),
+            CommandType::GetPromise
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::PeekPromiseCommand).unwrap(),
+            CommandType::PeekPromise
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::CompletePromiseCommand).unwrap(),
+            CommandType::CompletePromise
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::SleepCommand).unwrap(),
+            CommandType::Sleep
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::CallCommand).unwrap(),
+            CommandType::Call
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::OneWayCallCommand).unwrap(),
+            CommandType::OneWayCall
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::SendSignalCommand).unwrap(),
+            CommandType::SendSignal
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::RunCommand).unwrap(),
+            CommandType::Run
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::AttachInvocationCommand).unwrap(),
+            CommandType::AttachInvocation
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::GetInvocationOutputCommand).unwrap(),
+            CommandType::GetInvocationOutput
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::CompleteAwakeableCommand).unwrap(),
+            CommandType::CompleteAwakeable
+        );
+
+        // Test failed conversions
+        assert_eq!(
+            CommandType::try_from(MessageType::Start).err().unwrap(),
+            MessageType::Start
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::End).err().unwrap(),
+            MessageType::End
+        );
+        assert_eq!(
+            CommandType::try_from(MessageType::GetLazyStateCompletionNotification)
+                .err()
+                .unwrap(),
+            MessageType::GetLazyStateCompletionNotification
+        );
+    }
+}

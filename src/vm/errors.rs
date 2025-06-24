@@ -1,8 +1,9 @@
+use crate::fmt::DiffFormatter;
+use crate::service_protocol::messages::{CommandMessageHeaderDiff, RestateMessage};
 use crate::service_protocol::{ContentTypeError, DecodingError, MessageType};
 use crate::{Error, Version};
 use std::borrow::Cow;
 use std::fmt;
-
 // Error codes
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -118,7 +119,7 @@ pub const SUSPENDED: Error = Error::new_const(codes::SUSPENDED, "Suspended invoc
 // Other errors
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("The journal replay unexpectedly ended. Expecting to read entry {expected:?} from the replayed journal, but the buffered entries were drained already.")]
+#[error("The execution replay ended unexpectedly. Expecting to read '{expected}' from the recorded journal, but the buffered messages were already drained.")]
 pub struct UnavailableEntryError {
     expected: MessageType,
 }
@@ -154,15 +155,42 @@ impl ClosedError {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("Replayed journal doesn't match the handler code at index {command_index}.\nThe handler code generated: {expected:#?}\nwhile the replayed entry is: {actual:#?}")]
-pub struct CommandMismatchError<M: fmt::Debug> {
+#[derive(Debug)]
+pub struct CommandTypeMismatchError {
+    actual: MessageType,
+    expected: MessageType,
+}
+
+impl CommandTypeMismatchError {
+    pub fn new(actual: MessageType, expected: MessageType) -> CommandTypeMismatchError {
+        Self { actual, expected }
+    }
+}
+
+impl fmt::Display for CommandTypeMismatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+               "Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.
+This typically happens when some parts of the code are non-deterministic.
+
+ - The previous execution ran and recorded the following: '{}'
+ - The current execution attempts to perform the following: '{}'",
+               self.expected,
+            self.actual,
+        )
+    }
+}
+
+impl std::error::Error for CommandTypeMismatchError {}
+
+#[derive(Debug)]
+pub struct CommandMismatchError<M> {
     command_index: i64,
     actual: M,
     expected: M,
 }
 
-impl<M: fmt::Debug> CommandMismatchError<M> {
+impl<M> CommandMismatchError<M> {
     pub fn new(command_index: i64, actual: M, expected: M) -> CommandMismatchError<M> {
         Self {
             command_index,
@@ -172,11 +200,23 @@ impl<M: fmt::Debug> CommandMismatchError<M> {
     }
 }
 
-impl<M: fmt::Debug> WithInvocationErrorCode for CommandMismatchError<M> {
-    fn code(&self) -> InvocationErrorCode {
-        codes::JOURNAL_MISMATCH
+impl<M: RestateMessage + CommandMessageHeaderDiff> fmt::Display for CommandMismatchError<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+"Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.
+This typically happens when some parts of the code are non-deterministic.
+
+- The mismatch happened at index '{}' while executing '{}'
+- Difference: \n",
+            self.command_index,
+            M::ty(),
+        )?;
+        self.actual
+            .write_diff(&self.expected, DiffFormatter::new(f, "   "))
     }
 }
+
+impl<M: RestateMessage + CommandMessageHeaderDiff> std::error::Error for CommandMismatchError<M> {}
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Cannot convert a eager state key into UTF-8 String: {0:?}")]
@@ -220,20 +260,6 @@ impl UnsupportedFeatureForNegotiatedVersion {
     }
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Replayed journal doesn't match the handler code at index {command_index}.\nThe handler code generated a 'get state command',\nwhile the replayed entry is: {actual:#?}")]
-pub struct UnexpectedGetState {
-    pub(crate) command_index: i64,
-    pub(crate) actual: MessageType,
-}
-
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Replayed journal doesn't match the handler code at index {command_index}.\nThe handler code generated a 'get state keys command',\nwhile the replayed entry is: {actual:#?}")]
-pub struct UnexpectedGetStateKeys {
-    pub(crate) command_index: i64,
-    pub(crate) actual: MessageType,
-}
-
 // Conversions to VMError
 
 trait WithInvocationErrorCode {
@@ -268,11 +294,17 @@ impl WithInvocationErrorCode for DecodingError {
 impl_error_code!(UnavailableEntryError, PROTOCOL_VIOLATION);
 impl_error_code!(UnexpectedStateError, PROTOCOL_VIOLATION);
 impl_error_code!(ClosedError, CLOSED);
+impl_error_code!(CommandTypeMismatchError, JOURNAL_MISMATCH);
+impl<M: RestateMessage + CommandMessageHeaderDiff> WithInvocationErrorCode
+    for CommandMismatchError<M>
+{
+    fn code(&self) -> InvocationErrorCode {
+        codes::JOURNAL_MISMATCH
+    }
+}
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
 impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);
 impl_error_code!(EmptyGetEagerState, PROTOCOL_VIOLATION);
 impl_error_code!(EmptyGetEagerStateKeys, PROTOCOL_VIOLATION);
 impl_error_code!(UnsupportedFeatureForNegotiatedVersion, UNSUPPORTED_FEATURE);
-impl_error_code!(UnexpectedGetState, JOURNAL_MISMATCH);
-impl_error_code!(UnexpectedGetStateKeys, JOURNAL_MISMATCH);

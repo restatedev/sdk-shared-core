@@ -14,6 +14,7 @@ use super::*;
 
 use std::mem;
 
+use crate::vm::errors::CommandTypeMismatchError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
 use prost::Message;
@@ -22,11 +23,8 @@ use prost::Message;
 pub enum DecodingError {
     #[error("cannot decode protocol message type {0:?}. Reason: {1:?}")]
     DecodeMessage(MessageType, #[source] prost::DecodeError),
-    #[error("Replayed journal doesn't match the handler code.\nThe handler code generated: {expected:?}\nwhile the replayed entry is: {actual:?}")]
-    UnexpectedMessageType {
-        expected: MessageType,
-        actual: MessageType,
-    },
+    #[error(transparent)]
+    UnexpectedMessageType(CommandTypeMismatchError),
     #[error("expected message type {expected:?} to have field {field}")]
     MissingField {
         expected: MessageType,
@@ -94,10 +92,9 @@ impl RawMessage {
 
     pub fn decode_to<M: RestateMessage>(self) -> Result<M, DecodingError> {
         if self.0.message_type() != M::ty() {
-            return Err(DecodingError::UnexpectedMessageType {
-                expected: M::ty(),
-                actual: self.0.message_type(),
-            });
+            return Err(DecodingError::UnexpectedMessageType(
+                CommandTypeMismatchError::new(self.0.message_type(), M::ty()),
+            ));
         }
         M::decode(self.1).map_err(|e| DecodingError::DecodeMessage(self.0.message_type(), e))
     }

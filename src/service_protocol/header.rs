@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::CommandType;
+use std::fmt;
+
 const COMMAND_ENTRY_MASK: u16 = 0x0400;
 const NOTIFICATION_ENTRY_MASK: u16 = 0x8000;
 const CUSTOM_ENTRY_MASK: u16 = 0xFC00;
@@ -115,6 +118,15 @@ impl MessageType {
 
     pub fn is_notification(&self) -> bool {
         (NOTIFICATION_ENTRY_MASK..CUSTOM_ENTRY_MASK).contains(&self.id())
+    }
+}
+
+impl fmt::Display for MessageType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match CommandType::try_from(*self) {
+            Ok(ct) => write!(f, "{}", crate::fmt::display_command_ty(ct)),
+            Err(mt) => write!(f, "{:?}", mt),
+        }
     }
 }
 
