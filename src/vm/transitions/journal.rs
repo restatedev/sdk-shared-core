@@ -1,10 +1,11 @@
 use crate::error::CommandMetadata;
 use crate::retries::NextRetry;
 use crate::service_protocol::messages::{
-    get_eager_state_command_message, propose_run_completion_message, CommandMessageHeaderEq,
-    GetEagerStateCommandMessage, GetEagerStateKeysCommandMessage, GetLazyStateCommandMessage,
-    GetLazyStateKeysCommandMessage, InputCommandMessage, NamedCommandMessage,
-    ProposeRunCompletionMessage, RestateMessage, RunCommandMessage, StateKeys, Void,
+    get_eager_state_command_message, propose_run_completion_message, CommandMessageHeaderDiff,
+    CommandMessageHeaderEq, GetEagerStateCommandMessage, GetEagerStateKeysCommandMessage,
+    GetLazyStateCommandMessage, GetLazyStateKeysCommandMessage, InputCommandMessage,
+    NamedCommandMessage, ProposeRunCompletionMessage, RestateMessage, RunCommandMessage, StateKeys,
+    Void,
 };
 use crate::service_protocol::{
     messages, CompletionId, MessageType, Notification, NotificationId, NotificationResult,
@@ -12,8 +13,8 @@ use crate::service_protocol::{
 };
 use crate::vm::context::{AsyncResultsState, Context, EagerGetState, EagerGetStateKeys, RunState};
 use crate::vm::errors::{
-    CommandMismatchError, EmptyGetEagerState, EmptyGetEagerStateKeys, UnavailableEntryError,
-    UnexpectedGetState, UnexpectedGetStateKeys,
+    CommandMismatchError, CommandTypeMismatchError, EmptyGetEagerState, EmptyGetEagerStateKeys,
+    UnavailableEntryError,
 };
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
@@ -23,7 +24,6 @@ use crate::{
 };
 use bytes::Bytes;
 use std::collections::VecDeque;
-use std::fmt;
 use tracing::trace;
 
 pub(crate) struct SysInput;
@@ -85,8 +85,13 @@ fn compute_random_seed(id: &[u8]) -> u64 {
 
 pub(crate) struct SysNonCompletableEntry<M>(pub(crate) &'static str, pub(crate) M);
 
-impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
-    Transition<Context, SysNonCompletableEntry<M>> for State
+impl<
+        M: RestateMessage
+            + CommandMessageHeaderEq
+            + CommandMessageHeaderDiff
+            + NamedCommandMessage
+            + Clone,
+    > Transition<Context, SysNonCompletableEntry<M>> for State
 {
     fn transition(
         self,
@@ -109,8 +114,13 @@ pub(crate) struct SysNonCompletableEntryWithCompletion<M>(
     pub(crate) Notification,
 );
 
-impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
-    TransitionAndReturn<Context, SysNonCompletableEntryWithCompletion<M>> for State
+impl<
+        M: RestateMessage
+            + CommandMessageHeaderEq
+            + CommandMessageHeaderDiff
+            + NamedCommandMessage
+            + Clone,
+    > TransitionAndReturn<Context, SysNonCompletableEntryWithCompletion<M>> for State
 {
     type Output = NotificationHandle;
 
@@ -155,8 +165,13 @@ pub(crate) struct SysSimpleCompletableEntry<M>(
     pub(crate) CompletionId,
 );
 
-impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
-    TransitionAndReturn<Context, SysSimpleCompletableEntry<M>> for State
+impl<
+        M: RestateMessage
+            + CommandMessageHeaderEq
+            + CommandMessageHeaderDiff
+            + NamedCommandMessage
+            + Clone,
+    > TransitionAndReturn<Context, SysSimpleCompletableEntry<M>> for State
 {
     type Output = NotificationHandle;
 
@@ -180,8 +195,13 @@ pub(crate) struct SysCompletableEntryWithMultipleCompletions<M>(
     pub(crate) Vec<CompletionId>,
 );
 
-impl<M: RestateMessage + CommandMessageHeaderEq + NamedCommandMessage + Clone>
-    TransitionAndReturn<Context, SysCompletableEntryWithMultipleCompletions<M>> for State
+impl<
+        M: RestateMessage
+            + CommandMessageHeaderEq
+            + CommandMessageHeaderDiff
+            + NamedCommandMessage
+            + Clone,
+    > TransitionAndReturn<Context, SysCompletableEntryWithMultipleCompletions<M>> for State
 {
     type Output = Vec<NotificationHandle>;
 
@@ -408,10 +428,10 @@ fn process_get_entry_during_replay(
             )?;
         }
         message_type => {
-            return Err(UnexpectedGetState {
-                command_index: context.journal.command_index(),
-                actual: message_type,
-            }
+            return Err(CommandTypeMismatchError::new(
+                message_type,
+                MessageType::GetLazyStateCommand,
+            )
             .into())
         }
     }
@@ -579,10 +599,10 @@ fn process_get_entry_keys_during_replay(
             )?;
         }
         message_type => {
-            return Err(UnexpectedGetStateKeys {
-                command_index: context.journal.command_index(),
-                actual: message_type,
-            }
+            return Err(CommandTypeMismatchError::new(
+                message_type,
+                MessageType::GetLazyStateKeysCommand,
+            )
             .into())
         }
     }
@@ -751,7 +771,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
 
 struct PopJournalEntry<M>(pub(crate) &'static str, pub(crate) M);
 
-impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
+impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clone>
     TransitionAndReturn<Context, PopJournalEntry<M>> for State
 {
     type Output = M;
@@ -796,7 +816,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
 
 struct PopOrWriteJournalEntry<M>(&'static str, M);
 
-impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
+impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clone>
     TransitionAndReturn<Context, PopOrWriteJournalEntry<M>> for State
 {
     type Output = M;
@@ -820,7 +840,9 @@ impl<M: RestateMessage + CommandMessageHeaderEq + Clone>
     }
 }
 
-fn check_entry_header_match<M: CommandMessageHeaderEq + Clone + fmt::Debug>(
+fn check_entry_header_match<
+    M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clone,
+>(
     command_index: i64,
     actual: &M,
     expected: &M,

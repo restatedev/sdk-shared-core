@@ -2,7 +2,8 @@ use super::*;
 
 use crate::error::CommandMetadata;
 use crate::service_protocol::messages::{
-    ErrorMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage, StartMessage,
+    CommandMessageHeaderDiff, ErrorMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage,
+    StartMessage,
 };
 use crate::service_protocol::MessageType;
 use std::fmt;
@@ -122,7 +123,10 @@ fn one_way_call_entry_mismatch() {
     );
 }
 
-fn test_entry_mismatch_on_replay<M: RestateMessage + Clone, T: fmt::Debug>(
+fn test_entry_mismatch_on_replay<
+    M: RestateMessage + CommandMessageHeaderDiff + Clone,
+    T: fmt::Debug,
+>(
     expected: M,
     actual: M,
     user_code: impl FnOnce(&mut CoreVM) -> Result<T, Error>,
