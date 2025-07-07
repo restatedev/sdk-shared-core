@@ -20,8 +20,8 @@ pub enum RetryPolicy {
     FixedDelay {
         /// # Interval
         ///
-        /// Interval between retries.
-        interval: Duration,
+        /// Interval between retries. If none, the runtime will provide one based on the invoker retry policy.
+        interval: Option<Duration>,
 
         /// # Max attempts
         ///
@@ -80,7 +80,7 @@ pub(crate) enum NextRetry {
 
 impl RetryPolicy {
     pub fn fixed_delay(
-        interval: Duration,
+        interval: Option<Duration>,
         max_attempts: Option<u32>,
         max_duration: Option<Duration>,
     ) -> Self {
@@ -125,7 +125,7 @@ impl RetryPolicy {
                 }
 
                 // No bound reached, we need to retry
-                NextRetry::Retry(Some(*interval))
+                NextRetry::Retry(*interval)
             }
             RetryPolicy::Exponential {
                 initial_interval,
