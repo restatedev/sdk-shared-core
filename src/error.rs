@@ -20,7 +20,7 @@ impl fmt::Display for CommandMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} ", self.ty)?;
         if let Some(name) = &self.name {
-            write!(f, "[{}]", name)?;
+            write!(f, "[{name}]")?;
         } else {
             write!(f, "[{}]", self.index)?;
         }
@@ -67,7 +67,7 @@ impl fmt::Display for Error {
             write!(f, "\nStacktrace: {}", self.stacktrace)?;
         }
         if let Some(related_command) = &self.related_command {
-            write!(f, "\nRelated command: {}", related_command)?;
+            write!(f, "\nRelated command: {related_command}")?;
         }
 
         Ok(())

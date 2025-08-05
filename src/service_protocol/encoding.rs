@@ -90,10 +90,10 @@ impl RawMessage {
         self.0.message_type()
     }
 
-    pub fn decode_to<M: RestateMessage>(self) -> Result<M, DecodingError> {
+    pub fn decode_to<M: RestateMessage>(self, command_index: i64) -> Result<M, DecodingError> {
         if self.0.message_type() != M::ty() {
             return Err(DecodingError::UnexpectedMessageType(
-                CommandTypeMismatchError::new(self.0.message_type(), M::ty()),
+                CommandTypeMismatchError::new(command_index, self.0.message_type(), M::ty()),
             ));
         }
         M::decode(self.1).map_err(|e| DecodingError::DecodeMessage(self.0.message_type(), e))
@@ -244,7 +244,7 @@ mod tests {
         let actual_msg_0 = decoder.consume_next().unwrap().unwrap();
         assert_eq!(actual_msg_0.ty(), MessageType::Start);
         assert_eq!(
-            actual_msg_0.decode_to::<messages::StartMessage>().unwrap(),
+            actual_msg_0.decode_to::<messages::StartMessage>(0).unwrap(),
             expected_msg_0
         );
 
@@ -255,7 +255,7 @@ mod tests {
         );
         assert_eq!(
             actual_msg_1
-                .decode_to::<messages::InputCommandMessage>()
+                .decode_to::<messages::InputCommandMessage>(1)
                 .unwrap(),
             expected_msg_1
         );
@@ -267,7 +267,7 @@ mod tests {
         );
         assert_eq!(
             actual_msg_2
-                .decode_to::<messages::GetLazyStateCompletionNotificationMessage>()
+                .decode_to::<messages::GetLazyStateCompletionNotificationMessage>(2)
                 .unwrap(),
             expected_msg_2
         );
@@ -309,7 +309,7 @@ mod tests {
         );
         assert_eq!(
             actual_msg
-                .decode_to::<messages::InputCommandMessage>()
+                .decode_to::<messages::InputCommandMessage>(4)
                 .unwrap(),
             expected_msg
         );

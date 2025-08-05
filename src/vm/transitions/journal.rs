@@ -390,7 +390,8 @@ fn process_get_entry_during_replay(
     match actual.ty() {
         MessageType::GetEagerStateCommand => {
             context.journal.current_entry_ty = MessageType::GetEagerStateCommand;
-            let get_eager_state_command = actual.decode_to::<GetEagerStateCommandMessage>()?;
+            let get_eager_state_command =
+                actual.decode_to::<GetEagerStateCommandMessage>(context.journal.command_index())?;
             check_entry_header_match(
                 context.journal.command_index(),
                 &get_eager_state_command,
@@ -416,7 +417,8 @@ fn process_get_entry_during_replay(
         }
         MessageType::GetLazyStateCommand => {
             context.journal.current_entry_ty = MessageType::GetLazyStateCommand;
-            let get_lazy_state_command = actual.decode_to::<GetLazyStateCommandMessage>()?;
+            let get_lazy_state_command =
+                actual.decode_to::<GetLazyStateCommandMessage>(context.journal.command_index())?;
             check_entry_header_match(
                 context.journal.command_index(),
                 &get_lazy_state_command,
@@ -429,6 +431,7 @@ fn process_get_entry_during_replay(
         }
         message_type => {
             return Err(CommandTypeMismatchError::new(
+                context.journal.command_index(),
                 message_type,
                 MessageType::GetLazyStateCommand,
             )
@@ -565,7 +568,8 @@ fn process_get_entry_keys_during_replay(
     match actual.ty() {
         MessageType::GetEagerStateKeysCommand => {
             context.journal.current_entry_ty = MessageType::GetEagerStateKeysCommand;
-            let get_eager_state_command = actual.decode_to::<GetEagerStateKeysCommandMessage>()?;
+            let get_eager_state_command = actual
+                .decode_to::<GetEagerStateKeysCommandMessage>(context.journal.command_index())?;
             check_entry_header_match(
                 context.journal.command_index(),
                 &get_eager_state_command,
@@ -588,7 +592,8 @@ fn process_get_entry_keys_during_replay(
         }
         MessageType::GetLazyStateKeysCommand => {
             context.journal.current_entry_ty = MessageType::GetLazyStateKeysCommand;
-            let get_lazy_state_command = actual.decode_to::<GetLazyStateKeysCommandMessage>()?;
+            let get_lazy_state_command = actual
+                .decode_to::<GetLazyStateKeysCommandMessage>(context.journal.command_index())?;
             check_entry_header_match(
                 context.journal.command_index(),
                 &get_lazy_state_command,
@@ -600,6 +605,7 @@ fn process_get_entry_keys_during_replay(
         }
         message_type => {
             return Err(CommandTypeMismatchError::new(
+                context.journal.command_index(),
                 message_type,
                 MessageType::GetLazyStateKeysCommand,
             )
@@ -790,7 +796,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
                 let actual = commands
                     .pop_front()
                     .ok_or(UnavailableEntryError::new(M::ty()))?
-                    .decode_to::<M>()?;
+                    .decode_to::<M>(context.journal.command_index())?;
                 let new_state = if commands.is_empty() {
                     State::Processing {
                         processing_first_entry: true,

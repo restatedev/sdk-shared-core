@@ -153,9 +153,9 @@ impl CommandMessageHeaderDiff for OutputCommandMessage {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 match self.0 {
                     None => write!(f, "<empty>"),
-                    Some(output_command_message::Result::Value(value)) => write!(f, "{}", value),
+                    Some(output_command_message::Result::Value(value)) => write!(f, "{value}"),
                     Some(output_command_message::Result::Failure(failure)) => {
-                        write!(f, "{}", failure)
+                        write!(f, "{failure}")
                     }
                 }
             }
@@ -204,7 +204,7 @@ impl CommandMessageHeaderDiff for SetStateCommandMessage {
                 fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                     match self.0 {
                         None => write!(f, "<empty>"),
-                        Some(value) => write!(f, "{}", value),
+                        Some(value) => write!(f, "{value}"),
                     }
                 }
             }
@@ -266,7 +266,7 @@ impl CommandMessageHeaderDiff for GetEagerStateCommandMessage {
                         None => write!(f, "<empty>"),
                         Some(get_eager_state_command_message::Result::Void(_)) => write!(f, "void"),
                         Some(get_eager_state_command_message::Result::Value(value)) => {
-                            write!(f, "{}", value)
+                            write!(f, "{value}")
                         }
                     }
                 }
@@ -377,12 +377,12 @@ impl CommandMessageHeaderDiff for CompletePromiseCommandMessage {
                         Some(complete_promise_command_message::Completion::CompletionValue(
                             value,
                         )) => {
-                            write!(f, "{}", value)
+                            write!(f, "{value}")
                         }
                         Some(complete_promise_command_message::Completion::CompletionFailure(
                             failure,
                         )) => {
-                            write!(f, "{}", failure)
+                            write!(f, "{failure}")
                         }
                     }
                 }
@@ -523,10 +523,10 @@ impl CommandMessageHeaderDiff for SendSignalCommandMessage {
                     match self.0 {
                         None => write!(f, "<empty>"),
                         Some(send_signal_command_message::SignalId::Idx(idx)) => {
-                            write!(f, "{}", idx)
+                            write!(f, "{idx}")
                         }
                         Some(send_signal_command_message::SignalId::Name(name)) => {
-                            write!(f, "{}", name)
+                            write!(f, "{name}")
                         }
                     }
                 }
@@ -548,10 +548,10 @@ impl CommandMessageHeaderDiff for SendSignalCommandMessage {
                         None => write!(f, "<empty>"),
                         Some(send_signal_command_message::Result::Void(_)) => write!(f, "void"),
                         Some(send_signal_command_message::Result::Value(value)) => {
-                            write!(f, "{}", value)
+                            write!(f, "{value}")
                         }
                         Some(send_signal_command_message::Result::Failure(failure)) => {
-                            write!(f, "{}", failure)
+                            write!(f, "{failure}")
                         }
                     }
                 }
@@ -600,7 +600,7 @@ impl CommandMessageHeaderDiff for AttachInvocationCommandMessage {
                     match self.0 {
                         None => write!(f, "<empty>"),
                         Some(attach_invocation_command_message::Target::InvocationId(id)) => {
-                            write!(f, "{}", id)
+                            write!(f, "{id}")
                         }
                         Some(
                             attach_invocation_command_message::Target::IdempotentRequestTarget(_),
@@ -643,7 +643,7 @@ impl CommandMessageHeaderDiff for GetInvocationOutputCommandMessage {
                     match self.0 {
                         None => write!(f, "<empty>"),
                         Some(get_invocation_output_command_message::Target::InvocationId(id)) => {
-                            write!(f, "{}", id)
+                            write!(f, "{id}")
                         }
                         Some(
                             get_invocation_output_command_message::Target::IdempotentRequestTarget(
@@ -684,10 +684,10 @@ impl CommandMessageHeaderDiff for CompleteAwakeableCommandMessage {
                     match self.0 {
                         None => write!(f, "<empty>"),
                         Some(complete_awakeable_command_message::Result::Value(value)) => {
-                            write!(f, "{}", value)
+                            write!(f, "{value}")
                         }
                         Some(complete_awakeable_command_message::Result::Failure(failure)) => {
-                            write!(f, "{}", failure)
+                            write!(f, "{failure}")
                         }
                     }
                 }
@@ -710,7 +710,7 @@ impl<'a> fmt::Display for DisplayOptionalString<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.0 {
             None => write!(f, "<empty>"),
-            Some(s) => write!(f, "{}", s),
+            Some(s) => write!(f, "{s}"),
         }
     }
 }
@@ -718,7 +718,7 @@ impl<'a> fmt::Display for DisplayOptionalString<'a> {
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Ok(content) = std::str::from_utf8(&self.content) {
-            write!(f, "'{}'", content)
+            write!(f, "'{content}'")
         } else {
             write!(f, "{:?}", &self.content)
         }

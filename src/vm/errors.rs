@@ -158,12 +158,21 @@ impl ClosedError {
 #[derive(Debug)]
 pub struct CommandTypeMismatchError {
     actual: MessageType,
+    command_index: i64,
     expected: MessageType,
 }
 
 impl CommandTypeMismatchError {
-    pub fn new(actual: MessageType, expected: MessageType) -> CommandTypeMismatchError {
-        Self { actual, expected }
+    pub fn new(
+        command_index: i64,
+        actual: MessageType,
+        expected: MessageType,
+    ) -> CommandTypeMismatchError {
+        Self {
+            command_index,
+            actual,
+            expected,
+        }
     }
 }
 
@@ -172,9 +181,10 @@ impl fmt::Display for CommandTypeMismatchError {
         write!(f,
                "Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.
 This typically happens when some parts of the code are non-deterministic.
- - The previous execution ran and recorded the following: '{}'
+ - The previous execution ran and recorded the following: '{}' (index '{}')
  - The current execution attempts to perform the following: '{}'",
                self.expected,
+            self.command_index,
                self.actual,
         )
     }
@@ -204,10 +214,9 @@ impl<M: RestateMessage + CommandMessageHeaderDiff> fmt::Display for CommandMisma
         write!(f,
 "Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.
 This typically happens when some parts of the code are non-deterministic.
-- The mismatch happened at index '{}' while executing '{}'
+- The mismatch happened while executing '{}' (index '{}')
 - Difference:",
-            self.command_index,
-            M::ty(),
+            M::ty(), self.command_index,
         )?;
         self.actual
             .write_diff(&self.expected, DiffFormatter::new(f, "   "))

@@ -19,7 +19,7 @@ fn bootstrap() {
             &[root_dir.join("service-protocol")],
         )
     {
-        panic!("failed to compile `console-api` protobuf: {}", error);
+        panic!("failed to compile `console-api` protobuf: {error}");
     }
 
     let status = Command::new("git")
@@ -30,7 +30,7 @@ fn bootstrap() {
         .status();
     match status {
         Ok(status) if !status.success() => panic!("You should commit the protobuf files"),
-        Err(error) => panic!("failed to run `git diff`: {}", error),
+        Err(error) => panic!("failed to run `git diff`: {error}"),
         Ok(_) => {}
     }
 }

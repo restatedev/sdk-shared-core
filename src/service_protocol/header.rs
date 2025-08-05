@@ -125,7 +125,7 @@ impl fmt::Display for MessageType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match CommandType::try_from(*self) {
             Ok(ct) => write!(f, "{}", crate::fmt::display_command_ty(ct)),
-            Err(mt) => write!(f, "{:?}", mt),
+            Err(mt) => write!(f, "{mt:?}"),
         }
     }
 }
