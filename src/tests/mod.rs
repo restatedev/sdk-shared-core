@@ -110,7 +110,7 @@ impl OutputIterator {
         self.0
             .consume_next()
             .unwrap()
-            .map(|msg| msg.decode_to::<M>().unwrap())
+            .map(|msg| msg.decode_to::<M>(0).unwrap())
     }
 }
 

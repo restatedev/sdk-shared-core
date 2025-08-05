@@ -17,7 +17,7 @@ impl Transition<Context, NewMessage> for State {
     fn transition(self, context: &mut Context, NewMessage(msg): NewMessage) -> Result<Self, Error> {
         match msg.ty() {
             MessageType::Start => {
-                self.transition(context, NewStartMessage(msg.decode_to::<StartMessage>()?))
+                self.transition(context, NewStartMessage(msg.decode_to::<StartMessage>(0)?))
             }
             ty if ty.is_command() => self.transition(context, NewCommandMessage(msg)),
             ty if ty.is_notification() => self.transition(context, NewNotificationMessage(msg)),
