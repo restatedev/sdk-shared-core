@@ -568,7 +568,7 @@ mod retry_policy {
             Duration::ZERO,
             Duration::ZERO,
             RetryPolicy::FixedDelay {
-                interval: Duration::from_secs(1),
+                interval: Some(Duration::from_secs(1)),
                 max_attempts: None,
                 max_duration: None,
             },
@@ -583,7 +583,7 @@ mod retry_policy {
             Duration::from_secs(1),
             Duration::from_secs(1),
             RetryPolicy::FixedDelay {
-                interval: Duration::from_secs(1),
+                interval: Some(Duration::from_secs(1)),
                 max_attempts: None,
                 max_duration: Some(Duration::from_secs(2)),
             },
@@ -597,7 +597,7 @@ mod retry_policy {
             Duration::from_secs(1),
             Duration::from_secs(1),
             RetryPolicy::FixedDelay {
-                interval: Duration::from_secs(1),
+                interval: Some(Duration::from_secs(1)),
                 max_attempts: Some(10),
                 max_duration: None,
             },
@@ -631,7 +631,7 @@ mod retry_policy {
                             attempt_duration: Duration::from_millis(99)
                         },
                         RetryPolicy::FixedDelay {
-                            interval: Duration::from_secs(1),
+                            interval: Some(Duration::from_secs(1)),
                             max_attempts: Some(2),
                             max_duration: Some(Duration::from_millis(100)),
                         }
