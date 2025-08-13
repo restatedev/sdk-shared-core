@@ -192,6 +192,7 @@ fn call_then_then_cancel_disabling_children_cancellation() {
             cancel_children_calls: false,
             cancel_children_one_way_calls: true,
         },
+        ..VMOptions::default()
     })
     .input(start_message(1))
     .input(input_entry_message(b"my-data"))
@@ -240,6 +241,7 @@ fn call_then_then_cancel_disabling_children_cancellation() {
 fn disabled_implicit_cancellation() {
     let mut output = VMTestCase::with_vm_options(VMOptions {
         implicit_cancellation: ImplicitCancellationOption::Disabled,
+        ..VMOptions::default()
     })
     .input(start_message(1))
     .input(input_entry_message(b"my-data"))

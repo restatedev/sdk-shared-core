@@ -17,9 +17,9 @@ use crate::vm::errors::{
 use crate::vm::transitions::*;
 use crate::{
     AttachInvocationTarget, CallHandle, CommandRelationship, DoProgressResponse, Error, Header,
-    ImplicitCancellationOption, Input, NonEmptyValue, NotificationHandle, ResponseHead,
-    RetryPolicy, RunExitResult, SendHandle, TakeOutputResult, Target, TerminalFailure, VMOptions,
-    VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
+    ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
+    NotificationHandle, ResponseHead, RetryPolicy, RunExitResult, SendHandle, TakeOutputResult,
+    Target, TerminalFailure, VMOptions, VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -227,6 +227,10 @@ impl super::VM for CoreVM {
                 ),
             ));
         }
+        let non_deterministic_checks_ignore_payload_equality = matches!(
+            options.non_determinism_checks,
+            NonDeterministicChecksOption::PayloadChecksDisabled
+        );
 
         Ok(Self {
             version,
@@ -238,6 +242,7 @@ impl super::VM for CoreVM {
                 start_info: None,
                 journal: Default::default(),
                 eager_state: Default::default(),
+                non_deterministic_checks_ignore_payload_equality,
             },
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],

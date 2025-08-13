@@ -438,6 +438,7 @@ pub(crate) struct Context {
     pub(crate) input_is_closed: bool,
     pub(crate) output: Output,
     pub(crate) eager_state: EagerState,
+    pub(crate) non_deterministic_checks_ignore_payload_equality: bool,
 }
 
 impl Context {

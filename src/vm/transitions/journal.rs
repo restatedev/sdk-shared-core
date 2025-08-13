@@ -400,6 +400,7 @@ fn process_get_entry_during_replay(
                     result: get_eager_state_command.result.clone(),
                     name: "".to_string(),
                 },
+                context.non_deterministic_checks_ignore_payload_equality,
             )?;
 
             let notification_result = match get_eager_state_command
@@ -427,6 +428,7 @@ fn process_get_entry_during_replay(
                     result_completion_id: completion_id,
                     name: "".to_string(),
                 },
+                context.non_deterministic_checks_ignore_payload_equality,
             )?;
         }
         message_type => {
@@ -577,6 +579,7 @@ fn process_get_entry_keys_during_replay(
                     value: get_eager_state_command.value.clone(),
                     name: "".to_string(),
                 },
+                context.non_deterministic_checks_ignore_payload_equality,
             )?;
 
             let notification_result = NotificationResult::StateKeys(
@@ -601,6 +604,7 @@ fn process_get_entry_keys_during_replay(
                     result_completion_id: completion_id,
                     name: "".to_string(),
                 },
+                context.non_deterministic_checks_ignore_payload_equality,
             )?;
         }
         message_type => {
@@ -811,7 +815,12 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
                     }
                 };
 
-                check_entry_header_match(context.journal.command_index(), &actual, &expected)?;
+                check_entry_header_match(
+                    context.journal.command_index(),
+                    &actual,
+                    &expected,
+                    context.non_deterministic_checks_ignore_payload_equality,
+                )?;
 
                 Ok((new_state, actual))
             }
@@ -852,8 +861,9 @@ fn check_entry_header_match<
     command_index: i64,
     actual: &M,
     expected: &M,
+    ignore_payload_equality: bool,
 ) -> Result<(), Error> {
-    if !actual.header_eq(expected) {
+    if !actual.header_eq(expected, ignore_payload_equality) {
         return Err(
             CommandMismatchError::new(command_index, actual.clone(), expected.clone()).into(),
         );

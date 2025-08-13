@@ -17,7 +17,7 @@ pub trait NamedCommandMessage {
 }
 
 pub trait CommandMessageHeaderEq {
-    fn header_eq(&self, other: &Self) -> bool;
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool;
 }
 
 pub trait CommandMessageHeaderDiff {
@@ -34,6 +34,10 @@ macro_rules! impl_message_traits {
         impl_message_traits!($name: message);
     };
     ($name:ident: command) => {
+        impl_message_traits!($name: message);
+        impl_message_traits!($name: named_command);
+    };
+    ($name:ident: command eq) => {
         impl_message_traits!($name: message);
         impl_message_traits!($name: named_command);
         impl_message_traits!($name: command_header_eq);
@@ -54,7 +58,7 @@ macro_rules! impl_message_traits {
     };
     ($name:ident: command_header_eq) => {
         impl CommandMessageHeaderEq for paste! { [<$name Message>] } {
-            fn header_eq(&self, other: &Self) -> bool {
+            fn header_eq(&self, other: &Self, _: bool) -> bool {
                 self.eq(other)
             }
         }
@@ -69,53 +73,140 @@ impl_message_traits!(End: core);
 impl_message_traits!(ProposeRunCompletion: core);
 
 // -- Entries
-impl_message_traits!(InputCommand: message);
-impl_message_traits!(InputCommand: named_command);
+impl_message_traits!(InputCommand: command);
 impl CommandMessageHeaderEq for InputCommandMessage {
-    fn header_eq(&self, _: &Self) -> bool {
+    fn header_eq(&self, _: &Self, _: bool) -> bool {
         true
     }
 }
 
 impl_message_traits!(OutputCommand: command);
-impl_message_traits!(GetLazyStateCommand: command);
-impl_message_traits!(GetLazyStateCompletionNotification: notification);
-impl_message_traits!(SetStateCommand: command);
-impl_message_traits!(ClearStateCommand: command);
-impl_message_traits!(ClearAllStateCommand: command);
-impl_message_traits!(GetLazyStateKeysCommand: command);
-impl_message_traits!(GetLazyStateKeysCompletionNotification: notification);
-impl_message_traits!(GetEagerStateCommand: command);
-impl_message_traits!(GetEagerStateKeysCommand: command);
-impl_message_traits!(GetPromiseCommand: command);
-impl_message_traits!(GetPromiseCompletionNotification: notification);
-impl_message_traits!(PeekPromiseCommand: command);
-impl_message_traits!(PeekPromiseCompletionNotification: notification);
-impl_message_traits!(CompletePromiseCommand: command);
-impl_message_traits!(CompletePromiseCompletionNotification: notification);
-
-impl_message_traits!(SleepCommand: message);
-impl_message_traits!(SleepCommand: named_command);
-impl CommandMessageHeaderEq for SleepCommandMessage {
-    fn header_eq(&self, other: &Self) -> bool {
-        self.name == other.name
+impl CommandMessageHeaderEq for OutputCommandMessage {
+    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
+        if ignore_payload_checks {
+            self.name == other.name
+                && match (&self.result, &other.result) {
+                    (
+                        Some(output_command_message::Result::Value(_)),
+                        Some(output_command_message::Result::Value(_)),
+                    ) => true,
+                    (x, y) => x.eq(y),
+                }
+        } else {
+            self.eq(other)
+        }
     }
 }
 
+impl_message_traits!(GetLazyStateCommand: command eq);
+impl_message_traits!(GetLazyStateCompletionNotification: notification);
+
+impl_message_traits!(SetStateCommand: command);
+impl CommandMessageHeaderEq for SetStateCommandMessage {
+    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
+        if ignore_payload_checks {
+            self.name == other.name
+                && self.key == other.key
+                && match (&self.value, &other.value) {
+                    (Some(_), Some(_)) => true,
+                    (x, y) => x.eq(y),
+                }
+        } else {
+            self.eq(other)
+        }
+    }
+}
+
+impl_message_traits!(ClearStateCommand: command eq);
+
+impl_message_traits!(ClearAllStateCommand: command eq);
+
+impl_message_traits!(GetLazyStateKeysCommand: command eq);
+impl_message_traits!(GetLazyStateKeysCompletionNotification: notification);
+
+impl_message_traits!(GetEagerStateCommand: command);
+impl CommandMessageHeaderEq for GetEagerStateCommandMessage {
+    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
+        if ignore_payload_checks {
+            self.name == other.name
+                && self.key == other.key
+                && match (&self.result, &other.result) {
+                    (
+                        Some(get_eager_state_command_message::Result::Value(_)),
+                        Some(get_eager_state_command_message::Result::Value(_)),
+                    ) => true,
+                    (x, y) => x.eq(y),
+                }
+        } else {
+            self.eq(other)
+        }
+    }
+}
+
+impl_message_traits!(GetEagerStateKeysCommand: command eq);
+
+impl_message_traits!(GetPromiseCommand: command eq);
+impl_message_traits!(GetPromiseCompletionNotification: notification);
+
+impl_message_traits!(PeekPromiseCommand: command eq);
+impl_message_traits!(PeekPromiseCompletionNotification: notification);
+
+impl_message_traits!(CompletePromiseCommand: command);
+impl CommandMessageHeaderEq for CompletePromiseCommandMessage {
+    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
+        if ignore_payload_checks {
+            self.name == other.name
+                && self.key == other.key
+                && self.result_completion_id == other.result_completion_id
+                && match (&self.completion, &other.completion) {
+                    (
+                        Some(complete_promise_command_message::Completion::CompletionValue(_)),
+                        Some(complete_promise_command_message::Completion::CompletionValue(_)),
+                    ) => true,
+                    (x, y) => x.eq(y),
+                }
+        } else {
+            self.eq(other)
+        }
+    }
+}
+impl_message_traits!(CompletePromiseCompletionNotification: notification);
+
+impl_message_traits!(SleepCommand: command);
+impl CommandMessageHeaderEq for SleepCommandMessage {
+    fn header_eq(&self, other: &Self, _: bool) -> bool {
+        self.name == other.name
+    }
+}
 impl_message_traits!(SleepCompletionNotification: notification);
+
 impl_message_traits!(CallCommand: command);
+impl CommandMessageHeaderEq for CallCommandMessage {
+    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
+        self.service_name == other.service_name
+            && self.handler_name == other.handler_name
+            && (ignore_payload_checks || (self.parameter == other.parameter))
+            && self.headers == other.headers
+            && self.key == other.key
+            && self.idempotency_key == other.idempotency_key
+            && self.invocation_id_notification_idx == other.invocation_id_notification_idx
+            && self.result_completion_id == other.result_completion_id
+            && self.name == other.name
+    }
+}
 impl_message_traits!(CallInvocationIdCompletionNotification: notification);
 impl_message_traits!(CallCompletionNotification: notification);
 
-impl_message_traits!(OneWayCallCommand: message);
-impl_message_traits!(OneWayCallCommand: named_command);
+impl_message_traits!(OneWayCallCommand: command);
 impl CommandMessageHeaderEq for OneWayCallCommandMessage {
-    fn header_eq(&self, other: &Self) -> bool {
+    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
         self.service_name == other.service_name
             && self.handler_name == other.handler_name
-            && self.key == other.key
+            && (ignore_payload_checks || (self.parameter == other.parameter))
             && self.headers == other.headers
-            && self.parameter == other.parameter
+            && self.key == other.key
+            && self.idempotency_key == other.idempotency_key
+            && self.invocation_id_notification_idx == other.invocation_id_notification_idx
             && self.name == other.name
     }
 }
@@ -128,13 +219,34 @@ impl NamedCommandMessage for SendSignalCommandMessage {
 }
 impl_message_traits!(SendSignalCommand: command_header_eq);
 
-impl_message_traits!(RunCommand: command);
+impl_message_traits!(RunCommand: command eq);
 impl_message_traits!(RunCompletionNotification: notification);
-impl_message_traits!(AttachInvocationCommand: command);
+
+impl_message_traits!(AttachInvocationCommand: command eq);
 impl_message_traits!(AttachInvocationCompletionNotification: notification);
-impl_message_traits!(GetInvocationOutputCommand: command);
+
+impl_message_traits!(GetInvocationOutputCommand: command eq);
 impl_message_traits!(GetInvocationOutputCompletionNotification: notification);
+
 impl_message_traits!(CompleteAwakeableCommand: command);
+impl CommandMessageHeaderEq for CompleteAwakeableCommandMessage {
+    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
+        if ignore_payload_checks {
+            self.name == other.name
+                && self.awakeable_id == other.awakeable_id
+                && match (&self.result, &other.result) {
+                    (
+                        Some(complete_awakeable_command_message::Result::Value(_)),
+                        Some(complete_awakeable_command_message::Result::Failure(_)),
+                    ) => true,
+                    (x, y) => x.eq(y),
+                }
+        } else {
+            self.eq(other)
+        }
+    }
+}
+
 impl_message_traits!(SignalNotification: notification);
 
 // --- Diffs and Formatting
