@@ -230,14 +230,6 @@ impl<M: RestateMessage + CommandMessageHeaderDiff> std::error::Error for Command
 pub struct BadEagerStateKeyError(#[from] pub(crate) std::string::FromUtf8Error);
 
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Cannot decode state keys message: {0}")]
-pub struct DecodeStateKeysProst(#[from] pub(crate) prost::DecodeError);
-
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Cannot decode state keys message: {0}")]
-pub struct DecodeStateKeysUtf8(#[from] pub(crate) std::string::FromUtf8Error);
-
-#[derive(Debug, Clone, thiserror::Error)]
 #[error("Unexpected empty value variant for get eager state")]
 pub struct EmptyGetEagerState;
 
@@ -310,8 +302,6 @@ impl<M: RestateMessage + CommandMessageHeaderDiff> WithInvocationErrorCode
     }
 }
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
-impl_error_code!(DecodeStateKeysProst, PROTOCOL_VIOLATION);
-impl_error_code!(DecodeStateKeysUtf8, PROTOCOL_VIOLATION);
 impl_error_code!(EmptyGetEagerState, PROTOCOL_VIOLATION);
 impl_error_code!(EmptyGetEagerStateKeys, PROTOCOL_VIOLATION);
 impl_error_code!(UnsupportedFeatureForNegotiatedVersion, UNSUPPORTED_FEATURE);
