@@ -1,9 +1,11 @@
 use super::*;
 
 use crate::error::CommandMetadata;
+use crate::service_protocol::messages::start_message::StateEntry;
 use crate::service_protocol::messages::{
-    CommandMessageHeaderDiff, ErrorMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage,
-    StartMessage,
+    CallCommandMessage, CommandMessageHeaderDiff, EndMessage, ErrorMessage,
+    GetEagerStateCommandMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage,
+    SetStateCommandMessage, StartMessage,
 };
 use crate::service_protocol::MessageType;
 use std::fmt;
@@ -156,6 +158,107 @@ fn test_entry_mismatch_on_replay<
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
         error_message_as_error(vm::errors::CommandMismatchError::new(1, expected, actual).into())
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn disable_non_deterministic_payload_checks() {
+    let mut output = VMTestCase::with_vm_options(VMOptions {
+        non_determinism_checks: NonDeterministicChecksOption::PayloadChecksDisabled,
+        ..VMOptions::default()
+    })
+    .input(StartMessage {
+        id: Bytes::from_static(b"123"),
+        debug_id: "123".to_string(),
+        known_entries: 5,
+        partial_state: true,
+        state_map: vec![StateEntry {
+            key: Bytes::from_static(b"STATE"),
+            // NOTE: this is different payload than the one recorded in the entry!
+            value: Bytes::from_static(b"456"),
+        }],
+        ..Default::default()
+    })
+    .input(input_entry_message(b"my-data"))
+    .input(OneWayCallCommandMessage {
+        service_name: "greeter".to_owned(),
+        handler_name: "greet".to_owned(),
+        key: "my-key".to_owned(),
+        parameter: Bytes::from_static(b"123"),
+        invocation_id_notification_idx: 1,
+        ..Default::default()
+    })
+    .input(CallCommandMessage {
+        service_name: "greeter".to_owned(),
+        handler_name: "greet".to_owned(),
+        key: "my-key".to_owned(),
+        parameter: Bytes::from_static(b"123"),
+        invocation_id_notification_idx: 2,
+        result_completion_id: 3,
+        ..Default::default()
+    })
+    .input(SetStateCommandMessage {
+        key: Bytes::from_static(b"my-key"),
+        value: Some(messages::Value {
+            content: Bytes::from_static(b"123"),
+        }),
+        ..Default::default()
+    })
+    .input(GetEagerStateCommandMessage {
+        key: Bytes::from_static(b"STATE"),
+        result: Some(messages::get_eager_state_command_message::Result::Value(
+            messages::Value {
+                content: Bytes::from_static(b"123"),
+            },
+        )),
+        ..Default::default()
+    })
+    .run(|vm| {
+        vm.sys_input().unwrap();
+
+        vm.sys_send(
+            Target {
+                service: "greeter".to_owned(),
+                handler: "greet".to_owned(),
+                key: Some("my-key".to_owned()),
+                idempotency_key: None,
+                headers: Vec::new(),
+            },
+            // NOTE: this is different payload!
+            Bytes::from_static(b"456"),
+            None,
+        )
+        .unwrap();
+
+        vm.sys_call(
+            Target {
+                service: "greeter".to_owned(),
+                handler: "greet".to_owned(),
+                key: Some("my-key".to_owned()),
+                idempotency_key: None,
+                headers: Vec::new(),
+            },
+            // NOTE: this is different payload!
+            Bytes::from_static(b"456"),
+        )
+        .unwrap();
+
+        vm.sys_state_set(
+            "my-key".to_owned(),
+            // NOTE: this is different payload!
+            Bytes::from_static(b"456"),
+        )
+        .unwrap();
+
+        vm.sys_state_get("STATE".to_owned()).unwrap();
+
+        vm.sys_end().unwrap();
+    });
+
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
     );
     assert_eq!(output.next(), None);
 }

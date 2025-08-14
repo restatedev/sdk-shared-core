@@ -200,9 +200,19 @@ pub enum ImplicitCancellationOption {
     },
 }
 
+#[derive(Debug, Default)]
+pub enum NonDeterministicChecksOption {
+    /// This will disable checking payloads (state values, rpc request, complete awakeable value),
+    /// but will still check all the other commands parameters.
+    PayloadChecksDisabled,
+    #[default]
+    Enabled,
+}
+
 #[derive(Debug)]
 pub struct VMOptions {
     pub implicit_cancellation: ImplicitCancellationOption,
+    pub non_determinism_checks: NonDeterministicChecksOption,
 }
 
 impl Default for VMOptions {
@@ -212,6 +222,7 @@ impl Default for VMOptions {
                 cancel_children_calls: true,
                 cancel_children_one_way_calls: false,
             },
+            non_determinism_checks: NonDeterministicChecksOption::Enabled,
         }
     }
 }
