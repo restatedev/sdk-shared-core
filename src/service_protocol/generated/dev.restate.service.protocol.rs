@@ -33,6 +33,10 @@ pub struct StartMessage {
     /// and might change depending on which Restate replica executes the request.
     #[prost(uint64, tag = "8")]
     pub duration_since_last_stored_entry: u64,
+    /// Random seed to use to seed the deterministic RNG exposed in the context API.
+    /// This will be stable across restarts.
+    #[prost(uint64, tag = "9")]
+    pub random_seed: u64,
 }
 /// Nested message and enum types in `StartMessage`.
 pub mod start_message {
@@ -925,6 +929,9 @@ pub enum ServiceProtocolVersion {
     /// * New command to attach to existing invocation
     /// * New command to get output of existing invocation
     V5 = 5,
+    /// Added:
+    /// * StartMessage.random_seed
+    V6 = 6,
 }
 impl ServiceProtocolVersion {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -939,6 +946,7 @@ impl ServiceProtocolVersion {
             Self::V3 => "V3",
             Self::V4 => "V4",
             Self::V5 => "V5",
+            Self::V6 => "V6",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -950,6 +958,7 @@ impl ServiceProtocolVersion {
             "V3" => Some(Self::V3),
             "V4" => Some(Self::V4),
             "V5" => Some(Self::V5),
+            "V6" => Some(Self::V6),
             _ => None,
         }
     }

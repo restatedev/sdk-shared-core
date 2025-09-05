@@ -18,6 +18,7 @@ pub(crate) struct StartInfo {
     pub(crate) entries_to_replay: u32,
     pub(crate) retry_count_since_last_stored_entry: u32,
     pub(crate) duration_since_last_stored_entry: u64,
+    pub(crate) random_seed: Option<u64>,
 }
 
 pub(crate) struct Journal {
@@ -434,6 +435,7 @@ pub(crate) struct Context {
     // It's not very Rusty I know, but it makes much more reasonable handling failure cases.
     pub(crate) start_info: Option<StartInfo>,
     pub(crate) journal: Journal,
+    pub(crate) negotiated_protocol_version: Version,
 
     pub(crate) input_is_closed: bool,
     pub(crate) output: Output,

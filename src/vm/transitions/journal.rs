@@ -55,7 +55,9 @@ impl TransitionAndReturn<Context, SysInput> for State {
             s,
             Input {
                 invocation_id: start_info.debug_id.clone(),
-                random_seed: compute_random_seed(&start_info.id),
+                random_seed: start_info
+                    .random_seed
+                    .unwrap_or_else(|| compute_random_seed(&start_info.id)),
                 key: start_info.key.clone(),
                 headers: msg.headers.into_iter().map(Header::from).collect(),
                 input: msg.value.map(|v| v.content).unwrap_or_default(),

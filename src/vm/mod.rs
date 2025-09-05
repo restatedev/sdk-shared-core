@@ -81,7 +81,6 @@ impl TrackedInvocationId {
 }
 
 pub struct CoreVM {
-    version: Version,
     options: VMOptions,
 
     // Input decoder
@@ -115,16 +114,17 @@ impl CoreVM {
         }
     }
 
+    #[allow(dead_code)]
     fn verify_feature_support(
         &mut self,
         feature: &'static str,
         minimum_required_protocol: Version,
     ) -> VMResult<()> {
-        if self.version < minimum_required_protocol {
+        if self.context.negotiated_protocol_version < minimum_required_protocol {
             return self.do_transition(HitError(
                 UnsupportedFeatureForNegotiatedVersion::new(
                     feature,
-                    self.version,
+                    self.context.negotiated_protocol_version,
                     minimum_required_protocol,
                 )
                 .into(),
@@ -165,7 +165,7 @@ impl CoreVM {
 impl fmt::Debug for CoreVM {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = f.debug_struct("CoreVM");
-        s.field("version", &self.version);
+        s.field("version", &self.context.negotiated_protocol_version);
 
         if let Some(start_info) = self.context.start_info() {
             s.field("invocation_id", &start_info.debug_id);
@@ -233,7 +233,6 @@ impl super::VM for CoreVM {
         );
 
         Ok(Self {
-            version,
             options,
             decoder: Decoder::new(version),
             context: Context {
@@ -243,6 +242,7 @@ impl super::VM for CoreVM {
                 journal: Default::default(),
                 eager_state: Default::default(),
                 non_deterministic_checks_ignore_payload_equality,
+                negotiated_protocol_version: version,
             },
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],
@@ -257,7 +257,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -266,9 +266,9 @@ impl super::VM for CoreVM {
             status_code: 200,
             headers: vec![Header {
                 key: Cow::Borrowed(CONTENT_TYPE),
-                value: Cow::Borrowed(self.version.content_type()),
+                value: Cow::Borrowed(self.context.negotiated_protocol_version.content_type()),
             }],
-            version: self.version,
+            version: self.context.negotiated_protocol_version,
         }
     }
 
@@ -279,7 +279,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -311,7 +311,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -327,7 +327,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -354,7 +354,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -380,7 +380,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -400,7 +400,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -415,7 +415,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -488,7 +488,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -528,7 +528,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -543,7 +543,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -559,7 +559,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -575,7 +575,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -599,7 +599,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -622,7 +622,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -642,7 +642,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -696,7 +696,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -708,7 +708,6 @@ impl super::VM for CoreVM {
             target.handler
         );
         if let Some(idempotency_key) = &target.idempotency_key {
-            self.verify_feature_support("attach idempotency key to call", Version::V3)?;
             if idempotency_key.is_empty() {
                 self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
                 unreachable!();
@@ -765,7 +764,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -782,7 +781,6 @@ impl super::VM for CoreVM {
             target.handler
         );
         if let Some(idempotency_key) = &target.idempotency_key {
-            self.verify_feature_support("attach idempotency key to one way call", Version::V3)?;
             if idempotency_key.is_empty() {
                 self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
                 unreachable!();
@@ -840,7 +838,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -867,7 +865,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -897,7 +895,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -917,7 +915,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -953,7 +951,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -979,7 +977,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -1005,7 +1003,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -1043,7 +1041,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -1067,7 +1065,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -1113,7 +1111,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -1122,7 +1120,6 @@ impl super::VM for CoreVM {
             self,
             "Executing 'Cancel invocation' of {target_invocation_id}"
         );
-        self.verify_feature_support("cancel invocation", Version::V3)?;
         self.do_transition(SysNonCompletableEntry(
             "SysCancelInvocation",
             SendSignalCommandMessage {
@@ -1141,7 +1138,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -1150,7 +1147,6 @@ impl super::VM for CoreVM {
         target: AttachInvocationTarget,
     ) -> VMResult<NotificationHandle> {
         invocation_debug_logs!(self, "Executing 'Attach invocation'");
-        self.verify_feature_support("attach invocation", Version::V3)?;
 
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
@@ -1194,7 +1190,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -1203,7 +1199,6 @@ impl super::VM for CoreVM {
         target: AttachInvocationTarget,
     ) -> VMResult<NotificationHandle> {
         invocation_debug_logs!(self, "Executing 'Get invocation output'");
-        self.verify_feature_support("get invocation output", Version::V3)?;
 
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
@@ -1249,7 +1244,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
@@ -1281,7 +1276,7 @@ impl super::VM for CoreVM {
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
             restate.journal.command_index = self.context.journal.command_index(),
-            restate.protocol.version = %self.version
+            restate.protocol.version = %self.context.negotiated_protocol_version
         ),
         ret
     )]
