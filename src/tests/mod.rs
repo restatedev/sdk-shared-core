@@ -201,6 +201,7 @@ pub fn start_message(known_entries: u32) -> StartMessage {
         key: "".to_string(),
         retry_count_since_last_stored_entry: 0,
         duration_since_last_stored_entry: 0,
+        random_seed: 0,
     }
 }
 

@@ -7,7 +7,7 @@ use crate::vm::errors::{
 };
 use crate::vm::transitions::Transition;
 use crate::vm::{errors, State};
-use crate::Error;
+use crate::{Error, Version};
 use bytes::Bytes;
 use tracing::debug;
 
@@ -41,6 +41,11 @@ impl Transition<Context, NewStartMessage> for State {
             entries_to_replay: msg.known_entries,
             retry_count_since_last_stored_entry: msg.retry_count_since_last_stored_entry,
             duration_since_last_stored_entry: msg.duration_since_last_stored_entry,
+            random_seed: if context.negotiated_protocol_version >= Version::V6 {
+                Some(msg.random_seed)
+            } else {
+                None
+            },
         });
         context.eager_state = EagerState::new(
             msg.partial_state,

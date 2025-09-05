@@ -220,6 +220,7 @@ mod tests {
             key: "key".to_string(),
             retry_count_since_last_stored_entry: 0,
             duration_since_last_stored_entry: 0,
+            random_seed: 0,
         };
 
         let expected_msg_1 = messages::InputCommandMessage {
