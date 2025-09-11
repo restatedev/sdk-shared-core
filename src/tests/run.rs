@@ -413,6 +413,7 @@ fn enter_then_notify_error() {
 
 mod retry_policy {
     use super::*;
+    use rstest::rstest;
 
     use crate::service_protocol::messages::SleepCommandMessage;
     use test_log::test;
@@ -556,6 +557,73 @@ mod retry_policy {
         );
     }
 
+    #[rstest]
+    #[case(0, 0)]
+    #[case(0, 1)]
+    #[case(1, 2)]
+    #[case(2, 2)]
+    #[case(2, 1)]
+    #[case(2, 0)]
+    #[case(99, 100)]
+    #[test_log::test]
+    fn should_stop_retrying_with_retry_count_and_max_attempts(
+        #[case] retry_count_since_last_stored_entry: usize,
+        #[case] max_attempts: usize,
+    ) {
+        test_should_stop_retrying(
+            retry_count_since_last_stored_entry as u32,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 1.0,
+                max_attempts: Some(max_attempts as u32),
+                max_duration: None,
+                max_interval: None,
+            },
+        );
+    }
+
+    #[rstest]
+    #[case(0, 2)]
+    #[case(1, 3)]
+    #[case(99, 101)]
+    #[test_log::test]
+    fn should_continue_retrying_with_retry_count_and_max_attempts(
+        #[case] retry_count_since_last_stored_entry: usize,
+        #[case] max_attempts: usize,
+    ) {
+        test_should_continue_retrying(
+            retry_count_since_last_stored_entry as u32,
+            Duration::from_secs(0),
+            Duration::from_secs(0),
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 1.0,
+                max_attempts: Some(max_attempts as u32),
+                max_duration: None,
+                max_interval: None,
+            },
+            Some(Duration::from_secs(1)),
+        );
+    }
+
+    #[test]
+    fn exit_with_retryable_error_retry_policy_duration() {
+        test_should_stop_retrying(
+            0,
+            Duration::from_secs(0),
+            Duration::from_secs(1),
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 1.0,
+                max_attempts: None,
+                max_duration: Some(Duration::from_secs(1)),
+                max_interval: None,
+            },
+        );
+    }
+
     #[test]
     fn exit_with_retryable_error_retry_policy_none() {
         test_should_stop_retrying(0, Duration::ZERO, Duration::ZERO, RetryPolicy::None)
@@ -600,6 +668,38 @@ mod retry_policy {
                 interval: Some(Duration::from_secs(1)),
                 max_attempts: Some(10),
                 max_duration: None,
+            },
+        );
+    }
+
+    #[test]
+    fn exit_with_retryable_error_retry_policy_exhausted_max_attempts_0() {
+        test_should_stop_retrying(
+            0,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 1.0,
+                max_attempts: Some(0),
+                max_duration: None,
+                max_interval: None,
+            },
+        );
+    }
+
+    #[test]
+    fn exit_with_retryable_error_retry_policy_exhausted_max_attempts_1() {
+        test_should_stop_retrying(
+            1,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 1.0,
+                max_attempts: Some(0),
+                max_duration: None,
+                max_interval: None,
             },
         );
     }
