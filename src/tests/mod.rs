@@ -184,6 +184,7 @@ pub fn is_output_with_failure(
             messages::Failure {
                 code: code as u32,
                 message: message.into(),
+                metadata: vec![],
             }
         ))))
     })

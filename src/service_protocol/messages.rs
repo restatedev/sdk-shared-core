@@ -850,6 +850,11 @@ impl From<crate::TerminalFailure> for Failure {
         Self {
             code: value.code as u32,
             message: value.message,
+            metadata: value
+                .metadata
+                .into_iter()
+                .map(|(key, value)| FailureMetadata { key, value })
+                .collect(),
         }
     }
 }
@@ -859,6 +864,11 @@ impl From<Failure> for crate::TerminalFailure {
         Self {
             code: value.code as u16,
             message: value.message,
+            metadata: value
+                .metadata
+                .into_iter()
+                .map(|fm| (fm.key, fm.value))
+                .collect(),
         }
     }
 }

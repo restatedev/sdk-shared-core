@@ -751,6 +751,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
                                 propose_run_completion_message::Result::Failure(messages::Failure {
                                     code: error.code.into(),
                                     message: error.message.to_string(),
+                                    metadata: vec![],
                                 })
                             }
                         }

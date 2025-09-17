@@ -171,6 +171,7 @@ fn enter_then_propose_completion_then_complete_with_failure() {
                 RunExitResult::TerminalFailure(TerminalFailure {
                     code: 500,
                     message: "my-failure".to_string(),
+                    metadata: vec![],
                 }),
                 RetryPolicy::default(),
             )
@@ -182,6 +183,7 @@ fn enter_then_propose_completion_then_complete_with_failure() {
                     Failure {
                         code: 500,
                         message: "my-failure".to_string(),
+                        metadata: vec![],
                     },
                 )),
             }));
@@ -216,6 +218,7 @@ fn enter_then_propose_completion_then_complete_with_failure() {
             result: Some(propose_run_completion_message::Result::Failure(Failure {
                 code: 500,
                 message: "my-failure".to_string(),
+                metadata: vec![],
             })),
         }
     );
@@ -442,6 +445,7 @@ mod retry_policy {
                     Failure {
                         code: 500,
                         message: "my-error".to_string(),
+                        metadata: vec![],
                     },
                 )),
             })
@@ -484,6 +488,7 @@ mod retry_policy {
                 result: Some(propose_run_completion_message::Result::Failure(Failure {
                     code: 500,
                     message: "my-error".to_string(),
+                    metadata: vec![],
                 },)),
             }
         );

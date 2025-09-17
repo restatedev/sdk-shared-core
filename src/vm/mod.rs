@@ -114,6 +114,15 @@ impl CoreVM {
         }
     }
 
+    fn verify_error_metadata_feature_support(&mut self, value: &NonEmptyValue) -> VMResult<()> {
+        if let NonEmptyValue::Failure(f) = value {
+            if !f.metadata.is_empty() {
+                self.verify_feature_support("terminal error metadata", Version::V6)?;
+            }
+        }
+        Ok(())
+    }
+
     #[allow(dead_code)]
     fn verify_feature_support(
         &mut self,
@@ -871,6 +880,7 @@ impl super::VM for CoreVM {
     )]
     fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Complete awakeable {id}'");
+        self.verify_error_metadata_feature_support(&value)?;
         self.do_transition(SysNonCompletableEntry(
             "SysCompleteAwakeable",
             CompleteAwakeableCommandMessage {
@@ -926,6 +936,7 @@ impl super::VM for CoreVM {
         value: NonEmptyValue,
     ) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Complete named signal {signal_name}'");
+        self.verify_error_metadata_feature_support(&value)?;
         self.do_transition(SysNonCompletableEntry(
             "SysCompleteAwakeable",
             SendSignalCommandMessage {
@@ -1013,6 +1024,7 @@ impl super::VM for CoreVM {
         value: NonEmptyValue,
     ) -> VMResult<NotificationHandle> {
         invocation_debug_logs!(self, "Executing 'Complete promise {key}'");
+        self.verify_error_metadata_feature_support(&value)?;
 
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
@@ -1094,6 +1106,11 @@ impl super::VM for CoreVM {
                 RunExitResult::RetryableFailure { .. } => {
                     invocation_debug_logs!(self, "Propagating run '{name}' retryable failure");
                 }
+            }
+        }
+        if let RunExitResult::TerminalFailure(f) = &value {
+            if !f.metadata.is_empty() {
+                self.verify_feature_support("terminal error metadata", Version::V6)?;
             }
         }
 
@@ -1257,6 +1274,7 @@ impl super::VM for CoreVM {
                 invocation_debug_logs!(self, "Writing invocation result failure value");
             }
         }
+        self.verify_error_metadata_feature_support(&value)?;
         self.do_transition(SysNonCompletableEntry(
             "SysWriteOutput",
             OutputCommandMessage {
