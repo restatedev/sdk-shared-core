@@ -87,6 +87,7 @@ mod get_promise {
                     get_promise_completion_notification_message::Result::Failure(Failure {
                         code: 500,
                         message: "myerror".to_owned(),
+                        metadata: vec![],
                     }),
                 ),
             })
@@ -195,6 +196,7 @@ mod peek_promise {
                     peek_promise_completion_notification_message::Result::Failure(Failure {
                         code: 500,
                         message: "myerror".to_owned(),
+                        metadata: vec![],
                     }),
                 ),
             })
@@ -359,6 +361,7 @@ mod complete_promise {
                     complete_promise_completion_notification_message::Result::Failure(Failure {
                         code: 500,
                         message: "cannot write promise".to_owned(),
+                        metadata: vec![],
                     }),
                 ),
             })
@@ -414,6 +417,7 @@ mod complete_promise {
             .run(handler(NonEmptyValue::Failure(TerminalFailure {
                 code: 500,
                 message: "my failure".to_owned(),
+                metadata: vec![],
             })));
 
         assert_eq!(
@@ -427,6 +431,7 @@ mod complete_promise {
                     complete_promise_command_message::Completion::CompletionFailure(Failure {
                         code: 500,
                         message: "my failure".to_owned(),
+                        metadata: vec![],
                     })
                 ),
                 ..Default::default()
@@ -460,12 +465,14 @@ mod complete_promise {
                     complete_promise_completion_notification_message::Result::Failure(Failure {
                         code: 500,
                         message: "cannot write promise".to_owned(),
+                        metadata: vec![],
                     }),
                 ),
             })
             .run(handler(NonEmptyValue::Failure(TerminalFailure {
                 code: 500,
                 message: "my failure".to_owned(),
+                metadata: vec![],
             })));
 
         assert_eq!(
@@ -479,6 +486,7 @@ mod complete_promise {
                     complete_promise_command_message::Completion::CompletionFailure(Failure {
                         code: 500,
                         message: "my failure".to_owned(),
+                        metadata: vec![],
                     })
                 ),
                 ..Default::default()

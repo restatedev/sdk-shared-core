@@ -133,6 +133,7 @@ pub enum Value {
 pub struct TerminalFailure {
     pub code: u16,
     pub message: String,
+    pub metadata: Vec<(String, String)>,
 }
 
 #[derive(Debug, Default)]
