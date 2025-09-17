@@ -874,6 +874,17 @@ pub struct Failure {
     /// Contains a concise error message, e.g. Throwable#getMessage() in Java.
     #[prost(string, tag = "2")]
     pub message: ::prost::alloc::string::String,
+    /// Error metadata
+    #[prost(message, repeated, tag = "3")]
+    pub metadata: ::prost::alloc::vec::Vec<FailureMetadata>,
+}
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FailureMetadata {
+    #[prost(string, tag = "1")]
+    pub key: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub value: ::prost::alloc::string::String,
 }
 #[allow(dead_code)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -931,6 +942,7 @@ pub enum ServiceProtocolVersion {
     V5 = 5,
     /// Added:
     /// * StartMessage.random_seed
+    /// * Failure.metadata
     V6 = 6,
 }
 impl ServiceProtocolVersion {
