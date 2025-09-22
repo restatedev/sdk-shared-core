@@ -61,11 +61,11 @@ pub(crate) enum State {
 }
 
 impl State {
-    fn as_unexpected_state(&self, event: &'static str) -> Error {
+    fn as_unexpected_state(&self, event: impl ToString) -> Error {
         if matches!(self, State::Closed) {
-            return ClosedError::new(event).into();
+            return ClosedError::new(event.to_string()).into();
         }
-        UnexpectedStateError::new(self.into(), event).into()
+        UnexpectedStateError::new(self.into(), event.to_string()).into()
     }
 }
 
@@ -591,14 +591,11 @@ impl super::VM for CoreVM {
     fn sys_state_set(&mut self, key: String, value: Bytes) -> Result<(), Error> {
         invocation_debug_logs!(self, "Executing 'Set state {key}'");
         self.context.eager_state.set(key.clone(), value.clone());
-        self.do_transition(SysNonCompletableEntry(
-            "SysStateSet",
-            SetStateCommandMessage {
-                key: Bytes::from(key.into_bytes()),
-                value: Some(value.into()),
-                ..SetStateCommandMessage::default()
-            },
-        ))
+        self.do_transition(SysNonCompletableEntry(SetStateCommandMessage {
+            key: Bytes::from(key.into_bytes()),
+            value: Some(value.into()),
+            ..SetStateCommandMessage::default()
+        }))
     }
 
     #[instrument(
@@ -615,13 +612,10 @@ impl super::VM for CoreVM {
     fn sys_state_clear(&mut self, key: String) -> Result<(), Error> {
         invocation_debug_logs!(self, "Executing 'Clear state {key}'");
         self.context.eager_state.clear(key.clone());
-        self.do_transition(SysNonCompletableEntry(
-            "SysStateClear",
-            ClearStateCommandMessage {
-                key: Bytes::from(key.into_bytes()),
-                ..ClearStateCommandMessage::default()
-            },
-        ))
+        self.do_transition(SysNonCompletableEntry(ClearStateCommandMessage {
+            key: Bytes::from(key.into_bytes()),
+            ..ClearStateCommandMessage::default()
+        }))
     }
 
     #[instrument(
@@ -639,7 +633,6 @@ impl super::VM for CoreVM {
         invocation_debug_logs!(self, "Executing 'Clear all state'");
         self.context.eager_state.clear_all();
         self.do_transition(SysNonCompletableEntry(
-            "SysStateClearAll",
             ClearAllStateCommandMessage::default(),
         ))
     }
@@ -687,7 +680,6 @@ impl super::VM for CoreVM {
         let completion_id = self.context.journal.next_completion_notification_id();
 
         self.do_transition(SysSimpleCompletableEntry(
-            "SysSleep",
             SleepCommandMessage {
                 wake_up_time: u64::try_from(wake_up_time_since_unix_epoch.as_millis())
                     .expect("millis since Unix epoch should fit in u64"),
@@ -728,7 +720,6 @@ impl super::VM for CoreVM {
         let result_completion_id = self.context.journal.next_completion_notification_id();
 
         let handles = self.do_transition(SysCompletableEntryWithMultipleCompletions(
-            "SysCall",
             CallCommandMessage {
                 service_name: target.service,
                 handler_name: target.handler,
@@ -798,7 +789,6 @@ impl super::VM for CoreVM {
         let call_invocation_id_completion_id =
             self.context.journal.next_completion_notification_id();
         let invocation_id_notification_handle = self.do_transition(SysSimpleCompletableEntry(
-            "SysOneWayCall",
             OneWayCallCommandMessage {
                 service_name: target.service,
                 handler_name: target.handler,
@@ -857,7 +847,7 @@ impl super::VM for CoreVM {
         let signal_id = self.context.journal.next_signal_notification_id();
 
         let handle = self.do_transition(CreateSignalHandle(
-            "SysAwakeable",
+            "awakeable",
             NotificationId::SignalId(signal_id),
         ))?;
 
@@ -881,21 +871,18 @@ impl super::VM for CoreVM {
     fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Complete awakeable {id}'");
         self.verify_error_metadata_feature_support(&value)?;
-        self.do_transition(SysNonCompletableEntry(
-            "SysCompleteAwakeable",
-            CompleteAwakeableCommandMessage {
-                awakeable_id: id,
-                result: Some(match value {
-                    NonEmptyValue::Success(s) => {
-                        complete_awakeable_command_message::Result::Value(s.into())
-                    }
-                    NonEmptyValue::Failure(f) => {
-                        complete_awakeable_command_message::Result::Failure(f.into())
-                    }
-                }),
-                ..Default::default()
-            },
-        ))
+        self.do_transition(SysNonCompletableEntry(CompleteAwakeableCommandMessage {
+            awakeable_id: id,
+            result: Some(match value {
+                NonEmptyValue::Success(s) => {
+                    complete_awakeable_command_message::Result::Value(s.into())
+                }
+                NonEmptyValue::Failure(f) => {
+                    complete_awakeable_command_message::Result::Failure(f.into())
+                }
+            }),
+            ..Default::default()
+        }))
     }
 
     #[instrument(
@@ -913,7 +900,7 @@ impl super::VM for CoreVM {
         invocation_debug_logs!(self, "Executing 'Create named signal'");
 
         self.do_transition(CreateSignalHandle(
-            "SysCreateNamedSignal",
+            "named awakeable",
             NotificationId::SignalName(signal_name),
         ))
     }
@@ -937,22 +924,15 @@ impl super::VM for CoreVM {
     ) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Complete named signal {signal_name}'");
         self.verify_error_metadata_feature_support(&value)?;
-        self.do_transition(SysNonCompletableEntry(
-            "SysCompleteAwakeable",
-            SendSignalCommandMessage {
-                target_invocation_id,
-                signal_id: Some(send_signal_command_message::SignalId::Name(signal_name)),
-                result: Some(match value {
-                    NonEmptyValue::Success(s) => {
-                        send_signal_command_message::Result::Value(s.into())
-                    }
-                    NonEmptyValue::Failure(f) => {
-                        send_signal_command_message::Result::Failure(f.into())
-                    }
-                }),
-                ..Default::default()
-            },
-        ))
+        self.do_transition(SysNonCompletableEntry(SendSignalCommandMessage {
+            target_invocation_id,
+            signal_id: Some(send_signal_command_message::SignalId::Name(signal_name)),
+            result: Some(match value {
+                NonEmptyValue::Success(s) => send_signal_command_message::Result::Value(s.into()),
+                NonEmptyValue::Failure(f) => send_signal_command_message::Result::Failure(f.into()),
+            }),
+            ..Default::default()
+        }))
     }
 
     #[instrument(
@@ -971,7 +951,6 @@ impl super::VM for CoreVM {
 
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
-            "SysGetPromise",
             GetPromiseCommandMessage {
                 key,
                 result_completion_id,
@@ -997,7 +976,6 @@ impl super::VM for CoreVM {
 
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
-            "SysPeekPromise",
             PeekPromiseCommandMessage {
                 key,
                 result_completion_id,
@@ -1028,7 +1006,6 @@ impl super::VM for CoreVM {
 
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
-            "SysCompletePromise",
             CompletePromiseCommandMessage {
                 key,
                 completion: Some(match value {
@@ -1137,15 +1114,12 @@ impl super::VM for CoreVM {
             self,
             "Executing 'Cancel invocation' of {target_invocation_id}"
         );
-        self.do_transition(SysNonCompletableEntry(
-            "SysCancelInvocation",
-            SendSignalCommandMessage {
-                target_invocation_id,
-                signal_id: Some(send_signal_command_message::SignalId::Idx(CANCEL_SIGNAL_ID)),
-                result: Some(send_signal_command_message::Result::Void(Default::default())),
-                ..Default::default()
-            },
-        ))
+        self.do_transition(SysNonCompletableEntry(SendSignalCommandMessage {
+            target_invocation_id,
+            signal_id: Some(send_signal_command_message::SignalId::Idx(CANCEL_SIGNAL_ID)),
+            result: Some(send_signal_command_message::Result::Void(Default::default())),
+            ..Default::default()
+        }))
     }
 
     #[instrument(
@@ -1167,7 +1141,6 @@ impl super::VM for CoreVM {
 
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
-            "SysAttachInvocation",
             AttachInvocationCommandMessage {
                 target: Some(match target {
                     AttachInvocationTarget::InvocationId(id) => {
@@ -1219,7 +1192,6 @@ impl super::VM for CoreVM {
 
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
-            "SysGetInvocationOutput",
             GetInvocationOutputCommandMessage {
                 target: Some(match target {
                     AttachInvocationTarget::InvocationId(id) => {
@@ -1275,16 +1247,13 @@ impl super::VM for CoreVM {
             }
         }
         self.verify_error_metadata_feature_support(&value)?;
-        self.do_transition(SysNonCompletableEntry(
-            "SysWriteOutput",
-            OutputCommandMessage {
-                result: Some(match value {
-                    NonEmptyValue::Success(b) => output_command_message::Result::Value(b.into()),
-                    NonEmptyValue::Failure(f) => output_command_message::Result::Failure(f.into()),
-                }),
-                ..OutputCommandMessage::default()
-            },
-        ))
+        self.do_transition(SysNonCompletableEntry(OutputCommandMessage {
+            result: Some(match value {
+                NonEmptyValue::Success(b) => output_command_message::Result::Value(b.into()),
+                NonEmptyValue::Failure(f) => output_command_message::Result::Failure(f.into()),
+            }),
+            ..OutputCommandMessage::default()
+        }))
     }
 
     #[instrument(

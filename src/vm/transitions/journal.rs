@@ -40,7 +40,7 @@ impl TransitionAndReturn<Context, SysInput> for State {
         let (s, msg) = TransitionAndReturn::transition_and_return(
             self,
             context,
-            PopJournalEntry("SysInput", InputCommandMessage::default()),
+            PopJournalEntry(InputCommandMessage::default()),
         )
         .map_err(|e| {
             e.with_related_command_metadata(
@@ -85,7 +85,7 @@ fn compute_random_seed(id: &[u8]) -> u64 {
     hasher.finish()
 }
 
-pub(crate) struct SysNonCompletableEntry<M>(pub(crate) &'static str, pub(crate) M);
+pub(crate) struct SysNonCompletableEntry<M>(pub(crate) M);
 
 impl<
         M: RestateMessage
@@ -98,11 +98,11 @@ impl<
     fn transition(
         self,
         context: &mut Context,
-        SysNonCompletableEntry(sys_name, expected): SysNonCompletableEntry<M>,
+        SysNonCompletableEntry(expected): SysNonCompletableEntry<M>,
     ) -> Result<Self, Error> {
         context.journal.transition(&expected);
         let (s, _) = self
-            .transition_and_return(context, PopOrWriteJournalEntry(sys_name, expected))
+            .transition_and_return(context, PopOrWriteJournalEntry(expected))
             .map_err(|e| {
                 e.with_related_command_metadata(context.journal.last_command_metadata())
             })?;
@@ -110,11 +110,7 @@ impl<
     }
 }
 
-pub(crate) struct SysNonCompletableEntryWithCompletion<M>(
-    pub(crate) &'static str,
-    pub(crate) M,
-    pub(crate) Notification,
-);
+pub(crate) struct SysNonCompletableEntryWithCompletion<M>(pub(crate) M, pub(crate) Notification);
 
 impl<
         M: RestateMessage
@@ -129,11 +125,11 @@ impl<
     fn transition_and_return(
         self,
         context: &mut Context,
-        SysNonCompletableEntryWithCompletion(sys_name, expected, notification): SysNonCompletableEntryWithCompletion<M>,
+        SysNonCompletableEntryWithCompletion(expected, notification): SysNonCompletableEntryWithCompletion<M>,
     ) -> Result<(Self, Self::Output), Error> {
         context.journal.transition(&expected);
         let (mut s, _) = self
-            .transition_and_return(context, PopOrWriteJournalEntry(sys_name, expected))
+            .transition_and_return(context, PopOrWriteJournalEntry(expected))
             .map_err(|e| {
                 e.with_related_command_metadata(context.journal.last_command_metadata())
             })?;
@@ -155,17 +151,13 @@ impl<
                 Ok((s, handle))
             }
             s => Err(s
-                .as_unexpected_state(sys_name)
+                .as_unexpected_state(M::ty())
                 .with_related_command_metadata(context.journal.last_command_metadata())),
         }
     }
 }
 
-pub(crate) struct SysSimpleCompletableEntry<M>(
-    pub(crate) &'static str,
-    pub(crate) M,
-    pub(crate) CompletionId,
-);
+pub(crate) struct SysSimpleCompletableEntry<M>(pub(crate) M, pub(crate) CompletionId);
 
 impl<
         M: RestateMessage
@@ -180,19 +172,18 @@ impl<
     fn transition_and_return(
         self,
         context: &mut Context,
-        SysSimpleCompletableEntry(sys_name, expected, completion_id): SysSimpleCompletableEntry<M>,
+        SysSimpleCompletableEntry(expected, completion_id): SysSimpleCompletableEntry<M>,
     ) -> Result<(Self, Self::Output), Error> {
         let (s, handles) = TransitionAndReturn::transition_and_return(
             self,
             context,
-            SysCompletableEntryWithMultipleCompletions(sys_name, expected, vec![completion_id]),
+            SysCompletableEntryWithMultipleCompletions(expected, vec![completion_id]),
         )?;
         Ok((s, handles[0]))
     }
 }
 
 pub(crate) struct SysCompletableEntryWithMultipleCompletions<M>(
-    pub(crate) &'static str,
     pub(crate) M,
     pub(crate) Vec<CompletionId>,
 );
@@ -210,13 +201,13 @@ impl<
     fn transition_and_return(
         self,
         context: &mut Context,
-        SysCompletableEntryWithMultipleCompletions(sys_name, expected, completion_ids): SysCompletableEntryWithMultipleCompletions<M>,
+        SysCompletableEntryWithMultipleCompletions( expected, completion_ids): SysCompletableEntryWithMultipleCompletions<M>,
     ) -> Result<(Self, Self::Output), Error> {
         context.journal.transition(&expected);
         let (mut s, _) = TransitionAndReturn::transition_and_return(
             self,
             context,
-            PopOrWriteJournalEntry(sys_name, expected),
+            PopOrWriteJournalEntry(expected),
         )
         .map_err(|e| e.with_related_command_metadata(context.journal.last_command_metadata()))?;
 
@@ -241,7 +232,7 @@ impl<
                 Ok((s, notification_handles))
             }
             s => Err(s
-                .as_unexpected_state(sys_name)
+                .as_unexpected_state(M::ty())
                 .with_related_command_metadata(context.journal.last_command_metadata())),
         }
     }
@@ -364,7 +355,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                 })
             }
             s => Err(s
-                .as_unexpected_state("SysStateGet")
+                .as_unexpected_state(CommandType::GetState)
                 .with_related_command_metadata(context.journal.resolve_related_command(
                     CommandRelationship::Next {
                         ty: CommandType::GetState,
@@ -545,7 +536,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                 })
             }
             s => Err(s
-                .as_unexpected_state("SysStateGetKeys")
+                .as_unexpected_state(CommandType::GetStateKeys)
                 .with_related_command_metadata(context.journal.resolve_related_command(
                     CommandRelationship::Next {
                         ty: CommandType::GetStateKeys,
@@ -655,7 +646,7 @@ impl TransitionAndReturn<Context, SysRun> for State {
         let (mut s, handle) = TransitionAndReturn::transition_and_return(
             self,
             context,
-            SysSimpleCompletableEntry("SysRun", expected, result_completion_id),
+            SysSimpleCompletableEntry(expected, result_completion_id),
         )
         .map_err(|e| e.with_related_command_metadata(context.journal.last_command_metadata()))?;
 
@@ -782,7 +773,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
 
 // --- Few reusable transitions
 
-struct PopJournalEntry<M>(pub(crate) &'static str, pub(crate) M);
+struct PopJournalEntry<M>(pub(crate) M);
 
 impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clone>
     TransitionAndReturn<Context, PopJournalEntry<M>> for State
@@ -792,7 +783,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
     fn transition_and_return(
         self,
         context: &mut Context,
-        PopJournalEntry(sys_name, expected): PopJournalEntry<M>,
+        PopJournalEntry(expected): PopJournalEntry<M>,
     ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Replaying {
@@ -827,12 +818,12 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
 
                 Ok((new_state, actual))
             }
-            s => Err(s.as_unexpected_state(sys_name)),
+            s => Err(s.as_unexpected_state(M::ty())),
         }
     }
 }
 
-struct PopOrWriteJournalEntry<M>(&'static str, M);
+struct PopOrWriteJournalEntry<M>(M);
 
 impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clone>
     TransitionAndReturn<Context, PopOrWriteJournalEntry<M>> for State
@@ -842,7 +833,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        PopOrWriteJournalEntry(sys_name, expected): PopOrWriteJournalEntry<M>,
+        PopOrWriteJournalEntry(expected): PopOrWriteJournalEntry<M>,
     ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Processing {
@@ -853,7 +844,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
                 context.output.send(&expected);
                 Ok((self, expected))
             }
-            s => s.transition_and_return(context, PopJournalEntry(sys_name, expected)),
+            s => s.transition_and_return(context, PopJournalEntry(expected)),
         }
     }
 }

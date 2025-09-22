@@ -41,7 +41,7 @@ pub struct Input {
     pub input: Bytes,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CommandType {
     Input,
     Output,
@@ -62,6 +62,12 @@ pub enum CommandType {
     GetInvocationOutput,
     CompleteAwakeable,
     CancelInvocation,
+}
+
+impl std::fmt::Display for CommandType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", fmt::format_command_ty(*self))
+    }
 }
 
 /// Used in `notify_error` to specify which command this error relates to.
