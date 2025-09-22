@@ -1,4 +1,4 @@
-use crate::fmt::DiffFormatter;
+use crate::fmt::{display_closed_error, DiffFormatter};
 use crate::service_protocol::messages::{CommandMessageHeaderDiff, RestateMessage};
 use crate::service_protocol::{ContentTypeError, DecodingError, MessageType};
 use crate::{Error, Version};
@@ -134,26 +134,33 @@ impl UnavailableEntryError {
 #[error("Unexpected state '{state:?}' when invoking '{event:?}'")]
 pub struct UnexpectedStateError {
     state: &'static str,
-    event: &'static str,
+    event: String,
 }
 
 impl UnexpectedStateError {
-    pub fn new(state: &'static str, event: &'static str) -> Self {
+    pub fn new(state: &'static str, event: String) -> Self {
         Self { state, event }
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("State machine was closed when invoking '{event:?}'")]
+#[derive(Debug)]
 pub struct ClosedError {
-    event: &'static str,
+    event: String,
 }
 
 impl ClosedError {
-    pub fn new(event: &'static str) -> Self {
+    pub fn new(event: String) -> Self {
         Self { event }
     }
 }
+
+impl fmt::Display for ClosedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        display_closed_error(f, &self.event)
+    }
+}
+
+impl std::error::Error for ClosedError {}
 
 #[derive(Debug)]
 pub struct CommandTypeMismatchError {

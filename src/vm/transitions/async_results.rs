@@ -100,7 +100,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 // Nothing else can be done, we need more input
                 Ok((self, Ok(DoProgressResponse::ReadFromInput)))
             }
-            s => Err(s.as_unexpected_state("DoProgress")),
+            s => Err(s.as_unexpected_state(crate::fmt::format_do_progress())),
         }
     }
 }
