@@ -600,6 +600,29 @@ message CompleteAwakeableCommandMessage {
   string name = 12;
 }
 
+// Awakeable message, to mark the creation of an awakeable in the user code
+// Completable: Yes
+// Fallible: No
+// Type: 0x0400 + 15
+message AwakeableCommandMessage {
+  uint32 result_completion_id = 11;
+  string name = 12;
+}
+
+// Notification for AwakeableCommandMessage
+// Type: 0x8000 + 15
+message AwakeableCompletionNotificationMessage {
+  // See NotificationMessage above
+  reserved 2, 3, 4, 12, 16, 17;
+
+  uint32 completion_id = 1;
+
+  oneof result {
+    Value value = 5;
+    Failure failure = 6;
+  };
+}
+
 // Notification message for signals
 // Type: 0xFBFF
 message SignalNotificationMessage {
