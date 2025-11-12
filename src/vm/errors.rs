@@ -79,7 +79,7 @@ impl Error {
         Error {
             code: code.0,
             message: Cow::Borrowed(message),
-            stacktrace: Cow::Borrowed(""),
+            stacktrace: String::new(),
             related_command: None,
             next_retry_delay: None,
         }
