@@ -55,7 +55,7 @@ impl CommandMetadata {
 pub struct Error {
     pub(crate) code: u16,
     pub(crate) message: Cow<'static, str>,
-    pub(crate) stacktrace: Cow<'static, str>,
+    pub(crate) stacktrace: String,
     pub(crate) related_command: Option<CommandMetadata>,
     pub(crate) next_retry_delay: Option<Duration>,
 }
@@ -103,34 +103,14 @@ impl Error {
         &self.stacktrace
     }
 
-    pub fn with_stacktrace(mut self, stacktrace: impl Into<Cow<'static, str>>) -> Self {
-        self.stacktrace = stacktrace.into();
+    pub fn with_stacktrace(mut self, stacktrace: impl ToString) -> Self {
+        self.stacktrace = stacktrace.to_string();
         self
     }
 
     pub fn with_next_retry_delay_override(mut self, delay: Duration) -> Self {
         self.next_retry_delay = Some(delay);
         self
-    }
-
-    /// Append the given description to the original one, in case the code is the same
-    #[deprecated(note = "use `with_stacktrace` instead")]
-    pub fn append_description_for_code(
-        mut self,
-        code: impl Into<u16>,
-        description: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        let c = code.into();
-        if self.code == c {
-            if self.stacktrace.is_empty() {
-                self.stacktrace = description.into();
-            } else {
-                self.stacktrace = format!("{}. {}", self.stacktrace, description.into()).into();
-            }
-            self
-        } else {
-            self
-        }
     }
 
     pub fn is_suspended_error(&self) -> bool {

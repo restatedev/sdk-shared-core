@@ -88,7 +88,7 @@ impl Error {
         ErrorMessage {
             code: self.code as u32,
             message: self.message.clone().into_owned(),
-            stacktrace: self.stacktrace.clone().into_owned(),
+            stacktrace: self.stacktrace.clone(),
             related_command_index: self.related_command.as_ref().map(|cmd| cmd.index),
             related_command_name: self
                 .related_command
