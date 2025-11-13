@@ -13,7 +13,6 @@ fn bootstrap() {
         .protoc_arg("--experimental_allow_proto3_optional")
         .type_attribute(".", "#[allow(dead_code)]")
         .enum_attribute(".", "#[allow(clippy::enum_variant_names)]")
-        .enum_attribute("protocol.NotificationTemplate.id", "#[derive(Eq, Hash)]")
         .out_dir(out_dir.clone())
         .compile_protos(
             &[root_dir.join("service-protocol/dev/restate/service/protocol.proto")],
