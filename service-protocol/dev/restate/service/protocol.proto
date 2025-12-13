@@ -198,6 +198,9 @@ message OutputCommandMessage {
     Failure failure = 15;
   };
 
+  // Bitmask flags for this entry.
+  uint32 flags = 13;
+
   // Entry name
   string name = 12;
 }
@@ -234,6 +237,9 @@ message GetLazyStateCompletionNotificationMessage {
 message SetStateCommandMessage {
   bytes key = 1;
   Value value = 3;
+
+  // Bitmask flags for this entry.
+  uint32 flags = 13;
 
   // Entry name
   string name = 12;
@@ -361,6 +367,9 @@ message CompletePromiseCommandMessage {
     Failure completion_failure = 3;
   };
 
+  // Bitmask flags for this entry.
+  uint32 flags = 13;
+
   uint32 result_completion_id = 11;
   string name = 12;
 }
@@ -422,6 +431,8 @@ message CallCommandMessage {
 
   uint32 invocation_id_notification_idx = 10;
   uint32 result_completion_id = 11;
+  // Bitmask flags for this entry.
+  uint32 flags = 13;
   string name = 12;
 }
 
@@ -473,6 +484,8 @@ message OneWayCallCommandMessage {
   optional string idempotency_key = 7;
 
   uint32 invocation_id_notification_idx = 10;
+  // Bitmask flags for this entry.
+  uint32 flags = 13;
   string name = 12;
 }
 
@@ -595,6 +608,9 @@ message CompleteAwakeableCommandMessage {
     Value value = 2;
     Failure failure = 3;
   };
+
+  // Bitmask flags for this entry.
+  uint32 flags = 13;
 
   // Cannot use the field 'name' here because used above
   string name = 12;

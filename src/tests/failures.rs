@@ -125,6 +125,124 @@ fn one_way_call_entry_mismatch() {
     );
 }
 
+#[test]
+fn payload_unstable_flags_skip_payload_equality_when_both_sides_marked() {
+    let mut output = VMTestCase::new()
+        .input(start_message(2))
+        .input(input_entry_message(b"my-data"))
+        .input(OneWayCallCommandMessage {
+            service_name: "greeter".to_owned(),
+            handler_name: "greet".to_owned(),
+            key: "my-key".to_owned(),
+            parameter: Bytes::from_static(b"123"),
+            invocation_id_notification_idx: 1,
+            flags: FLAG_PAYLOAD_UNSTABLE,
+            ..Default::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.sys_send_with_flags(
+                Target {
+                    service: "greeter".to_owned(),
+                    handler: "greet".to_owned(),
+                    key: Some("my-key".to_owned()),
+                    idempotency_key: None,
+                    headers: Vec::new(),
+                },
+                // Different bytes than recorded, but both sides are flagged.
+                Bytes::from_static(b"456"),
+                None,
+                FLAG_PAYLOAD_UNSTABLE,
+            )
+            .unwrap();
+
+            vm.sys_end().unwrap();
+        });
+
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn payload_unstable_flags_do_not_skip_when_only_recorded_side_marked() {
+    test_entry_mismatch_on_replay(
+        OneWayCallCommandMessage {
+            service_name: "greeter".to_owned(),
+            handler_name: "greet".to_owned(),
+            key: "my-key".to_owned(),
+            parameter: Bytes::from_static(b"123"),
+            invocation_id_notification_idx: 1,
+            flags: FLAG_PAYLOAD_UNSTABLE,
+            ..Default::default()
+        },
+        OneWayCallCommandMessage {
+            service_name: "greeter".to_owned(),
+            handler_name: "greet".to_owned(),
+            key: "my-key".to_owned(),
+            parameter: Bytes::from_static(b"456"),
+            invocation_id_notification_idx: 1,
+            flags: 0,
+            ..Default::default()
+        },
+        |vm| {
+            // Uses the legacy API -> flags = 0 on the "current" entry.
+            vm.sys_send(
+                Target {
+                    service: "greeter".to_owned(),
+                    handler: "greet".to_owned(),
+                    key: Some("my-key".to_owned()),
+                    idempotency_key: None,
+                    headers: Vec::new(),
+                },
+                Bytes::from_static(b"456"),
+                None,
+            )
+        },
+    );
+}
+
+#[test]
+fn payload_unstable_flags_do_not_skip_when_only_current_side_marked() {
+    test_entry_mismatch_on_replay(
+        OneWayCallCommandMessage {
+            service_name: "greeter".to_owned(),
+            handler_name: "greet".to_owned(),
+            key: "my-key".to_owned(),
+            parameter: Bytes::from_static(b"123"),
+            invocation_id_notification_idx: 1,
+            flags: 0,
+            ..Default::default()
+        },
+        OneWayCallCommandMessage {
+            service_name: "greeter".to_owned(),
+            handler_name: "greet".to_owned(),
+            key: "my-key".to_owned(),
+            parameter: Bytes::from_static(b"456"),
+            invocation_id_notification_idx: 1,
+            flags: FLAG_PAYLOAD_UNSTABLE,
+            ..Default::default()
+        },
+        |vm| {
+            vm.sys_send_with_flags(
+                Target {
+                    service: "greeter".to_owned(),
+                    handler: "greet".to_owned(),
+                    key: Some("my-key".to_owned()),
+                    idempotency_key: None,
+                    headers: Vec::new(),
+                },
+                Bytes::from_static(b"456"),
+                None,
+                FLAG_PAYLOAD_UNSTABLE,
+            )
+        },
+    );
+}
+
 fn test_entry_mismatch_on_replay<
     M: RestateMessage + CommandMessageHeaderDiff + Clone,
     T: fmt::Debug,

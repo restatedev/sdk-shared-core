@@ -19,6 +19,11 @@ pub use request_identity::*;
 pub use service_protocol::Version;
 pub use vm::CoreVM;
 
+/// Bitmask flag: payload bytes in this entry are known to be non-stable across builds
+/// (for example, protojson output). During replay, payload byte equality is skipped only
+/// when both the recorded entry and the current entry have this flag set.
+pub const FLAG_PAYLOAD_UNSTABLE: u32 = 1 << 0;
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Header {
     pub key: Cow<'static, str>,
@@ -289,6 +294,10 @@ pub trait VM: Sized {
 
     fn sys_state_set(&mut self, key: String, value: Bytes) -> VMResult<()>;
 
+    fn sys_state_set_with_flags(&mut self, key: String, value: Bytes, _flags: u32) -> VMResult<()> {
+        self.sys_state_set(key, value)
+    }
+
     fn sys_state_clear(&mut self, key: String) -> VMResult<()>;
 
     fn sys_state_clear_all(&mut self) -> VMResult<()>;
@@ -303,6 +312,15 @@ pub trait VM: Sized {
 
     fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<CallHandle>;
 
+    fn sys_call_with_flags(
+        &mut self,
+        target: Target,
+        input: Bytes,
+        _flags: u32,
+    ) -> VMResult<CallHandle> {
+        self.sys_call(target, input)
+    }
+
     fn sys_send(
         &mut self,
         target: Target,
@@ -310,9 +328,28 @@ pub trait VM: Sized {
         execution_time_since_unix_epoch: Option<Duration>,
     ) -> VMResult<SendHandle>;
 
+    fn sys_send_with_flags(
+        &mut self,
+        target: Target,
+        input: Bytes,
+        execution_time_since_unix_epoch: Option<Duration>,
+        _flags: u32,
+    ) -> VMResult<SendHandle> {
+        self.sys_send(target, input, execution_time_since_unix_epoch)
+    }
+
     fn sys_awakeable(&mut self) -> VMResult<(String, NotificationHandle)>;
 
     fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()>;
+
+    fn sys_complete_awakeable_with_flags(
+        &mut self,
+        id: String,
+        value: NonEmptyValue,
+        _flags: u32,
+    ) -> VMResult<()> {
+        self.sys_complete_awakeable(id, value)
+    }
 
     fn create_signal_handle(&mut self, signal_name: String) -> VMResult<NotificationHandle>;
 
@@ -332,6 +369,15 @@ pub trait VM: Sized {
         key: String,
         value: NonEmptyValue,
     ) -> VMResult<NotificationHandle>;
+
+    fn sys_complete_promise_with_flags(
+        &mut self,
+        key: String,
+        value: NonEmptyValue,
+        _flags: u32,
+    ) -> VMResult<NotificationHandle> {
+        self.sys_complete_promise(key, value)
+    }
 
     fn sys_run(&mut self, name: String) -> VMResult<NotificationHandle>;
 
@@ -355,6 +401,10 @@ pub trait VM: Sized {
     ) -> VMResult<NotificationHandle>;
 
     fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()>;
+
+    fn sys_write_output_with_flags(&mut self, value: NonEmptyValue, _flags: u32) -> VMResult<()> {
+        self.sys_write_output(value)
+    }
 
     fn sys_end(&mut self) -> VMResult<()>;
 
