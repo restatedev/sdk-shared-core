@@ -195,6 +195,9 @@ pub struct InputCommandMessage {
 #[allow(dead_code)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OutputCommandMessage {
+    /// Bitmask flags for this entry.
+    #[prost(uint32, tag = "13")]
+    pub flags: u32,
     /// Entry name
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
@@ -263,6 +266,9 @@ pub struct SetStateCommandMessage {
     pub key: ::prost::bytes::Bytes,
     #[prost(message, optional, tag = "3")]
     pub value: ::core::option::Option<Value>,
+    /// Bitmask flags for this entry.
+    #[prost(uint32, tag = "13")]
+    pub flags: u32,
     /// Entry name
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
@@ -438,6 +444,9 @@ pub mod peek_promise_completion_notification_message {
 pub struct CompletePromiseCommandMessage {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
+    /// Bitmask flags for this entry.
+    #[prost(uint32, tag = "13")]
+    pub flags: u32,
     #[prost(uint32, tag = "11")]
     pub result_completion_id: u32,
     #[prost(string, tag = "12")]
@@ -535,6 +544,9 @@ pub struct CallCommandMessage {
     pub invocation_id_notification_idx: u32,
     #[prost(uint32, tag = "11")]
     pub result_completion_id: u32,
+    /// Bitmask flags for this entry.
+    #[prost(uint32, tag = "13")]
+    pub flags: u32,
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
 }
@@ -598,6 +610,9 @@ pub struct OneWayCallCommandMessage {
     pub idempotency_key: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint32, tag = "10")]
     pub invocation_id_notification_idx: u32,
+    /// Bitmask flags for this entry.
+    #[prost(uint32, tag = "13")]
+    pub flags: u32,
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
 }
@@ -800,6 +815,9 @@ pub mod get_invocation_output_completion_notification_message {
 pub struct CompleteAwakeableCommandMessage {
     #[prost(string, tag = "1")]
     pub awakeable_id: ::prost::alloc::string::String,
+    /// Bitmask flags for this entry.
+    #[prost(uint32, tag = "13")]
+    pub flags: u32,
     /// Cannot use the field 'name' here because used above
     #[prost(string, tag = "12")]
     pub name: ::prost::alloc::string::String,
