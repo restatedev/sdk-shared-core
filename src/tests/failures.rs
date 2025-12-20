@@ -3,9 +3,11 @@ use super::*;
 use crate::error::CommandMetadata;
 use crate::service_protocol::messages::start_message::StateEntry;
 use crate::service_protocol::messages::{
-    CallCommandMessage, CommandMessageHeaderDiff, EndMessage, ErrorMessage,
+    complete_awakeable_command_message, complete_promise_command_message,
+    output_command_message, CallCommandMessage, CommandMessageHeaderDiff,
+    CompleteAwakeableCommandMessage, CompletePromiseCommandMessage, EndMessage, ErrorMessage,
     GetEagerStateCommandMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage,
-    SetStateCommandMessage, StartMessage,
+    OutputCommandMessage, SetStateCommandMessage, StartMessage,
 };
 use crate::service_protocol::MessageType;
 use std::fmt;
@@ -336,6 +338,231 @@ fn disable_non_deterministic_payload_checks() {
 
         vm.sys_end().unwrap();
     });
+
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+// Tests for PayloadOptions::unstable() on different operations
+
+#[test]
+fn payload_unstable_options_skip_payload_equality_for_call() {
+    // sys_call_with_options with PayloadOptions::unstable() should skip payload check
+    let mut output = VMTestCase::new()
+        .input(start_message(2))
+        .input(input_entry_message(b"my-data"))
+        .input(CallCommandMessage {
+            service_name: "greeter".to_owned(),
+            handler_name: "greet".to_owned(),
+            key: "my-key".to_owned(),
+            parameter: Bytes::from_static(b"123"),
+            invocation_id_notification_idx: 1,
+            result_completion_id: 2,
+            ..Default::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.sys_call_with_options(
+                Target {
+                    service: "greeter".to_owned(),
+                    handler: "greet".to_owned(),
+                    key: Some("my-key".to_owned()),
+                    idempotency_key: None,
+                    headers: Vec::new(),
+                },
+                // Different bytes than recorded, but marked as unstable.
+                Bytes::from_static(b"456"),
+                PayloadOptions::unstable(),
+            )
+            .unwrap();
+
+            vm.sys_end().unwrap();
+        });
+
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn payload_unstable_options_skip_payload_equality_for_state_set() {
+    // sys_state_set_with_options with PayloadOptions::unstable() should skip payload check
+    let mut output = VMTestCase::new()
+        .input(start_message(2))
+        .input(input_entry_message(b"my-data"))
+        .input(SetStateCommandMessage {
+            key: Bytes::from_static(b"my-key"),
+            value: Some(messages::Value {
+                content: Bytes::from_static(b"123"),
+            }),
+            ..Default::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.sys_state_set_with_options(
+                "my-key".to_owned(),
+                // Different bytes than recorded, but marked as unstable.
+                Bytes::from_static(b"456"),
+                PayloadOptions::unstable(),
+            )
+            .unwrap();
+
+            vm.sys_end().unwrap();
+        });
+
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn payload_unstable_options_skip_payload_equality_for_state_get() {
+    // sys_state_get_with_options with PayloadOptions::unstable() should skip payload check
+    // when replaying GetEagerStateCommand with different value
+    let mut output = VMTestCase::new()
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 2,
+            partial_state: false,
+            state_map: vec![StateEntry {
+                key: Bytes::from_static(b"my-key"),
+                // This is the "current" value, different from recorded
+                value: Bytes::from_static(b"456"),
+            }],
+            ..Default::default()
+        })
+        .input(input_entry_message(b"my-data"))
+        .input(GetEagerStateCommandMessage {
+            key: Bytes::from_static(b"my-key"),
+            result: Some(messages::get_eager_state_command_message::Result::Value(
+                messages::Value {
+                    content: Bytes::from_static(b"123"),
+                },
+            )),
+            ..Default::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            // With unstable serialization, different payload should be accepted
+            vm.sys_state_get_with_options("my-key".to_owned(), PayloadOptions::unstable())
+                .unwrap();
+
+            vm.sys_end().unwrap();
+        });
+
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn payload_unstable_options_skip_payload_equality_for_complete_promise() {
+    // sys_complete_promise_with_options with PayloadOptions::unstable() should skip payload check
+    let mut output = VMTestCase::new()
+        .input(start_message(2))
+        .input(input_entry_message(b"my-data"))
+        .input(CompletePromiseCommandMessage {
+            key: "my-prom".to_owned(),
+            result_completion_id: 1,
+            completion: Some(
+                complete_promise_command_message::Completion::CompletionValue(
+                    Bytes::from_static(b"123").into(),
+                ),
+            ),
+            ..Default::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.sys_complete_promise_with_options(
+                "my-prom".to_owned(),
+                // Different bytes than recorded, but marked as unstable.
+                NonEmptyValue::Success(Bytes::from_static(b"456")),
+                PayloadOptions::unstable(),
+            )
+            .unwrap();
+
+            vm.sys_end().unwrap();
+        });
+
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn payload_unstable_options_skip_payload_equality_for_complete_awakeable() {
+    // sys_complete_awakeable_with_options with PayloadOptions::unstable() should skip payload check
+    let mut output = VMTestCase::new()
+        .input(start_message(2))
+        .input(input_entry_message(b"my-data"))
+        .input(CompleteAwakeableCommandMessage {
+            awakeable_id: "awk-123".to_owned(),
+            result: Some(complete_awakeable_command_message::Result::Value(
+                Bytes::from_static(b"123").into(),
+            )),
+            ..Default::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.sys_complete_awakeable_with_options(
+                "awk-123".to_owned(),
+                // Different bytes than recorded, but marked as unstable.
+                NonEmptyValue::Success(Bytes::from_static(b"456")),
+                PayloadOptions::unstable(),
+            )
+            .unwrap();
+
+            vm.sys_end().unwrap();
+        });
+
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn payload_unstable_options_skip_payload_equality_for_write_output() {
+    // sys_write_output_with_options with PayloadOptions::unstable() should skip payload check
+    let mut output = VMTestCase::new()
+        .input(start_message(2))
+        .input(input_entry_message(b"my-data"))
+        .input(OutputCommandMessage {
+            result: Some(output_command_message::Result::Value(
+                Bytes::from_static(b"123").into(),
+            )),
+            ..Default::default()
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.sys_write_output_with_options(
+                // Different bytes than recorded, but marked as unstable.
+                NonEmptyValue::Success(Bytes::from_static(b"456")),
+                PayloadOptions::unstable(),
+            )
+            .unwrap();
+
+            vm.sys_end().unwrap();
+        });
 
     assert_eq!(
         output.next_decoded::<EndMessage>().unwrap(),
