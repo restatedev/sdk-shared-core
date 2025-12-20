@@ -18,8 +18,9 @@ use crate::vm::transitions::*;
 use crate::{
     AttachInvocationTarget, CallHandle, CommandRelationship, DoProgressResponse, Error, Header,
     ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
-    NotificationHandle, ResponseHead, RetryPolicy, RunExitResult, SendHandle, TakeOutputResult,
-    Target, TerminalFailure, VMOptions, VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
+    NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, SendHandle,
+    TakeOutputResult, Target, TerminalFailure, VMOptions, VMResult, Value,
+    CANCEL_NOTIFICATION_HANDLE,
 };
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
@@ -556,9 +557,13 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_state_get(&mut self, key: String) -> Result<NotificationHandle, Error> {
+    fn sys_state_get_with_options(
+        &mut self,
+        key: String,
+        options: PayloadOptions,
+    ) -> Result<NotificationHandle, Error> {
         invocation_debug_logs!(self, "Executing 'Get state {key}'");
-        self.do_transition(SysStateGet(key))
+        self.do_transition(SysStateGet(key, options))
     }
 
     #[instrument(
@@ -588,19 +593,22 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_state_set(&mut self, key: String, value: Bytes) -> Result<(), Error> {
-        self.sys_state_set_with_flags(key, value, 0)
-    }
-
-    fn sys_state_set_with_flags(&mut self, key: String, value: Bytes, flags: u32) -> VMResult<()> {
+    fn sys_state_set_with_options(
+        &mut self,
+        key: String,
+        value: Bytes,
+        options: PayloadOptions,
+    ) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Set state {key}'");
         self.context.eager_state.set(key.clone(), value.clone());
-        self.do_transition(SysNonCompletableEntry(SetStateCommandMessage {
-            key: Bytes::from(key.into_bytes()),
-            value: Some(value.into()),
-            flags,
-            ..SetStateCommandMessage::default()
-        }))
+        self.do_transition(SysNonCompletableEntry(
+            SetStateCommandMessage {
+                key: Bytes::from(key.into_bytes()),
+                value: Some(value.into()),
+                ..SetStateCommandMessage::default()
+            },
+            options,
+        ))
     }
 
     #[instrument(
@@ -617,10 +625,13 @@ impl super::VM for CoreVM {
     fn sys_state_clear(&mut self, key: String) -> Result<(), Error> {
         invocation_debug_logs!(self, "Executing 'Clear state {key}'");
         self.context.eager_state.clear(key.clone());
-        self.do_transition(SysNonCompletableEntry(ClearStateCommandMessage {
-            key: Bytes::from(key.into_bytes()),
-            ..ClearStateCommandMessage::default()
-        }))
+        self.do_transition(SysNonCompletableEntry(
+            ClearStateCommandMessage {
+                key: Bytes::from(key.into_bytes()),
+                ..ClearStateCommandMessage::default()
+            },
+            PayloadOptions::default(),
+        ))
     }
 
     #[instrument(
@@ -639,6 +650,7 @@ impl super::VM for CoreVM {
         self.context.eager_state.clear_all();
         self.do_transition(SysNonCompletableEntry(
             ClearAllStateCommandMessage::default(),
+            PayloadOptions::default(),
         ))
     }
 
@@ -692,6 +704,7 @@ impl super::VM for CoreVM {
                 name,
             },
             completion_id,
+            PayloadOptions::default(),
         ))
     }
 
@@ -706,15 +719,11 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<CallHandle> {
-        self.sys_call_with_flags(target, input, 0)
-    }
-
-    fn sys_call_with_flags(
+    fn sys_call_with_options(
         &mut self,
         target: Target,
         input: Bytes,
-        flags: u32,
+        options: PayloadOptions,
     ) -> VMResult<CallHandle> {
         invocation_debug_logs!(
             self,
@@ -747,10 +756,10 @@ impl super::VM for CoreVM {
                 parameter: input,
                 invocation_id_notification_idx: call_invocation_id_completion_id,
                 result_completion_id,
-                flags,
                 ..Default::default()
             },
             vec![call_invocation_id_completion_id, result_completion_id],
+            options,
         ))?;
 
         if matches!(
@@ -783,21 +792,12 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_send(
+    fn sys_send_with_options(
         &mut self,
         target: Target,
         input: Bytes,
         delay: Option<Duration>,
-    ) -> VMResult<SendHandle> {
-        self.sys_send_with_flags(target, input, delay, 0)
-    }
-
-    fn sys_send_with_flags(
-        &mut self,
-        target: Target,
-        input: Bytes,
-        delay: Option<Duration>,
-        flags: u32,
+        options: PayloadOptions,
     ) -> VMResult<SendHandle> {
         invocation_debug_logs!(
             self,
@@ -832,10 +832,10 @@ impl super::VM for CoreVM {
                     })
                     .unwrap_or_default(),
                 invocation_id_notification_idx: call_invocation_id_completion_id,
-                flags,
                 ..Default::default()
             },
             call_invocation_id_completion_id,
+            options,
         ))?;
 
         if matches!(
@@ -894,31 +894,29 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()> {
-        self.sys_complete_awakeable_with_flags(id, value, 0)
-    }
-
-    fn sys_complete_awakeable_with_flags(
+    fn sys_complete_awakeable_with_options(
         &mut self,
         id: String,
         value: NonEmptyValue,
-        flags: u32,
+        options: PayloadOptions,
     ) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Complete awakeable {id}'");
         self.verify_error_metadata_feature_support(&value)?;
-        self.do_transition(SysNonCompletableEntry(CompleteAwakeableCommandMessage {
-            awakeable_id: id,
-            result: Some(match value {
-                NonEmptyValue::Success(s) => {
-                    complete_awakeable_command_message::Result::Value(s.into())
-                }
-                NonEmptyValue::Failure(f) => {
-                    complete_awakeable_command_message::Result::Failure(f.into())
-                }
-            }),
-            flags,
-            ..Default::default()
-        }))
+        self.do_transition(SysNonCompletableEntry(
+            CompleteAwakeableCommandMessage {
+                awakeable_id: id,
+                result: Some(match value {
+                    NonEmptyValue::Success(s) => {
+                        complete_awakeable_command_message::Result::Value(s.into())
+                    }
+                    NonEmptyValue::Failure(f) => {
+                        complete_awakeable_command_message::Result::Failure(f.into())
+                    }
+                }),
+                ..Default::default()
+            },
+            options,
+        ))
     }
 
     #[instrument(
@@ -960,15 +958,22 @@ impl super::VM for CoreVM {
     ) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Complete named signal {signal_name}'");
         self.verify_error_metadata_feature_support(&value)?;
-        self.do_transition(SysNonCompletableEntry(SendSignalCommandMessage {
-            target_invocation_id,
-            signal_id: Some(send_signal_command_message::SignalId::Name(signal_name)),
-            result: Some(match value {
-                NonEmptyValue::Success(s) => send_signal_command_message::Result::Value(s.into()),
-                NonEmptyValue::Failure(f) => send_signal_command_message::Result::Failure(f.into()),
-            }),
-            ..Default::default()
-        }))
+        self.do_transition(SysNonCompletableEntry(
+            SendSignalCommandMessage {
+                target_invocation_id,
+                signal_id: Some(send_signal_command_message::SignalId::Name(signal_name)),
+                result: Some(match value {
+                    NonEmptyValue::Success(s) => {
+                        send_signal_command_message::Result::Value(s.into())
+                    }
+                    NonEmptyValue::Failure(f) => {
+                        send_signal_command_message::Result::Failure(f.into())
+                    }
+                }),
+                ..Default::default()
+            },
+            PayloadOptions::default(),
+        ))
     }
 
     #[instrument(
@@ -993,6 +998,7 @@ impl super::VM for CoreVM {
                 ..Default::default()
             },
             result_completion_id,
+            PayloadOptions::default(),
         ))
     }
 
@@ -1018,6 +1024,7 @@ impl super::VM for CoreVM {
                 ..Default::default()
             },
             result_completion_id,
+            PayloadOptions::default(),
         ))
     }
 
@@ -1032,19 +1039,11 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_complete_promise(
+    fn sys_complete_promise_with_options(
         &mut self,
         key: String,
         value: NonEmptyValue,
-    ) -> VMResult<NotificationHandle> {
-        self.sys_complete_promise_with_flags(key, value, 0)
-    }
-
-    fn sys_complete_promise_with_flags(
-        &mut self,
-        key: String,
-        value: NonEmptyValue,
-        flags: u32,
+        options: PayloadOptions,
     ) -> VMResult<NotificationHandle> {
         invocation_debug_logs!(self, "Executing 'Complete promise {key}'");
         self.verify_error_metadata_feature_support(&value)?;
@@ -1061,11 +1060,11 @@ impl super::VM for CoreVM {
                         complete_promise_command_message::Completion::CompletionFailure(f.into())
                     }
                 }),
-                flags,
                 result_completion_id,
                 ..Default::default()
             },
             result_completion_id,
+            options,
         ))
     }
 
@@ -1160,12 +1159,15 @@ impl super::VM for CoreVM {
             self,
             "Executing 'Cancel invocation' of {target_invocation_id}"
         );
-        self.do_transition(SysNonCompletableEntry(SendSignalCommandMessage {
-            target_invocation_id,
-            signal_id: Some(send_signal_command_message::SignalId::Idx(CANCEL_SIGNAL_ID)),
-            result: Some(send_signal_command_message::Result::Void(Default::default())),
-            ..Default::default()
-        }))
+        self.do_transition(SysNonCompletableEntry(
+            SendSignalCommandMessage {
+                target_invocation_id,
+                signal_id: Some(send_signal_command_message::SignalId::Idx(CANCEL_SIGNAL_ID)),
+                result: Some(send_signal_command_message::Result::Void(Default::default())),
+                ..Default::default()
+            },
+            PayloadOptions::default(),
+        ))
     }
 
     #[instrument(
@@ -1216,6 +1218,7 @@ impl super::VM for CoreVM {
                 ..Default::default()
             },
             result_completion_id,
+            PayloadOptions::default(),
         ))
     }
 
@@ -1269,6 +1272,7 @@ impl super::VM for CoreVM {
                 ..Default::default()
             },
             result_completion_id,
+            PayloadOptions::default(),
         ))
     }
 
@@ -1283,11 +1287,11 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_write_output(&mut self, value: NonEmptyValue) -> Result<(), Error> {
-        self.sys_write_output_with_flags(value, 0)
-    }
-
-    fn sys_write_output_with_flags(&mut self, value: NonEmptyValue, flags: u32) -> VMResult<()> {
+    fn sys_write_output_with_options(
+        &mut self,
+        value: NonEmptyValue,
+        options: PayloadOptions,
+    ) -> VMResult<()> {
         match &value {
             NonEmptyValue::Success(_) => {
                 invocation_debug_logs!(self, "Writing invocation result success value");
@@ -1297,14 +1301,16 @@ impl super::VM for CoreVM {
             }
         }
         self.verify_error_metadata_feature_support(&value)?;
-        self.do_transition(SysNonCompletableEntry(OutputCommandMessage {
-            result: Some(match value {
-                NonEmptyValue::Success(b) => output_command_message::Result::Value(b.into()),
-                NonEmptyValue::Failure(f) => output_command_message::Result::Failure(f.into()),
-            }),
-            flags,
-            ..OutputCommandMessage::default()
-        }))
+        self.do_transition(SysNonCompletableEntry(
+            OutputCommandMessage {
+                result: Some(match value {
+                    NonEmptyValue::Success(b) => output_command_message::Result::Value(b.into()),
+                    NonEmptyValue::Failure(f) => output_command_message::Result::Failure(f.into()),
+                }),
+                ..OutputCommandMessage::default()
+            },
+            options,
+        ))
     }
 
     #[instrument(

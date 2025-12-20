@@ -126,7 +126,9 @@ fn one_way_call_entry_mismatch() {
 }
 
 #[test]
-fn payload_unstable_flags_skip_payload_equality_when_both_sides_marked() {
+fn payload_unstable_options_skip_payload_equality_when_current_side_marked() {
+    // When SDK marks the current call with unstable serialization,
+    // payload equality check is skipped (we trust the SDK).
     let mut output = VMTestCase::new()
         .input(start_message(2))
         .input(input_entry_message(b"my-data"))
@@ -136,13 +138,12 @@ fn payload_unstable_flags_skip_payload_equality_when_both_sides_marked() {
             key: "my-key".to_owned(),
             parameter: Bytes::from_static(b"123"),
             invocation_id_notification_idx: 1,
-            flags: FLAG_PAYLOAD_UNSTABLE,
             ..Default::default()
         })
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            vm.sys_send_with_flags(
+            vm.sys_send_with_options(
                 Target {
                     service: "greeter".to_owned(),
                     handler: "greet".to_owned(),
@@ -150,10 +151,10 @@ fn payload_unstable_flags_skip_payload_equality_when_both_sides_marked() {
                     idempotency_key: None,
                     headers: Vec::new(),
                 },
-                // Different bytes than recorded, but both sides are flagged.
+                // Different bytes than recorded, but current side is flagged.
                 Bytes::from_static(b"456"),
                 None,
-                FLAG_PAYLOAD_UNSTABLE,
+                PayloadOptions::unstable(),
             )
             .unwrap();
 
@@ -168,7 +169,9 @@ fn payload_unstable_flags_skip_payload_equality_when_both_sides_marked() {
 }
 
 #[test]
-fn payload_unstable_flags_do_not_skip_when_only_recorded_side_marked() {
+fn payload_unstable_options_do_not_skip_when_not_marked() {
+    // When SDK does NOT mark the current call with unstable serialization,
+    // payload equality check is performed.
     test_entry_mismatch_on_replay(
         OneWayCallCommandMessage {
             service_name: "greeter".to_owned(),
@@ -176,7 +179,6 @@ fn payload_unstable_flags_do_not_skip_when_only_recorded_side_marked() {
             key: "my-key".to_owned(),
             parameter: Bytes::from_static(b"123"),
             invocation_id_notification_idx: 1,
-            flags: FLAG_PAYLOAD_UNSTABLE,
             ..Default::default()
         },
         OneWayCallCommandMessage {
@@ -185,7 +187,6 @@ fn payload_unstable_flags_do_not_skip_when_only_recorded_side_marked() {
             key: "my-key".to_owned(),
             parameter: Bytes::from_static(b"456"),
             invocation_id_notification_idx: 1,
-            flags: 0,
             ..Default::default()
         },
         |vm| {
@@ -200,44 +201,6 @@ fn payload_unstable_flags_do_not_skip_when_only_recorded_side_marked() {
                 },
                 Bytes::from_static(b"456"),
                 None,
-            )
-        },
-    );
-}
-
-#[test]
-fn payload_unstable_flags_do_not_skip_when_only_current_side_marked() {
-    test_entry_mismatch_on_replay(
-        OneWayCallCommandMessage {
-            service_name: "greeter".to_owned(),
-            handler_name: "greet".to_owned(),
-            key: "my-key".to_owned(),
-            parameter: Bytes::from_static(b"123"),
-            invocation_id_notification_idx: 1,
-            flags: 0,
-            ..Default::default()
-        },
-        OneWayCallCommandMessage {
-            service_name: "greeter".to_owned(),
-            handler_name: "greet".to_owned(),
-            key: "my-key".to_owned(),
-            parameter: Bytes::from_static(b"456"),
-            invocation_id_notification_idx: 1,
-            flags: FLAG_PAYLOAD_UNSTABLE,
-            ..Default::default()
-        },
-        |vm| {
-            vm.sys_send_with_flags(
-                Target {
-                    service: "greeter".to_owned(),
-                    handler: "greet".to_owned(),
-                    key: Some("my-key".to_owned()),
-                    idempotency_key: None,
-                    headers: Vec::new(),
-                },
-                Bytes::from_static(b"456"),
-                None,
-                FLAG_PAYLOAD_UNSTABLE,
             )
         },
     );

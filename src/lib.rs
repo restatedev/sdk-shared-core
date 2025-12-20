@@ -19,10 +19,32 @@ pub use request_identity::*;
 pub use service_protocol::Version;
 pub use vm::CoreVM;
 
-/// Bitmask flag: payload bytes in this entry are known to be non-stable across builds
-/// (for example, protojson output). During replay, payload byte equality is skipped only
-/// when both the recorded entry and the current entry have this flag set.
-pub const FLAG_PAYLOAD_UNSTABLE: u32 = 1 << 0;
+/// Options for syscalls that involve payload serialization.
+/// Use this to indicate when payload bytes may differ between executions
+/// (e.g., when using non-deterministic serialization like protojson).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PayloadOptions {
+    /// If true, skip payload byte equality checks during replay.
+    /// Use this when the serialization format is non-deterministic.
+    pub unstable_serialization: bool,
+}
+
+impl PayloadOptions {
+    /// Create options indicating stable (deterministic) serialization (default).
+    pub fn stable() -> Self {
+        Self {
+            unstable_serialization: false,
+        }
+    }
+
+    /// Create options indicating unstable (non-deterministic) serialization.
+    /// Payload byte equality will be skipped during replay.
+    pub fn unstable() -> Self {
+        Self {
+            unstable_serialization: true,
+        }
+    }
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Header {
@@ -288,15 +310,28 @@ pub trait VM: Sized {
 
     fn sys_input(&mut self) -> VMResult<Input>;
 
-    fn sys_state_get(&mut self, key: String) -> VMResult<NotificationHandle>;
+    fn sys_state_get(&mut self, key: String) -> VMResult<NotificationHandle> {
+        self.sys_state_get_with_options(key, PayloadOptions::default())
+    }
+
+    fn sys_state_get_with_options(
+        &mut self,
+        key: String,
+        options: PayloadOptions,
+    ) -> VMResult<NotificationHandle>;
 
     fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle>;
 
-    fn sys_state_set(&mut self, key: String, value: Bytes) -> VMResult<()>;
-
-    fn sys_state_set_with_flags(&mut self, key: String, value: Bytes, _flags: u32) -> VMResult<()> {
-        self.sys_state_set(key, value)
+    fn sys_state_set(&mut self, key: String, value: Bytes) -> VMResult<()> {
+        self.sys_state_set_with_options(key, value, PayloadOptions::default())
     }
+
+    fn sys_state_set_with_options(
+        &mut self,
+        key: String,
+        value: Bytes,
+        options: PayloadOptions,
+    ) -> VMResult<()>;
 
     fn sys_state_clear(&mut self, key: String) -> VMResult<()>;
 
@@ -310,46 +345,46 @@ pub trait VM: Sized {
         now_since_unix_epoch: Option<Duration>,
     ) -> VMResult<NotificationHandle>;
 
-    fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<CallHandle>;
+    fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<CallHandle> {
+        self.sys_call_with_options(target, input, PayloadOptions::default())
+    }
 
-    fn sys_call_with_flags(
+    fn sys_call_with_options(
         &mut self,
         target: Target,
         input: Bytes,
-        _flags: u32,
-    ) -> VMResult<CallHandle> {
-        self.sys_call(target, input)
-    }
+        options: PayloadOptions,
+    ) -> VMResult<CallHandle>;
 
     fn sys_send(
         &mut self,
         target: Target,
         input: Bytes,
         execution_time_since_unix_epoch: Option<Duration>,
-    ) -> VMResult<SendHandle>;
+    ) -> VMResult<SendHandle> {
+        self.sys_send_with_options(target, input, execution_time_since_unix_epoch, PayloadOptions::default())
+    }
 
-    fn sys_send_with_flags(
+    fn sys_send_with_options(
         &mut self,
         target: Target,
         input: Bytes,
         execution_time_since_unix_epoch: Option<Duration>,
-        _flags: u32,
-    ) -> VMResult<SendHandle> {
-        self.sys_send(target, input, execution_time_since_unix_epoch)
-    }
+        options: PayloadOptions,
+    ) -> VMResult<SendHandle>;
 
     fn sys_awakeable(&mut self) -> VMResult<(String, NotificationHandle)>;
 
-    fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()>;
+    fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()> {
+        self.sys_complete_awakeable_with_options(id, value, PayloadOptions::default())
+    }
 
-    fn sys_complete_awakeable_with_flags(
+    fn sys_complete_awakeable_with_options(
         &mut self,
         id: String,
         value: NonEmptyValue,
-        _flags: u32,
-    ) -> VMResult<()> {
-        self.sys_complete_awakeable(id, value)
-    }
+        options: PayloadOptions,
+    ) -> VMResult<()>;
 
     fn create_signal_handle(&mut self, signal_name: String) -> VMResult<NotificationHandle>;
 
@@ -368,16 +403,16 @@ pub trait VM: Sized {
         &mut self,
         key: String,
         value: NonEmptyValue,
-    ) -> VMResult<NotificationHandle>;
+    ) -> VMResult<NotificationHandle> {
+        self.sys_complete_promise_with_options(key, value, PayloadOptions::default())
+    }
 
-    fn sys_complete_promise_with_flags(
+    fn sys_complete_promise_with_options(
         &mut self,
         key: String,
         value: NonEmptyValue,
-        _flags: u32,
-    ) -> VMResult<NotificationHandle> {
-        self.sys_complete_promise(key, value)
-    }
+        options: PayloadOptions,
+    ) -> VMResult<NotificationHandle>;
 
     fn sys_run(&mut self, name: String) -> VMResult<NotificationHandle>;
 
@@ -400,11 +435,15 @@ pub trait VM: Sized {
         target: AttachInvocationTarget,
     ) -> VMResult<NotificationHandle>;
 
-    fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()>;
-
-    fn sys_write_output_with_flags(&mut self, value: NonEmptyValue, _flags: u32) -> VMResult<()> {
-        self.sys_write_output(value)
+    fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()> {
+        self.sys_write_output_with_options(value, PayloadOptions::default())
     }
+
+    fn sys_write_output_with_options(
+        &mut self,
+        value: NonEmptyValue,
+        options: PayloadOptions,
+    ) -> VMResult<()>;
 
     fn sys_end(&mut self) -> VMResult<()>;
 
