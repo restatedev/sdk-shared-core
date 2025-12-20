@@ -18,8 +18,8 @@ pub trait NamedCommandMessage {
 
 pub trait CommandMessageHeaderEq {
     /// Compare command message headers for equality.
-    /// - `ignore_payload_checks`: if true, skip payload equality checks
-    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool;
+    /// - `ignore_payload_equality`: if true, skip payload equality checks
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool;
 }
 
 pub trait CommandMessageHeaderDiff {
@@ -84,8 +84,8 @@ impl CommandMessageHeaderEq for InputCommandMessage {
 
 impl_message_traits!(OutputCommand: command);
 impl CommandMessageHeaderEq for OutputCommandMessage {
-    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
-        if ignore_payload_checks {
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool {
+        if ignore_payload_equality {
             self.name == other.name
                 && match (&self.result, &other.result) {
                     (
@@ -105,8 +105,8 @@ impl_message_traits!(GetLazyStateCompletionNotification: notification);
 
 impl_message_traits!(SetStateCommand: command);
 impl CommandMessageHeaderEq for SetStateCommandMessage {
-    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
-        if ignore_payload_checks {
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool {
+        if ignore_payload_equality {
             self.name == other.name
                 && self.key == other.key
                 && match (&self.value, &other.value) {
@@ -128,8 +128,8 @@ impl_message_traits!(GetLazyStateKeysCompletionNotification: notification);
 
 impl_message_traits!(GetEagerStateCommand: command);
 impl CommandMessageHeaderEq for GetEagerStateCommandMessage {
-    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
-        if ignore_payload_checks {
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool {
+        if ignore_payload_equality {
             self.name == other.name
                 && self.key == other.key
                 && match (&self.result, &other.result) {
@@ -155,8 +155,8 @@ impl_message_traits!(PeekPromiseCompletionNotification: notification);
 
 impl_message_traits!(CompletePromiseCommand: command);
 impl CommandMessageHeaderEq for CompletePromiseCommandMessage {
-    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
-        if ignore_payload_checks {
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool {
+        if ignore_payload_equality {
             self.name == other.name
                 && self.key == other.key
                 && self.result_completion_id == other.result_completion_id
@@ -184,10 +184,10 @@ impl_message_traits!(SleepCompletionNotification: notification);
 
 impl_message_traits!(CallCommand: command);
 impl CommandMessageHeaderEq for CallCommandMessage {
-    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool {
         self.service_name == other.service_name
             && self.handler_name == other.handler_name
-            && (ignore_payload_checks || (self.parameter == other.parameter))
+            && (ignore_payload_equality || (self.parameter == other.parameter))
             && self.headers == other.headers
             && self.key == other.key
             && self.idempotency_key == other.idempotency_key
@@ -201,10 +201,10 @@ impl_message_traits!(CallCompletionNotification: notification);
 
 impl_message_traits!(OneWayCallCommand: command);
 impl CommandMessageHeaderEq for OneWayCallCommandMessage {
-    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool {
         self.service_name == other.service_name
             && self.handler_name == other.handler_name
-            && (ignore_payload_checks || (self.parameter == other.parameter))
+            && (ignore_payload_equality || (self.parameter == other.parameter))
             && self.headers == other.headers
             && self.key == other.key
             && self.idempotency_key == other.idempotency_key
@@ -232,8 +232,8 @@ impl_message_traits!(GetInvocationOutputCompletionNotification: notification);
 
 impl_message_traits!(CompleteAwakeableCommand: command);
 impl CommandMessageHeaderEq for CompleteAwakeableCommandMessage {
-    fn header_eq(&self, other: &Self, ignore_payload_checks: bool) -> bool {
-        if ignore_payload_checks {
+    fn header_eq(&self, other: &Self, ignore_payload_equality: bool) -> bool {
+        if ignore_payload_equality {
             self.name == other.name
                 && self.awakeable_id == other.awakeable_id
                 && match (&self.result, &other.result) {
