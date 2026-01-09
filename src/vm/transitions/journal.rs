@@ -29,7 +29,7 @@ use tracing::trace;
 /// Determine whether payload equality checks should be skipped.
 /// Returns true if either the global flag is set or the current call has unstable serialization.
 #[inline]
-fn should_ignore_payload_checks(global_ignore: bool, options: PayloadOptions) -> bool {
+fn should_ignore_payload_equality(global_ignore: bool, options: PayloadOptions) -> bool {
     global_ignore || options.unstable_serialization
 }
 
@@ -394,7 +394,7 @@ fn process_get_entry_during_replay(
     options: PayloadOptions,
 ) -> Result<(State, NotificationHandle), Error> {
     let handle = async_results.create_handle_mapping(NotificationId::CompletionId(completion_id));
-    let ignore_payload_checks = should_ignore_payload_checks(
+    let ignore_payload_equality = should_ignore_payload_equality(
         context.non_deterministic_checks_ignore_payload_equality,
         options,
     );
@@ -416,7 +416,7 @@ fn process_get_entry_during_replay(
                     result: get_eager_state_command.result.clone(),
                     name: "".to_string(),
                 },
-                ignore_payload_checks,
+                ignore_payload_equality,
             )?;
 
             let notification_result = match get_eager_state_command
@@ -444,7 +444,7 @@ fn process_get_entry_during_replay(
                     result_completion_id: completion_id,
                     name: "".to_string(),
                 },
-                ignore_payload_checks,
+                ignore_payload_equality,
             )?;
         }
         message_type => {
@@ -579,7 +579,7 @@ fn process_get_entry_keys_during_replay(
 ) -> Result<(State, NotificationHandle), Error> {
     let handle = async_results.create_handle_mapping(NotificationId::CompletionId(completion_id));
     // State keys don't contain payload bytes, so we only use the global flag
-    let ignore_payload_checks = context.non_deterministic_checks_ignore_payload_equality;
+    let ignore_payload_equality = context.non_deterministic_checks_ignore_payload_equality;
 
     let actual = commands.pop_front().ok_or(UnavailableEntryError::new(
         GetLazyStateKeysCommandMessage::ty(),
@@ -597,7 +597,7 @@ fn process_get_entry_keys_during_replay(
                     value: get_eager_state_command.value.clone(),
                     name: "".to_string(),
                 },
-                ignore_payload_checks,
+                ignore_payload_equality,
             )?;
 
             let notification_result = NotificationResult::StateKeys(
@@ -622,7 +622,7 @@ fn process_get_entry_keys_during_replay(
                     result_completion_id: completion_id,
                     name: "".to_string(),
                 },
-                ignore_payload_checks,
+                ignore_payload_equality,
             )?;
         }
         message_type => {
@@ -835,7 +835,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
                     }
                 };
 
-                let ignore_payload_checks = should_ignore_payload_checks(
+                let ignore_payload_equality = should_ignore_payload_equality(
                     context.non_deterministic_checks_ignore_payload_equality,
                     options,
                 );
@@ -843,7 +843,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
                     context.journal.command_index(),
                     &actual,
                     &expected,
-                    ignore_payload_checks,
+                    ignore_payload_equality,
                 )?;
 
                 Ok((new_state, actual))
@@ -887,9 +887,9 @@ fn check_entry_header_match<
     command_index: i64,
     actual: &M,
     expected: &M,
-    ignore_payload_checks: bool,
+    ignore_payload_equality: bool,
 ) -> Result<(), Error> {
-    if !actual.header_eq(expected, ignore_payload_checks) {
+    if !actual.header_eq(expected, ignore_payload_equality) {
         return Err(
             CommandMismatchError::new(command_index, actual.clone(), expected.clone()).into(),
         );

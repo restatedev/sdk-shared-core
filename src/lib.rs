@@ -310,11 +310,7 @@ pub trait VM: Sized {
 
     fn sys_input(&mut self) -> VMResult<Input>;
 
-    fn sys_state_get(&mut self, key: String) -> VMResult<NotificationHandle> {
-        self.sys_state_get_with_options(key, PayloadOptions::default())
-    }
-
-    fn sys_state_get_with_options(
+    fn sys_state_get(
         &mut self,
         key: String,
         options: PayloadOptions,
@@ -322,11 +318,7 @@ pub trait VM: Sized {
 
     fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle>;
 
-    fn sys_state_set(&mut self, key: String, value: Bytes) -> VMResult<()> {
-        self.sys_state_set_with_options(key, value, PayloadOptions::default())
-    }
-
-    fn sys_state_set_with_options(
+    fn sys_state_set(
         &mut self,
         key: String,
         value: Bytes,
@@ -345,11 +337,7 @@ pub trait VM: Sized {
         now_since_unix_epoch: Option<Duration>,
     ) -> VMResult<NotificationHandle>;
 
-    fn sys_call(&mut self, target: Target, input: Bytes) -> VMResult<CallHandle> {
-        self.sys_call_with_options(target, input, PayloadOptions::default())
-    }
-
-    fn sys_call_with_options(
+    fn sys_call(
         &mut self,
         target: Target,
         input: Bytes,
@@ -361,25 +349,12 @@ pub trait VM: Sized {
         target: Target,
         input: Bytes,
         execution_time_since_unix_epoch: Option<Duration>,
-    ) -> VMResult<SendHandle> {
-        self.sys_send_with_options(target, input, execution_time_since_unix_epoch, PayloadOptions::default())
-    }
-
-    fn sys_send_with_options(
-        &mut self,
-        target: Target,
-        input: Bytes,
-        execution_time_since_unix_epoch: Option<Duration>,
         options: PayloadOptions,
     ) -> VMResult<SendHandle>;
 
     fn sys_awakeable(&mut self) -> VMResult<(String, NotificationHandle)>;
 
-    fn sys_complete_awakeable(&mut self, id: String, value: NonEmptyValue) -> VMResult<()> {
-        self.sys_complete_awakeable_with_options(id, value, PayloadOptions::default())
-    }
-
-    fn sys_complete_awakeable_with_options(
+    fn sys_complete_awakeable(
         &mut self,
         id: String,
         value: NonEmptyValue,
@@ -400,14 +375,6 @@ pub trait VM: Sized {
     fn sys_peek_promise(&mut self, key: String) -> VMResult<NotificationHandle>;
 
     fn sys_complete_promise(
-        &mut self,
-        key: String,
-        value: NonEmptyValue,
-    ) -> VMResult<NotificationHandle> {
-        self.sys_complete_promise_with_options(key, value, PayloadOptions::default())
-    }
-
-    fn sys_complete_promise_with_options(
         &mut self,
         key: String,
         value: NonEmptyValue,
@@ -435,11 +402,7 @@ pub trait VM: Sized {
         target: AttachInvocationTarget,
     ) -> VMResult<NotificationHandle>;
 
-    fn sys_write_output(&mut self, value: NonEmptyValue) -> VMResult<()> {
-        self.sys_write_output_with_options(value, PayloadOptions::default())
-    }
-
-    fn sys_write_output_with_options(
+    fn sys_write_output(
         &mut self,
         value: NonEmptyValue,
         options: PayloadOptions,

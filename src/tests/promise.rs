@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::service_protocol::messages::{Failure, *};
-use crate::Value;
+use crate::{PayloadOptions, Value};
 
 mod get_promise {
     use super::*;
@@ -29,7 +29,8 @@ mod get_promise {
             v => panic!("Unexpected value {v:?}"),
         };
 
-        vm.sys_write_output(output).unwrap();
+        vm.sys_write_output(output, PayloadOptions::default())
+            .unwrap();
         vm.sys_end().unwrap();
     }
 
@@ -137,7 +138,8 @@ mod peek_promise {
             v => panic!("Unexpected value {v:?}"),
         };
 
-        vm.sys_write_output(output).unwrap();
+        vm.sys_write_output(output, PayloadOptions::default())
+            .unwrap();
         vm.sys_end().unwrap();
     }
 
@@ -273,7 +275,7 @@ mod complete_promise {
             vm.sys_input().unwrap();
 
             let h1 = vm
-                .sys_complete_promise("my-prom".to_owned(), result)
+                .sys_complete_promise("my-prom".to_owned(), result, PayloadOptions::default())
                 .unwrap();
 
             if vm
@@ -290,7 +292,8 @@ mod complete_promise {
                 v => panic!("Unexpected value {v:?}"),
             };
 
-            vm.sys_write_output(NonEmptyValue::Success(output)).unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(output), PayloadOptions::default())
+                .unwrap();
             vm.sys_end().unwrap();
         }
     }

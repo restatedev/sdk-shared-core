@@ -15,7 +15,9 @@ fn trigger_suspension_with_get_state() {
         .run_without_closing_input(|vm, _| {
             let _ = vm.sys_input().unwrap();
 
-            let handle = vm.sys_state_get("Personaggio".to_owned()).unwrap();
+            let handle = vm
+                .sys_state_get("Personaggio".to_owned(), PayloadOptions::default())
+                .unwrap();
 
             // Also take_async_result returns Ok(None)
             assert_that!(vm.take_notification(handle), ok(none()));
@@ -79,7 +81,9 @@ fn await_many_notifications() {
 
             let (_, h1) = vm.sys_awakeable().unwrap();
             let h2 = vm.create_signal_handle("abc".into()).unwrap();
-            let h3 = vm.sys_state_get("Personaggio".to_owned()).unwrap();
+            let h3 = vm
+                .sys_state_get("Personaggio".to_owned(), PayloadOptions::default())
+                .unwrap();
 
             // Let's notify_input_closed now
             vm.notify_input_closed();
@@ -146,8 +150,11 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
                 ok(some(eq(Value::Success(completion.clone()))))
             );
 
-            vm.sys_write_output(NonEmptyValue::Success(completion.clone()))
-                .unwrap();
+            vm.sys_write_output(
+                NonEmptyValue::Success(completion.clone()),
+                PayloadOptions::default(),
+            )
+            .unwrap();
             vm.sys_end().unwrap();
         });
 

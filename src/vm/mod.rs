@@ -557,7 +557,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_state_get_with_options(
+    fn sys_state_get(
         &mut self,
         key: String,
         options: PayloadOptions,
@@ -593,7 +593,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_state_set_with_options(
+    fn sys_state_set(
         &mut self,
         key: String,
         value: Bytes,
@@ -719,7 +719,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_call_with_options(
+    fn sys_call(
         &mut self,
         target: Target,
         input: Bytes,
@@ -792,7 +792,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_send_with_options(
+    fn sys_send(
         &mut self,
         target: Target,
         input: Bytes,
@@ -894,7 +894,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_complete_awakeable_with_options(
+    fn sys_complete_awakeable(
         &mut self,
         id: String,
         value: NonEmptyValue,
@@ -1039,7 +1039,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_complete_promise_with_options(
+    fn sys_complete_promise(
         &mut self,
         key: String,
         value: NonEmptyValue,
@@ -1287,7 +1287,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_write_output_with_options(
+    fn sys_write_output(
         &mut self,
         value: NonEmptyValue,
         options: PayloadOptions,

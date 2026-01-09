@@ -3,11 +3,11 @@ use super::*;
 use crate::error::CommandMetadata;
 use crate::service_protocol::messages::start_message::StateEntry;
 use crate::service_protocol::messages::{
-    complete_awakeable_command_message, complete_promise_command_message,
-    output_command_message, CallCommandMessage, CommandMessageHeaderDiff,
-    CompleteAwakeableCommandMessage, CompletePromiseCommandMessage, EndMessage, ErrorMessage,
-    GetEagerStateCommandMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage,
-    OutputCommandMessage, SetStateCommandMessage, StartMessage,
+    complete_awakeable_command_message, complete_promise_command_message, output_command_message,
+    CallCommandMessage, CommandMessageHeaderDiff, CompleteAwakeableCommandMessage,
+    CompletePromiseCommandMessage, EndMessage, ErrorMessage, GetEagerStateCommandMessage,
+    GetLazyStateCommandMessage, OneWayCallCommandMessage, OutputCommandMessage,
+    SetStateCommandMessage, StartMessage,
 };
 use crate::service_protocol::MessageType;
 use std::fmt;
@@ -88,7 +88,7 @@ fn get_lazy_state_entry_mismatch() {
             result_completion_id: 1,
             ..Default::default()
         },
-        |vm| vm.sys_state_get("another-key".to_owned()),
+        |vm| vm.sys_state_get("another-key".to_owned(), PayloadOptions::default()),
     );
 }
 
@@ -122,6 +122,7 @@ fn one_way_call_entry_mismatch() {
                 },
                 Bytes::from_static(b"456"),
                 None,
+                PayloadOptions::default(),
             )
         },
     );
@@ -145,7 +146,7 @@ fn payload_unstable_options_skip_payload_equality_when_current_side_marked() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            vm.sys_send_with_options(
+            vm.sys_send(
                 Target {
                     service: "greeter".to_owned(),
                     handler: "greet".to_owned(),
@@ -192,7 +193,7 @@ fn payload_unstable_options_do_not_skip_when_not_marked() {
             ..Default::default()
         },
         |vm| {
-            // Uses the legacy API -> flags = 0 on the "current" entry.
+            // Uses the default API -> stable serialization on the "current" entry.
             vm.sys_send(
                 Target {
                     service: "greeter".to_owned(),
@@ -203,6 +204,7 @@ fn payload_unstable_options_do_not_skip_when_not_marked() {
                 },
                 Bytes::from_static(b"456"),
                 None,
+                PayloadOptions::default(),
             )
         },
     );
@@ -311,6 +313,7 @@ fn disable_non_deterministic_payload_checks() {
             // NOTE: this is different payload!
             Bytes::from_static(b"456"),
             None,
+            PayloadOptions::default(),
         )
         .unwrap();
 
@@ -324,6 +327,7 @@ fn disable_non_deterministic_payload_checks() {
             },
             // NOTE: this is different payload!
             Bytes::from_static(b"456"),
+            PayloadOptions::default(),
         )
         .unwrap();
 
@@ -331,10 +335,11 @@ fn disable_non_deterministic_payload_checks() {
             "my-key".to_owned(),
             // NOTE: this is different payload!
             Bytes::from_static(b"456"),
+            PayloadOptions::default(),
         )
         .unwrap();
 
-        vm.sys_state_get("STATE".to_owned()).unwrap();
+        vm.sys_state_get("STATE".to_owned(), PayloadOptions::default()).unwrap();
 
         vm.sys_end().unwrap();
     });
@@ -350,7 +355,7 @@ fn disable_non_deterministic_payload_checks() {
 
 #[test]
 fn payload_unstable_options_skip_payload_equality_for_call() {
-    // sys_call_with_options with PayloadOptions::unstable() should skip payload check
+    // sys_call with PayloadOptions::unstable() should skip payload check
     let mut output = VMTestCase::new()
         .input(start_message(2))
         .input(input_entry_message(b"my-data"))
@@ -366,7 +371,7 @@ fn payload_unstable_options_skip_payload_equality_for_call() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            vm.sys_call_with_options(
+            vm.sys_call(
                 Target {
                     service: "greeter".to_owned(),
                     handler: "greet".to_owned(),
@@ -392,7 +397,7 @@ fn payload_unstable_options_skip_payload_equality_for_call() {
 
 #[test]
 fn payload_unstable_options_skip_payload_equality_for_state_set() {
-    // sys_state_set_with_options with PayloadOptions::unstable() should skip payload check
+    // sys_state_set with PayloadOptions::unstable() should skip payload check
     let mut output = VMTestCase::new()
         .input(start_message(2))
         .input(input_entry_message(b"my-data"))
@@ -406,7 +411,7 @@ fn payload_unstable_options_skip_payload_equality_for_state_set() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            vm.sys_state_set_with_options(
+            vm.sys_state_set(
                 "my-key".to_owned(),
                 // Different bytes than recorded, but marked as unstable.
                 Bytes::from_static(b"456"),
@@ -426,7 +431,7 @@ fn payload_unstable_options_skip_payload_equality_for_state_set() {
 
 #[test]
 fn payload_unstable_options_skip_payload_equality_for_state_get() {
-    // sys_state_get_with_options with PayloadOptions::unstable() should skip payload check
+    // sys_state_get with PayloadOptions::unstable() should skip payload check
     // when replaying GetEagerStateCommand with different value
     let mut output = VMTestCase::new()
         .input(StartMessage {
@@ -455,7 +460,7 @@ fn payload_unstable_options_skip_payload_equality_for_state_get() {
             vm.sys_input().unwrap();
 
             // With unstable serialization, different payload should be accepted
-            vm.sys_state_get_with_options("my-key".to_owned(), PayloadOptions::unstable())
+            vm.sys_state_get("my-key".to_owned(), PayloadOptions::unstable())
                 .unwrap();
 
             vm.sys_end().unwrap();
@@ -470,7 +475,7 @@ fn payload_unstable_options_skip_payload_equality_for_state_get() {
 
 #[test]
 fn payload_unstable_options_skip_payload_equality_for_complete_promise() {
-    // sys_complete_promise_with_options with PayloadOptions::unstable() should skip payload check
+    // sys_complete_promise with PayloadOptions::unstable() should skip payload check
     let mut output = VMTestCase::new()
         .input(start_message(2))
         .input(input_entry_message(b"my-data"))
@@ -487,7 +492,7 @@ fn payload_unstable_options_skip_payload_equality_for_complete_promise() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            vm.sys_complete_promise_with_options(
+            vm.sys_complete_promise(
                 "my-prom".to_owned(),
                 // Different bytes than recorded, but marked as unstable.
                 NonEmptyValue::Success(Bytes::from_static(b"456")),
@@ -507,7 +512,7 @@ fn payload_unstable_options_skip_payload_equality_for_complete_promise() {
 
 #[test]
 fn payload_unstable_options_skip_payload_equality_for_complete_awakeable() {
-    // sys_complete_awakeable_with_options with PayloadOptions::unstable() should skip payload check
+    // sys_complete_awakeable with PayloadOptions::unstable() should skip payload check
     let mut output = VMTestCase::new()
         .input(start_message(2))
         .input(input_entry_message(b"my-data"))
@@ -521,7 +526,7 @@ fn payload_unstable_options_skip_payload_equality_for_complete_awakeable() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            vm.sys_complete_awakeable_with_options(
+            vm.sys_complete_awakeable(
                 "awk-123".to_owned(),
                 // Different bytes than recorded, but marked as unstable.
                 NonEmptyValue::Success(Bytes::from_static(b"456")),
@@ -541,7 +546,7 @@ fn payload_unstable_options_skip_payload_equality_for_complete_awakeable() {
 
 #[test]
 fn payload_unstable_options_skip_payload_equality_for_write_output() {
-    // sys_write_output_with_options with PayloadOptions::unstable() should skip payload check
+    // sys_write_output with PayloadOptions::unstable() should skip payload check
     let mut output = VMTestCase::new()
         .input(start_message(2))
         .input(input_entry_message(b"my-data"))
@@ -554,7 +559,7 @@ fn payload_unstable_options_skip_payload_equality_for_write_output() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            vm.sys_write_output_with_options(
+            vm.sys_write_output(
                 // Different bytes than recorded, but marked as unstable.
                 NonEmptyValue::Success(Bytes::from_static(b"456")),
                 PayloadOptions::unstable(),
