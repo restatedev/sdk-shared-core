@@ -9,7 +9,8 @@ fn echo_handler(vm: &mut CoreVM) {
     let_assert!(Input { input, .. } = vm.sys_input().unwrap());
     assert_eq!(input, b"my-data".to_vec());
 
-    vm.sys_write_output(NonEmptyValue::Success(input), PayloadOptions::default()).unwrap();
+    vm.sys_write_output(NonEmptyValue::Success(input), PayloadOptions::default())
+        .unwrap();
     vm.sys_end().unwrap();
 }
 
@@ -64,8 +65,11 @@ fn headers() {
                 })]
             );
 
-            vm.sys_write_output(NonEmptyValue::Success(Bytes::default()), PayloadOptions::default())
-                .unwrap();
+            vm.sys_write_output(
+                NonEmptyValue::Success(Bytes::default()),
+                PayloadOptions::default(),
+            )
+            .unwrap();
             vm.sys_end().unwrap();
         });
 

@@ -318,12 +318,8 @@ pub trait VM: Sized {
 
     fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle>;
 
-    fn sys_state_set(
-        &mut self,
-        key: String,
-        value: Bytes,
-        options: PayloadOptions,
-    ) -> VMResult<()>;
+    fn sys_state_set(&mut self, key: String, value: Bytes, options: PayloadOptions)
+        -> VMResult<()>;
 
     fn sys_state_clear(&mut self, key: String) -> VMResult<()>;
 
@@ -402,11 +398,7 @@ pub trait VM: Sized {
         target: AttachInvocationTarget,
     ) -> VMResult<NotificationHandle>;
 
-    fn sys_write_output(
-        &mut self,
-        value: NonEmptyValue,
-        options: PayloadOptions,
-    ) -> VMResult<()>;
+    fn sys_write_output(&mut self, value: NonEmptyValue, options: PayloadOptions) -> VMResult<()>;
 
     fn sys_end(&mut self) -> VMResult<()>;
 

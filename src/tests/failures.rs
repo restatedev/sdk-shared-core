@@ -339,7 +339,8 @@ fn disable_non_deterministic_payload_checks() {
         )
         .unwrap();
 
-        vm.sys_state_get("STATE".to_owned(), PayloadOptions::default()).unwrap();
+        vm.sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
 
         vm.sys_end().unwrap();
     });

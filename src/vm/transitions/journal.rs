@@ -171,7 +171,11 @@ impl<
 }
 
 /// Entry with message, completion id, and payload options for replay checks.
-pub(crate) struct SysSimpleCompletableEntry<M>(pub(crate) M, pub(crate) CompletionId, pub(crate) PayloadOptions);
+pub(crate) struct SysSimpleCompletableEntry<M>(
+    pub(crate) M,
+    pub(crate) CompletionId,
+    pub(crate) PayloadOptions,
+);
 
 impl<
         M: RestateMessage

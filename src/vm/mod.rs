@@ -1287,11 +1287,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_write_output(
-        &mut self,
-        value: NonEmptyValue,
-        options: PayloadOptions,
-    ) -> VMResult<()> {
+    fn sys_write_output(&mut self, value: NonEmptyValue, options: PayloadOptions) -> VMResult<()> {
         match &value {
             NonEmptyValue::Success(_) => {
                 invocation_debug_logs!(self, "Writing invocation result success value");
