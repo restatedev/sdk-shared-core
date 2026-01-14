@@ -5,6 +5,7 @@ use crate::service_protocol::messages::{
     Failure, OutputCommandMessage, ProposeRunCompletionMessage, RunCommandMessage,
     RunCompletionNotificationMessage, StartMessage, SuspensionMessage,
 };
+use crate::PayloadOptions;
 use assert2::let_assert;
 use test_log::test;
 
@@ -116,7 +117,8 @@ fn enter_then_propose_completion_then_complete() {
             let_assert!(Value::Success(s) = result);
 
             // Write the result as output
-            vm.sys_write_output(NonEmptyValue::Success(s)).unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(s), PayloadOptions::default())
+                .unwrap();
             vm.sys_end().unwrap();
         });
 
@@ -198,7 +200,8 @@ fn enter_then_propose_completion_then_complete_with_failure() {
             let_assert!(Value::Failure(f) = result);
 
             // Write the result as output
-            vm.sys_write_output(NonEmptyValue::Failure(f)).unwrap();
+            vm.sys_write_output(NonEmptyValue::Failure(f), PayloadOptions::default())
+                .unwrap();
             vm.sys_end().unwrap();
         });
 
@@ -369,7 +372,8 @@ fn replay_with_completion() {
             let_assert!(Value::Success(s) = result);
 
             // Write the result as output
-            vm.sys_write_output(NonEmptyValue::Success(s)).unwrap();
+            vm.sys_write_output(NonEmptyValue::Success(s), PayloadOptions::default())
+                .unwrap();
             vm.sys_end().unwrap();
         });
 
@@ -470,11 +474,14 @@ mod retry_policy {
                 let value = vm.take_notification(handle).unwrap().unwrap();
 
                 // Write the result as output
-                vm.sys_write_output(match value {
-                    Value::Success(s) => NonEmptyValue::Success(s),
-                    Value::Failure(f) => NonEmptyValue::Failure(f),
-                    v => panic!("Unexpected value {v:?}"),
-                })
+                vm.sys_write_output(
+                    match value {
+                        Value::Success(s) => NonEmptyValue::Success(s),
+                        Value::Failure(f) => NonEmptyValue::Failure(f),
+                        v => panic!("Unexpected value {v:?}"),
+                    },
+                    PayloadOptions::default(),
+                )
                 .unwrap();
                 vm.sys_end().unwrap();
             });

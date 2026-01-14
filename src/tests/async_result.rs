@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::service_protocol::messages::*;
-use crate::Value;
+use crate::{PayloadOptions, Value};
 use assert2::let_assert;
 
 use test_log::test;
@@ -30,10 +30,17 @@ fn dont_await_call() {
             vm.sys_input().unwrap();
 
             let _ = vm
-                .sys_call(greeter_target(), Bytes::from_static(b"Francesco"))
+                .sys_call(
+                    greeter_target(),
+                    Bytes::from_static(b"Francesco"),
+                    PayloadOptions::default(),
+                )
                 .unwrap();
-            vm.sys_write_output(NonEmptyValue::Success(Bytes::from_static(b"Whatever")))
-                .unwrap();
+            vm.sys_write_output(
+                NonEmptyValue::Success(Bytes::from_static(b"Whatever")),
+                PayloadOptions::default(),
+            )
+            .unwrap();
             vm.sys_end().unwrap()
         });
 
@@ -72,10 +79,17 @@ fn dont_await_call_dont_notify_input_closed() {
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
             let _ = vm
-                .sys_call(greeter_target(), Bytes::from_static(b"Francesco"))
+                .sys_call(
+                    greeter_target(),
+                    Bytes::from_static(b"Francesco"),
+                    PayloadOptions::default(),
+                )
                 .unwrap();
-            vm.sys_write_output(NonEmptyValue::Success(Bytes::from_static(b"Whatever")))
-                .unwrap();
+            vm.sys_write_output(
+                NonEmptyValue::Success(Bytes::from_static(b"Whatever")),
+                PayloadOptions::default(),
+            )
+            .unwrap();
             vm.sys_end().unwrap()
         });
 
@@ -152,10 +166,18 @@ mod reverse_await_order {
         vm.sys_input().unwrap();
 
         let h1 = vm
-            .sys_call(greeter_target(), Bytes::from_static(b"Francesco"))
+            .sys_call(
+                greeter_target(),
+                Bytes::from_static(b"Francesco"),
+                PayloadOptions::default(),
+            )
             .unwrap();
         let h2 = vm
-            .sys_call(greeter_target(), Bytes::from_static(b"Till"))
+            .sys_call(
+                greeter_target(),
+                Bytes::from_static(b"Till"),
+                PayloadOptions::default(),
+            )
             .unwrap();
 
         if vm
@@ -173,7 +195,8 @@ mod reverse_await_order {
                 vm.take_notification(h2.call_notification_handle).unwrap()
         );
 
-        vm.sys_state_set("A2".to_owned(), h2_value.clone()).unwrap();
+        vm.sys_state_set("A2".to_owned(), h2_value.clone(), PayloadOptions::default())
+            .unwrap();
 
         if vm
             .do_progress(vec![h1.call_notification_handle])
@@ -190,9 +213,10 @@ mod reverse_await_order {
                 vm.take_notification(h1.call_notification_handle).unwrap()
         );
 
-        vm.sys_write_output(NonEmptyValue::Success(Bytes::from(
-            [&h1_value[..], b"-", &h2_value[..]].concat(),
-        )))
+        vm.sys_write_output(
+            NonEmptyValue::Success(Bytes::from([&h1_value[..], b"-", &h2_value[..]].concat())),
+            PayloadOptions::default(),
+        )
         .unwrap();
         vm.sys_end().unwrap()
     }

@@ -1,6 +1,6 @@
 use crate::service_protocol::messages::{start_message::StateEntry, *};
 use crate::tests::{is_closed, VMTestCase};
-use crate::{CoreVM, NonEmptyValue, Value, VM};
+use crate::{CoreVM, NonEmptyValue, PayloadOptions, Value, VM};
 use assert2::let_assert;
 use bytes::Bytes;
 use googletest::assert_that;
@@ -11,7 +11,9 @@ use googletest::prelude::err;
 fn get_state_handler(vm: &mut CoreVM) {
     vm.sys_input().unwrap();
 
-    let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
+    let h1 = vm
+        .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+        .unwrap();
 
     if vm
         .do_progress(vec![h1])
@@ -27,9 +29,10 @@ fn get_state_handler(vm: &mut CoreVM) {
         _ => panic!("Unexpected variants"),
     };
 
-    vm.sys_write_output(NonEmptyValue::Success(Bytes::copy_from_slice(
-        str_result.as_bytes(),
-    )))
+    vm.sys_write_output(
+        NonEmptyValue::Success(Bytes::copy_from_slice(str_result.as_bytes())),
+        PayloadOptions::default(),
+    )
     .unwrap();
     vm.sys_end().unwrap()
 }
@@ -261,7 +264,9 @@ mod eager {
     fn get_empty_state_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
+        let h1 = vm
+            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
 
         if vm
             .do_progress(vec![h1])
@@ -277,9 +282,10 @@ mod eager {
             _ => panic!("Unexpected variants"),
         };
 
-        vm.sys_write_output(NonEmptyValue::Success(Bytes::copy_from_slice(
-            str_result.as_bytes(),
-        )))
+        vm.sys_write_output(
+            NonEmptyValue::Success(Bytes::copy_from_slice(str_result.as_bytes())),
+            PayloadOptions::default(),
+        )
         .unwrap();
         vm.sys_end().unwrap()
     }
@@ -491,7 +497,9 @@ mod eager {
     fn append_state_handler(vm: &mut CoreVM) {
         let input = vm.sys_input().unwrap().input;
 
-        let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
+        let h1 = vm
+            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
 
         if vm
             .do_progress(vec![h1])
@@ -507,7 +515,8 @@ mod eager {
             }
             Value::Success(s) => s,
             Value::Failure(f) => {
-                vm.sys_write_output(NonEmptyValue::Failure(f)).unwrap();
+                vm.sys_write_output(NonEmptyValue::Failure(f), PayloadOptions::default())
+                    .unwrap();
                 vm.sys_end().unwrap();
                 return;
             }
@@ -517,10 +526,13 @@ mod eager {
         vm.sys_state_set(
             "STATE".to_owned(),
             Bytes::from([get_result.clone(), input.clone()].concat()),
+            PayloadOptions::default(),
         )
         .unwrap();
 
-        let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
+        let h2 = vm
+            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
 
         if vm
             .do_progress(vec![h2])
@@ -536,15 +548,19 @@ mod eager {
             }
             Value::Success(s) => s,
             Value::Failure(f) => {
-                vm.sys_write_output(NonEmptyValue::Failure(f)).unwrap();
+                vm.sys_write_output(NonEmptyValue::Failure(f), PayloadOptions::default())
+                    .unwrap();
                 vm.sys_end().unwrap();
                 return;
             }
             _ => panic!("Unexpected variants"),
         };
 
-        vm.sys_write_output(NonEmptyValue::Success(second_get_result))
-            .unwrap();
+        vm.sys_write_output(
+            NonEmptyValue::Success(second_get_result),
+            PayloadOptions::default(),
+        )
+        .unwrap();
         vm.sys_end().unwrap()
     }
 
@@ -672,7 +688,9 @@ mod eager {
     fn get_and_clear_state_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
+        let h1 = vm
+            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
 
         if vm
             .do_progress(vec![h1])
@@ -691,7 +709,9 @@ mod eager {
 
         vm.sys_state_clear("STATE".to_owned()).unwrap();
 
-        let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
+        let h2 = vm
+            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
 
         if vm
             .do_progress(vec![h2])
@@ -702,8 +722,11 @@ mod eager {
         }
         let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
 
-        vm.sys_write_output(NonEmptyValue::Success(first_get_result))
-            .unwrap();
+        vm.sys_write_output(
+            NonEmptyValue::Success(first_get_result),
+            PayloadOptions::default(),
+        )
+        .unwrap();
         vm.sys_end().unwrap()
     }
 
@@ -829,7 +852,9 @@ mod eager {
     fn get_and_clear_all_state_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_state_get("STATE".to_owned()).unwrap();
+        let h1 = vm
+            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
 
         if vm
             .do_progress(vec![h1])
@@ -848,16 +873,23 @@ mod eager {
 
         vm.sys_state_clear_all().unwrap();
 
-        let h2 = vm.sys_state_get("STATE".to_owned()).unwrap();
+        let h2 = vm
+            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
         vm.do_progress(vec![h2]).unwrap();
         let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
 
-        let h3 = vm.sys_state_get("ANOTHER_STATE".to_owned()).unwrap();
+        let h3 = vm
+            .sys_state_get("ANOTHER_STATE".to_owned(), PayloadOptions::default())
+            .unwrap();
         vm.do_progress(vec![h3]).unwrap();
         let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h3));
 
-        vm.sys_write_output(NonEmptyValue::Success(first_get_result))
-            .unwrap();
+        vm.sys_write_output(
+            NonEmptyValue::Success(first_get_result),
+            PayloadOptions::default(),
+        )
+        .unwrap();
         vm.sys_end().unwrap()
     }
 
@@ -1011,16 +1043,23 @@ mod eager {
     fn consecutive_get_with_empty_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_state_get("key-0".to_owned()).unwrap();
+        let h1 = vm
+            .sys_state_get("key-0".to_owned(), PayloadOptions::default())
+            .unwrap();
         vm.do_progress(vec![h1]).unwrap();
         let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h1));
 
-        let h2 = vm.sys_state_get("key-0".to_owned()).unwrap();
+        let h2 = vm
+            .sys_state_get("key-0".to_owned(), PayloadOptions::default())
+            .unwrap();
         vm.do_progress(vec![h2]).unwrap();
         let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
 
-        vm.sys_write_output(NonEmptyValue::Success(Bytes::default()))
-            .unwrap();
+        vm.sys_write_output(
+            NonEmptyValue::Success(Bytes::default()),
+            PayloadOptions::default(),
+        )
+        .unwrap();
         vm.sys_end().unwrap()
     }
 
@@ -1141,7 +1180,8 @@ mod state_keys {
             _ => panic!("Unexpected variants"),
         };
 
-        vm.sys_write_output(output).unwrap();
+        vm.sys_write_output(output, PayloadOptions::default())
+            .unwrap();
         vm.sys_end().unwrap()
     }
 

@@ -20,11 +20,18 @@ use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{
     CommandRelationship, CommandType, EntryRetryInfo, Error, Header, Input, NotificationHandle,
-    RetryPolicy, RunExitResult,
+    PayloadOptions, RetryPolicy, RunExitResult,
 };
 use bytes::Bytes;
 use std::collections::VecDeque;
 use tracing::trace;
+
+/// Determine whether payload equality checks should be skipped.
+/// Returns true if either the global flag is set or the current call has unstable serialization.
+#[inline]
+fn should_ignore_payload_equality(global_ignore: bool, options: PayloadOptions) -> bool {
+    global_ignore || options.unstable_serialization
+}
 
 pub(crate) struct SysInput;
 
@@ -40,7 +47,7 @@ impl TransitionAndReturn<Context, SysInput> for State {
         let (s, msg) = TransitionAndReturn::transition_and_return(
             self,
             context,
-            PopJournalEntry(InputCommandMessage::default()),
+            PopJournalEntry(InputCommandMessage::default(), PayloadOptions::default()),
         )
         .map_err(|e| {
             e.with_related_command_metadata(
@@ -85,7 +92,8 @@ fn compute_random_seed(id: &[u8]) -> u64 {
     hasher.finish()
 }
 
-pub(crate) struct SysNonCompletableEntry<M>(pub(crate) M);
+/// Entry with message and payload options for replay checks.
+pub(crate) struct SysNonCompletableEntry<M>(pub(crate) M, pub(crate) PayloadOptions);
 
 impl<
         M: RestateMessage
@@ -98,11 +106,11 @@ impl<
     fn transition(
         self,
         context: &mut Context,
-        SysNonCompletableEntry(expected): SysNonCompletableEntry<M>,
+        SysNonCompletableEntry(expected, options): SysNonCompletableEntry<M>,
     ) -> Result<Self, Error> {
         context.journal.transition(&expected);
         let (s, _) = self
-            .transition_and_return(context, PopOrWriteJournalEntry(expected))
+            .transition_and_return(context, PopOrWriteJournalEntry(expected, options))
             .map_err(|e| {
                 e.with_related_command_metadata(context.journal.last_command_metadata())
             })?;
@@ -110,7 +118,12 @@ impl<
     }
 }
 
-pub(crate) struct SysNonCompletableEntryWithCompletion<M>(pub(crate) M, pub(crate) Notification);
+/// Entry with message, notification, and payload options for replay checks.
+pub(crate) struct SysNonCompletableEntryWithCompletion<M>(
+    pub(crate) M,
+    pub(crate) Notification,
+    pub(crate) PayloadOptions,
+);
 
 impl<
         M: RestateMessage
@@ -125,11 +138,11 @@ impl<
     fn transition_and_return(
         self,
         context: &mut Context,
-        SysNonCompletableEntryWithCompletion(expected, notification): SysNonCompletableEntryWithCompletion<M>,
+        SysNonCompletableEntryWithCompletion(expected, notification, options): SysNonCompletableEntryWithCompletion<M>,
     ) -> Result<(Self, Self::Output), Error> {
         context.journal.transition(&expected);
         let (mut s, _) = self
-            .transition_and_return(context, PopOrWriteJournalEntry(expected))
+            .transition_and_return(context, PopOrWriteJournalEntry(expected, options))
             .map_err(|e| {
                 e.with_related_command_metadata(context.journal.last_command_metadata())
             })?;
@@ -157,7 +170,12 @@ impl<
     }
 }
 
-pub(crate) struct SysSimpleCompletableEntry<M>(pub(crate) M, pub(crate) CompletionId);
+/// Entry with message, completion id, and payload options for replay checks.
+pub(crate) struct SysSimpleCompletableEntry<M>(
+    pub(crate) M,
+    pub(crate) CompletionId,
+    pub(crate) PayloadOptions,
+);
 
 impl<
         M: RestateMessage
@@ -172,20 +190,22 @@ impl<
     fn transition_and_return(
         self,
         context: &mut Context,
-        SysSimpleCompletableEntry(expected, completion_id): SysSimpleCompletableEntry<M>,
+        SysSimpleCompletableEntry(expected, completion_id, options): SysSimpleCompletableEntry<M>,
     ) -> Result<(Self, Self::Output), Error> {
         let (s, handles) = TransitionAndReturn::transition_and_return(
             self,
             context,
-            SysCompletableEntryWithMultipleCompletions(expected, vec![completion_id]),
+            SysCompletableEntryWithMultipleCompletions(expected, vec![completion_id], options),
         )?;
         Ok((s, handles[0]))
     }
 }
 
+/// Entry with message, completion ids, and payload options for replay checks.
 pub(crate) struct SysCompletableEntryWithMultipleCompletions<M>(
     pub(crate) M,
     pub(crate) Vec<CompletionId>,
+    pub(crate) PayloadOptions,
 );
 
 impl<
@@ -201,13 +221,13 @@ impl<
     fn transition_and_return(
         self,
         context: &mut Context,
-        SysCompletableEntryWithMultipleCompletions( expected, completion_ids): SysCompletableEntryWithMultipleCompletions<M>,
+        SysCompletableEntryWithMultipleCompletions(expected, completion_ids, options): SysCompletableEntryWithMultipleCompletions<M>,
     ) -> Result<(Self, Self::Output), Error> {
         context.journal.transition(&expected);
         let (mut s, _) = TransitionAndReturn::transition_and_return(
             self,
             context,
-            PopOrWriteJournalEntry(expected),
+            PopOrWriteJournalEntry(expected, options),
         )
         .map_err(|e| e.with_related_command_metadata(context.journal.last_command_metadata()))?;
 
@@ -267,7 +287,8 @@ impl TransitionAndReturn<Context, CreateSignalHandle> for State {
     }
 }
 
-pub(crate) struct SysStateGet(pub(crate) String);
+/// State get with key and payload options for replay checks.
+pub(crate) struct SysStateGet(pub(crate) String, pub(crate) PayloadOptions);
 
 impl TransitionAndReturn<Context, SysStateGet> for State {
     type Output = NotificationHandle;
@@ -275,7 +296,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        SysStateGet(key): SysStateGet,
+        SysStateGet(key, options): SysStateGet,
     ) -> Result<(Self, Self::Output), Error> {
         let completion_id = context.journal.next_completion_notification_id();
 
@@ -349,6 +370,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                     commands,
                     async_results,
                     run_state,
+                    options,
                 )
                 .map_err(|e| {
                     e.with_related_command_metadata(context.journal.last_command_metadata())
@@ -373,8 +395,13 @@ fn process_get_entry_during_replay(
     mut commands: VecDeque<RawMessage>,
     mut async_results: AsyncResultsState,
     run_state: RunState,
+    options: PayloadOptions,
 ) -> Result<(State, NotificationHandle), Error> {
     let handle = async_results.create_handle_mapping(NotificationId::CompletionId(completion_id));
+    let ignore_payload_equality = should_ignore_payload_equality(
+        context.non_deterministic_checks_ignore_payload_equality,
+        options,
+    );
 
     let actual = commands
         .pop_front()
@@ -393,7 +420,7 @@ fn process_get_entry_during_replay(
                     result: get_eager_state_command.result.clone(),
                     name: "".to_string(),
                 },
-                context.non_deterministic_checks_ignore_payload_equality,
+                ignore_payload_equality,
             )?;
 
             let notification_result = match get_eager_state_command
@@ -421,7 +448,7 @@ fn process_get_entry_during_replay(
                     result_completion_id: completion_id,
                     name: "".to_string(),
                 },
-                context.non_deterministic_checks_ignore_payload_equality,
+                ignore_payload_equality,
             )?;
         }
         message_type => {
@@ -555,6 +582,8 @@ fn process_get_entry_keys_during_replay(
     run_state: RunState,
 ) -> Result<(State, NotificationHandle), Error> {
     let handle = async_results.create_handle_mapping(NotificationId::CompletionId(completion_id));
+    // State keys don't contain payload bytes, so we only use the global flag
+    let ignore_payload_equality = context.non_deterministic_checks_ignore_payload_equality;
 
     let actual = commands.pop_front().ok_or(UnavailableEntryError::new(
         GetLazyStateKeysCommandMessage::ty(),
@@ -572,7 +601,7 @@ fn process_get_entry_keys_during_replay(
                     value: get_eager_state_command.value.clone(),
                     name: "".to_string(),
                 },
-                context.non_deterministic_checks_ignore_payload_equality,
+                ignore_payload_equality,
             )?;
 
             let notification_result = NotificationResult::StateKeys(
@@ -597,7 +626,7 @@ fn process_get_entry_keys_during_replay(
                     result_completion_id: completion_id,
                     name: "".to_string(),
                 },
-                context.non_deterministic_checks_ignore_payload_equality,
+                ignore_payload_equality,
             )?;
         }
         message_type => {
@@ -646,7 +675,7 @@ impl TransitionAndReturn<Context, SysRun> for State {
         let (mut s, handle) = TransitionAndReturn::transition_and_return(
             self,
             context,
-            SysSimpleCompletableEntry(expected, result_completion_id),
+            SysSimpleCompletableEntry(expected, result_completion_id, PayloadOptions::default()),
         )
         .map_err(|e| e.with_related_command_metadata(context.journal.last_command_metadata()))?;
 
@@ -773,7 +802,8 @@ impl Transition<Context, ProposeRunCompletion> for State {
 
 // --- Few reusable transitions
 
-struct PopJournalEntry<M>(pub(crate) M);
+/// Wrapper for journal entry with payload options for replay checks.
+struct PopJournalEntry<M>(pub(crate) M, pub(crate) PayloadOptions);
 
 impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clone>
     TransitionAndReturn<Context, PopJournalEntry<M>> for State
@@ -783,7 +813,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
     fn transition_and_return(
         self,
         context: &mut Context,
-        PopJournalEntry(expected): PopJournalEntry<M>,
+        PopJournalEntry(expected, options): PopJournalEntry<M>,
     ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Replaying {
@@ -809,11 +839,15 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
                     }
                 };
 
+                let ignore_payload_equality = should_ignore_payload_equality(
+                    context.non_deterministic_checks_ignore_payload_equality,
+                    options,
+                );
                 check_entry_header_match(
                     context.journal.command_index(),
                     &actual,
                     &expected,
-                    context.non_deterministic_checks_ignore_payload_equality,
+                    ignore_payload_equality,
                 )?;
 
                 Ok((new_state, actual))
@@ -823,7 +857,9 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
     }
 }
 
-struct PopOrWriteJournalEntry<M>(M);
+/// Wrapper for journal entry with payload options for replay checks.
+/// Used for pop-or-write operations.
+struct PopOrWriteJournalEntry<M>(M, PayloadOptions);
 
 impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clone>
     TransitionAndReturn<Context, PopOrWriteJournalEntry<M>> for State
@@ -833,7 +869,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        PopOrWriteJournalEntry(expected): PopOrWriteJournalEntry<M>,
+        PopOrWriteJournalEntry(expected, options): PopOrWriteJournalEntry<M>,
     ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Processing {
@@ -844,7 +880,7 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
                 context.output.send(&expected);
                 Ok((self, expected))
             }
-            s => s.transition_and_return(context, PopJournalEntry(expected)),
+            s => s.transition_and_return(context, PopJournalEntry(expected, options)),
         }
     }
 }

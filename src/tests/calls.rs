@@ -3,6 +3,7 @@ use super::*;
 use crate::service_protocol::messages::send_signal_command_message::SignalId;
 use crate::service_protocol::messages::*;
 use crate::service_protocol::CANCEL_SIGNAL_ID;
+use crate::PayloadOptions;
 use crate::Value;
 use assert2::let_assert;
 use googletest::prelude::*;
@@ -30,6 +31,7 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
                         headers: Vec::new(),
                     },
                     Bytes::new(),
+                    PayloadOptions::default(),
                 )
                 .unwrap();
 
@@ -97,6 +99,7 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
                     },
                     Bytes::new(),
                     None,
+                    PayloadOptions::default(),
                 )
                 .unwrap();
 
