@@ -4,6 +4,7 @@ use crate::service_protocol::{ContentTypeError, DecodingError, MessageType};
 use crate::{Error, Version};
 use std::borrow::Cow;
 use std::fmt;
+use std::fmt::Debug;
 // Error codes
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -230,7 +231,10 @@ This typically happens when some parts of the code are non-deterministic.
     }
 }
 
-impl<M: RestateMessage + CommandMessageHeaderDiff> std::error::Error for CommandMismatchError<M> {}
+impl<M: RestateMessage + CommandMessageHeaderDiff + Debug> std::error::Error
+    for CommandMismatchError<M>
+{
+}
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Cannot convert a eager state key into UTF-8 String: {0:?}")]
