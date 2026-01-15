@@ -460,7 +460,7 @@ mod retry_policy {
                 vm.propose_run_completion(
                     handle,
                     RunExitResult::RetryableFailure {
-                        error: Error::internal("my-error"),
+                        error: Error::internal("my-error").with_stacktrace("my-stacktrace"),
                         attempt_duration,
                     },
                     retry_policy,
@@ -532,7 +532,7 @@ mod retry_policy {
                     .propose_run_completion(
                         handle,
                         RunExitResult::RetryableFailure {
-                            error: Error::internal("my-error"),
+                            error: Error::internal("my-error").with_stacktrace("my-stacktrace"),
                             attempt_duration,
                         },
                         retry_policy,
@@ -552,7 +552,8 @@ mod retry_policy {
             pat!(ErrorMessage {
                 code: eq(500),
                 message: eq("my-error".to_string()),
-                next_retry_delay: eq(next_retry_interval.map(|d| d.as_millis() as u64))
+                next_retry_delay: eq(next_retry_interval.map(|d| d.as_millis() as u64)),
+                stacktrace: eq("my-stacktrace".to_string()),
             })
         );
         assert_eq!(output.next(), None);
