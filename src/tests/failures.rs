@@ -75,65 +75,147 @@ fn explicit_error_notification() {
     assert_eq!(output.next(), None);
 }
 
-#[test]
-fn get_lazy_state_entry_mismatch() {
-    test_entry_mismatch_on_replay(
-        GetLazyStateCommandMessage {
-            key: Bytes::from_static(b"my-key"),
-            result_completion_id: 1,
-            ..Default::default()
-        },
-        GetLazyStateCommandMessage {
-            key: Bytes::from_static(b"another-key"),
-            result_completion_id: 1,
-            ..Default::default()
-        },
-        |vm| vm.sys_state_get("another-key".to_owned(), PayloadOptions::default()),
-    );
-}
+mod journal_mismatch {
+    use super::*;
+    use test_log::test;
 
-#[test]
-fn one_way_call_entry_mismatch() {
-    test_entry_mismatch_on_replay(
-        OneWayCallCommandMessage {
-            service_name: "greeter".to_owned(),
-            handler_name: "greet".to_owned(),
-            key: "my-key".to_owned(),
-            parameter: Bytes::from_static(b"123"),
-            invocation_id_notification_idx: 1,
-            ..Default::default()
-        },
-        OneWayCallCommandMessage {
-            service_name: "greeter".to_owned(),
-            handler_name: "greet".to_owned(),
-            key: "my-key".to_owned(),
-            parameter: Bytes::from_static(b"456"),
-            invocation_id_notification_idx: 1,
-            ..Default::default()
-        },
-        |vm| {
-            vm.sys_send(
-                Target {
-                    service: "greeter".to_owned(),
-                    handler: "greet".to_owned(),
-                    key: Some("my-key".to_owned()),
-                    idempotency_key: None,
-                    headers: Vec::new(),
-                },
-                Bytes::from_static(b"456"),
-                None,
-                PayloadOptions::default(),
+    #[test]
+    fn get_lazy_state_mismatch() {
+        expect_mismatch_on_replay(
+            GetLazyStateCommandMessage {
+                key: Bytes::from_static(b"my-key"),
+                result_completion_id: 1,
+                ..Default::default()
+            },
+            GetLazyStateCommandMessage {
+                key: Bytes::from_static(b"another-key"),
+                result_completion_id: 1,
+                ..Default::default()
+            },
+            |vm| vm.sys_state_get("another-key".to_owned(), PayloadOptions::default()),
+        );
+    }
+
+    #[test]
+    fn set_state_mismatch() {
+        expect_mismatch_on_replay(
+            SetStateCommandMessage {
+                key: Bytes::from_static(b"my-key"),
+                value: Some(messages::Value {
+                    content: Bytes::from_static(b"my-value"),
+                }),
+                ..Default::default()
+            },
+            SetStateCommandMessage {
+                key: Bytes::from_static(b"my-key"),
+                value: Some(messages::Value {
+                    content: Bytes::from_static(b"another-value"),
+                }),
+                ..Default::default()
+            },
+            |vm| {
+                vm.sys_state_set(
+                    "my-key".to_owned(),
+                    Bytes::from_static(b"another-value"),
+                    PayloadOptions::default(),
+                )
+            },
+        );
+    }
+
+    #[test]
+    fn one_way_call_mismatch() {
+        expect_mismatch_on_replay(
+            OneWayCallCommandMessage {
+                service_name: "greeter".to_owned(),
+                handler_name: "greet".to_owned(),
+                key: "my-key".to_owned(),
+                parameter: Bytes::from_static(b"123"),
+                invocation_id_notification_idx: 1,
+                ..Default::default()
+            },
+            OneWayCallCommandMessage {
+                service_name: "greeter".to_owned(),
+                handler_name: "greet".to_owned(),
+                key: "my-key".to_owned(),
+                parameter: Bytes::from_static(b"456"),
+                invocation_id_notification_idx: 1,
+                ..Default::default()
+            },
+            |vm| {
+                vm.sys_send(
+                    Target {
+                        service: "greeter".to_owned(),
+                        handler: "greet".to_owned(),
+                        key: Some("my-key".to_owned()),
+                        idempotency_key: None,
+                        headers: Vec::new(),
+                    },
+                    Bytes::from_static(b"456"),
+                    None,
+                    PayloadOptions::default(),
+                )
+            },
+        );
+    }
+
+    fn expect_mismatch_on_replay<
+        M: RestateMessage + CommandMessageHeaderDiff + Clone,
+        T: fmt::Debug,
+    >(
+        expected: M,
+        actual: M,
+        user_code: impl FnOnce(&mut CoreVM) -> Result<T, Error>,
+    ) {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 2,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .input(expected.clone())
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                let expected_error = Error::from(vm::errors::CommandMismatchError::new(
+                    1,
+                    expected.clone(),
+                    actual.clone(),
+                ))
+                .with_related_command_metadata(CommandMetadata::new(1, M::ty()));
+                assert_that!(user_code(vm), err(eq(expected_error)));
+            });
+
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            error_message_as_error(
+                vm::errors::CommandMismatchError::new(1, expected, actual).into()
             )
-        },
-    );
-}
+        );
+        assert_eq!(output.next(), None);
+    }
 
-#[test]
-fn payload_unstable_options_skip_payload_equality_when_current_side_marked() {
-    // When SDK marks the current call with unstable serialization,
-    // payload equality check is skipped (we trust the SDK).
-    let mut output = VMTestCase::new()
-        .input(start_message(2))
+    #[test]
+    fn disable_non_deterministic_payload_checks_on_vm() {
+        let mut output = VMTestCase::with_vm_options(VMOptions {
+            non_determinism_checks: NonDeterministicChecksOption::PayloadChecksDisabled,
+            ..VMOptions::default()
+        })
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 5,
+            partial_state: true,
+            state_map: vec![StateEntry {
+                key: Bytes::from_static(b"STATE"),
+                // NOTE: this is different payload than the one recorded in the entry!
+                value: Bytes::from_static(b"456"),
+            }],
+            ..Default::default()
+        })
         .input(input_entry_message(b"my-data"))
         .input(OneWayCallCommandMessage {
             service_name: "greeter".to_owned(),
@@ -143,265 +225,15 @@ fn payload_unstable_options_skip_payload_equality_when_current_side_marked() {
             invocation_id_notification_idx: 1,
             ..Default::default()
         })
-        .run(|vm| {
-            vm.sys_input().unwrap();
-
-            vm.sys_send(
-                Target {
-                    service: "greeter".to_owned(),
-                    handler: "greet".to_owned(),
-                    key: Some("my-key".to_owned()),
-                    idempotency_key: None,
-                    headers: Vec::new(),
-                },
-                // Different bytes than recorded, but current side is flagged.
-                Bytes::from_static(b"456"),
-                None,
-                PayloadOptions::unstable(),
-            )
-            .unwrap();
-
-            vm.sys_end().unwrap();
-        });
-
-    assert_eq!(
-        output.next_decoded::<EndMessage>().unwrap(),
-        EndMessage::default()
-    );
-    assert_eq!(output.next(), None);
-}
-
-#[test]
-fn payload_unstable_options_do_not_skip_when_not_marked() {
-    // When SDK does NOT mark the current call with unstable serialization,
-    // payload equality check is performed.
-    test_entry_mismatch_on_replay(
-        OneWayCallCommandMessage {
-            service_name: "greeter".to_owned(),
-            handler_name: "greet".to_owned(),
-            key: "my-key".to_owned(),
-            parameter: Bytes::from_static(b"123"),
-            invocation_id_notification_idx: 1,
-            ..Default::default()
-        },
-        OneWayCallCommandMessage {
-            service_name: "greeter".to_owned(),
-            handler_name: "greet".to_owned(),
-            key: "my-key".to_owned(),
-            parameter: Bytes::from_static(b"456"),
-            invocation_id_notification_idx: 1,
-            ..Default::default()
-        },
-        |vm| {
-            // Uses the default API -> stable serialization on the "current" entry.
-            vm.sys_send(
-                Target {
-                    service: "greeter".to_owned(),
-                    handler: "greet".to_owned(),
-                    key: Some("my-key".to_owned()),
-                    idempotency_key: None,
-                    headers: Vec::new(),
-                },
-                Bytes::from_static(b"456"),
-                None,
-                PayloadOptions::default(),
-            )
-        },
-    );
-}
-
-fn test_entry_mismatch_on_replay<
-    M: RestateMessage + CommandMessageHeaderDiff + Clone,
-    T: fmt::Debug,
->(
-    expected: M,
-    actual: M,
-    user_code: impl FnOnce(&mut CoreVM) -> Result<T, Error>,
-) {
-    let mut output = VMTestCase::new()
-        .input(StartMessage {
-            id: Bytes::from_static(b"123"),
-            debug_id: "123".to_string(),
-            known_entries: 2,
-            partial_state: true,
-            ..Default::default()
-        })
-        .input(input_entry_message(b"my-data"))
-        .input(expected.clone())
-        .run(|vm| {
-            vm.sys_input().unwrap();
-
-            let expected_error = Error::from(vm::errors::CommandMismatchError::new(
-                1,
-                expected.clone(),
-                actual.clone(),
-            ))
-            .with_related_command_metadata(CommandMetadata::new(1, M::ty()));
-            assert_that!(user_code(vm), err(eq(expected_error)));
-        });
-
-    assert_that!(
-        output.next_decoded::<ErrorMessage>().unwrap(),
-        error_message_as_error(vm::errors::CommandMismatchError::new(1, expected, actual).into())
-    );
-    assert_eq!(output.next(), None);
-}
-
-#[test]
-fn disable_non_deterministic_payload_checks() {
-    let mut output = VMTestCase::with_vm_options(VMOptions {
-        non_determinism_checks: NonDeterministicChecksOption::PayloadChecksDisabled,
-        ..VMOptions::default()
-    })
-    .input(StartMessage {
-        id: Bytes::from_static(b"123"),
-        debug_id: "123".to_string(),
-        known_entries: 5,
-        partial_state: true,
-        state_map: vec![StateEntry {
-            key: Bytes::from_static(b"STATE"),
-            // NOTE: this is different payload than the one recorded in the entry!
-            value: Bytes::from_static(b"456"),
-        }],
-        ..Default::default()
-    })
-    .input(input_entry_message(b"my-data"))
-    .input(OneWayCallCommandMessage {
-        service_name: "greeter".to_owned(),
-        handler_name: "greet".to_owned(),
-        key: "my-key".to_owned(),
-        parameter: Bytes::from_static(b"123"),
-        invocation_id_notification_idx: 1,
-        ..Default::default()
-    })
-    .input(CallCommandMessage {
-        service_name: "greeter".to_owned(),
-        handler_name: "greet".to_owned(),
-        key: "my-key".to_owned(),
-        parameter: Bytes::from_static(b"123"),
-        invocation_id_notification_idx: 2,
-        result_completion_id: 3,
-        ..Default::default()
-    })
-    .input(SetStateCommandMessage {
-        key: Bytes::from_static(b"my-key"),
-        value: Some(messages::Value {
-            content: Bytes::from_static(b"123"),
-        }),
-        ..Default::default()
-    })
-    .input(GetEagerStateCommandMessage {
-        key: Bytes::from_static(b"STATE"),
-        result: Some(messages::get_eager_state_command_message::Result::Value(
-            messages::Value {
-                content: Bytes::from_static(b"123"),
-            },
-        )),
-        ..Default::default()
-    })
-    .run(|vm| {
-        vm.sys_input().unwrap();
-
-        vm.sys_send(
-            Target {
-                service: "greeter".to_owned(),
-                handler: "greet".to_owned(),
-                key: Some("my-key".to_owned()),
-                idempotency_key: None,
-                headers: Vec::new(),
-            },
-            // NOTE: this is different payload!
-            Bytes::from_static(b"456"),
-            None,
-            PayloadOptions::default(),
-        )
-        .unwrap();
-
-        vm.sys_call(
-            Target {
-                service: "greeter".to_owned(),
-                handler: "greet".to_owned(),
-                key: Some("my-key".to_owned()),
-                idempotency_key: None,
-                headers: Vec::new(),
-            },
-            // NOTE: this is different payload!
-            Bytes::from_static(b"456"),
-            PayloadOptions::default(),
-        )
-        .unwrap();
-
-        vm.sys_state_set(
-            "my-key".to_owned(),
-            // NOTE: this is different payload!
-            Bytes::from_static(b"456"),
-            PayloadOptions::default(),
-        )
-        .unwrap();
-
-        vm.sys_state_get("STATE".to_owned(), PayloadOptions::default())
-            .unwrap();
-
-        vm.sys_end().unwrap();
-    });
-
-    assert_eq!(
-        output.next_decoded::<EndMessage>().unwrap(),
-        EndMessage::default()
-    );
-    assert_eq!(output.next(), None);
-}
-
-// Tests for PayloadOptions::unstable() on different operations
-
-#[test]
-fn payload_unstable_options_skip_payload_equality_for_call() {
-    // sys_call with PayloadOptions::unstable() should skip payload check
-    let mut output = VMTestCase::new()
-        .input(start_message(2))
-        .input(input_entry_message(b"my-data"))
         .input(CallCommandMessage {
             service_name: "greeter".to_owned(),
             handler_name: "greet".to_owned(),
             key: "my-key".to_owned(),
             parameter: Bytes::from_static(b"123"),
-            invocation_id_notification_idx: 1,
-            result_completion_id: 2,
+            invocation_id_notification_idx: 2,
+            result_completion_id: 3,
             ..Default::default()
         })
-        .run(|vm| {
-            vm.sys_input().unwrap();
-
-            vm.sys_call(
-                Target {
-                    service: "greeter".to_owned(),
-                    handler: "greet".to_owned(),
-                    key: Some("my-key".to_owned()),
-                    idempotency_key: None,
-                    headers: Vec::new(),
-                },
-                // Different bytes than recorded, but marked as unstable.
-                Bytes::from_static(b"456"),
-                PayloadOptions::unstable(),
-            )
-            .unwrap();
-
-            vm.sys_end().unwrap();
-        });
-
-    assert_eq!(
-        output.next_decoded::<EndMessage>().unwrap(),
-        EndMessage::default()
-    );
-    assert_eq!(output.next(), None);
-}
-
-#[test]
-fn payload_unstable_options_skip_payload_equality_for_state_set() {
-    // sys_state_set with PayloadOptions::unstable() should skip payload check
-    let mut output = VMTestCase::new()
-        .input(start_message(2))
-        .input(input_entry_message(b"my-data"))
         .input(SetStateCommandMessage {
             key: Bytes::from_static(b"my-key"),
             value: Some(messages::Value {
@@ -409,47 +241,8 @@ fn payload_unstable_options_skip_payload_equality_for_state_set() {
             }),
             ..Default::default()
         })
-        .run(|vm| {
-            vm.sys_input().unwrap();
-
-            vm.sys_state_set(
-                "my-key".to_owned(),
-                // Different bytes than recorded, but marked as unstable.
-                Bytes::from_static(b"456"),
-                PayloadOptions::unstable(),
-            )
-            .unwrap();
-
-            vm.sys_end().unwrap();
-        });
-
-    assert_eq!(
-        output.next_decoded::<EndMessage>().unwrap(),
-        EndMessage::default()
-    );
-    assert_eq!(output.next(), None);
-}
-
-#[test]
-fn payload_unstable_options_skip_payload_equality_for_state_get() {
-    // sys_state_get with PayloadOptions::unstable() should skip payload check
-    // when replaying GetEagerStateCommand with different value
-    let mut output = VMTestCase::new()
-        .input(StartMessage {
-            id: Bytes::from_static(b"123"),
-            debug_id: "123".to_string(),
-            known_entries: 2,
-            partial_state: false,
-            state_map: vec![StateEntry {
-                key: Bytes::from_static(b"my-key"),
-                // This is the "current" value, different from recorded
-                value: Bytes::from_static(b"456"),
-            }],
-            ..Default::default()
-        })
-        .input(input_entry_message(b"my-data"))
         .input(GetEagerStateCommandMessage {
-            key: Bytes::from_static(b"my-key"),
+            key: Bytes::from_static(b"STATE"),
             result: Some(messages::get_eager_state_command_message::Result::Value(
                 messages::Value {
                     content: Bytes::from_static(b"123"),
@@ -460,119 +253,321 @@ fn payload_unstable_options_skip_payload_equality_for_state_get() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            // With unstable serialization, different payload should be accepted
-            vm.sys_state_get("my-key".to_owned(), PayloadOptions::unstable())
+            vm.sys_send(
+                Target {
+                    service: "greeter".to_owned(),
+                    handler: "greet".to_owned(),
+                    key: Some("my-key".to_owned()),
+                    idempotency_key: None,
+                    headers: Vec::new(),
+                },
+                // NOTE: this is different payload!
+                Bytes::from_static(b"456"),
+                None,
+                PayloadOptions::default(),
+            )
+            .unwrap();
+
+            vm.sys_call(
+                Target {
+                    service: "greeter".to_owned(),
+                    handler: "greet".to_owned(),
+                    key: Some("my-key".to_owned()),
+                    idempotency_key: None,
+                    headers: Vec::new(),
+                },
+                // NOTE: this is different payload!
+                Bytes::from_static(b"456"),
+                PayloadOptions::default(),
+            )
+            .unwrap();
+
+            vm.sys_state_set(
+                "my-key".to_owned(),
+                // NOTE: this is different payload!
+                Bytes::from_static(b"456"),
+                PayloadOptions::default(),
+            )
+            .unwrap();
+
+            vm.sys_state_get("STATE".to_owned(), PayloadOptions::default())
                 .unwrap();
 
             vm.sys_end().unwrap();
         });
 
-    assert_eq!(
-        output.next_decoded::<EndMessage>().unwrap(),
-        EndMessage::default()
-    );
-    assert_eq!(output.next(), None);
-}
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
 
-#[test]
-fn payload_unstable_options_skip_payload_equality_for_complete_promise() {
-    // sys_complete_promise with PayloadOptions::unstable() should skip payload check
-    let mut output = VMTestCase::new()
-        .input(start_message(2))
-        .input(input_entry_message(b"my-data"))
-        .input(CompletePromiseCommandMessage {
-            key: "my-prom".to_owned(),
-            result_completion_id: 1,
-            completion: Some(
-                complete_promise_command_message::Completion::CompletionValue(
-                    Bytes::from_static(b"123").into(),
+    // Tests for PayloadOptions::unstable() on different operations
+
+    #[test]
+    fn one_way_call_with_unstable_payload() {
+        // When SDK marks the current call with unstable serialization,
+        // payload equality check is skipped (we trust the SDK).
+        let mut output = VMTestCase::new()
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(OneWayCallCommandMessage {
+                service_name: "greeter".to_owned(),
+                handler_name: "greet".to_owned(),
+                key: "my-key".to_owned(),
+                parameter: Bytes::from_static(b"123"),
+                invocation_id_notification_idx: 1,
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                vm.sys_send(
+                    Target {
+                        service: "greeter".to_owned(),
+                        handler: "greet".to_owned(),
+                        key: Some("my-key".to_owned()),
+                        idempotency_key: None,
+                        headers: Vec::new(),
+                    },
+                    // Different bytes than recorded, but current side is flagged.
+                    Bytes::from_static(b"456"),
+                    None,
+                    PayloadOptions::unstable(),
+                )
+                .unwrap();
+
+                vm.sys_end().unwrap();
+            });
+
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn call_with_unstable_payload() {
+        // sys_call with PayloadOptions::unstable() should skip payload check
+        let mut output = VMTestCase::new()
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(CallCommandMessage {
+                service_name: "greeter".to_owned(),
+                handler_name: "greet".to_owned(),
+                key: "my-key".to_owned(),
+                parameter: Bytes::from_static(b"123"),
+                invocation_id_notification_idx: 1,
+                result_completion_id: 2,
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                vm.sys_call(
+                    Target {
+                        service: "greeter".to_owned(),
+                        handler: "greet".to_owned(),
+                        key: Some("my-key".to_owned()),
+                        idempotency_key: None,
+                        headers: Vec::new(),
+                    },
+                    // Different bytes than recorded, but marked as unstable.
+                    Bytes::from_static(b"456"),
+                    PayloadOptions::unstable(),
+                )
+                .unwrap();
+
+                vm.sys_end().unwrap();
+            });
+
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn set_state_with_unstable_payload() {
+        // sys_state_set with PayloadOptions::unstable() should skip payload check
+        let mut output = VMTestCase::new()
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(SetStateCommandMessage {
+                key: Bytes::from_static(b"my-key"),
+                value: Some(messages::Value {
+                    content: Bytes::from_static(b"123"),
+                }),
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                vm.sys_state_set(
+                    "my-key".to_owned(),
+                    // Different bytes than recorded, but marked as unstable.
+                    Bytes::from_static(b"456"),
+                    PayloadOptions::unstable(),
+                )
+                .unwrap();
+
+                vm.sys_end().unwrap();
+            });
+
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn get_eager_state_with_unstable_payload() {
+        // sys_state_get with PayloadOptions::unstable() should skip payload check
+        // when replaying GetEagerStateCommand with different value
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 2,
+                partial_state: false,
+                state_map: vec![StateEntry {
+                    key: Bytes::from_static(b"my-key"),
+                    // This is the "current" value, different from recorded
+                    value: Bytes::from_static(b"456"),
+                }],
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .input(GetEagerStateCommandMessage {
+                key: Bytes::from_static(b"my-key"),
+                result: Some(messages::get_eager_state_command_message::Result::Value(
+                    messages::Value {
+                        content: Bytes::from_static(b"123"),
+                    },
+                )),
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                // With unstable serialization, different payload should be accepted
+                vm.sys_state_get("my-key".to_owned(), PayloadOptions::unstable())
+                    .unwrap();
+
+                vm.sys_end().unwrap();
+            });
+
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn complete_promise_with_unstable_payload() {
+        // sys_complete_promise with PayloadOptions::unstable() should skip payload check
+        let mut output = VMTestCase::new()
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(CompletePromiseCommandMessage {
+                key: "my-prom".to_owned(),
+                result_completion_id: 1,
+                completion: Some(
+                    complete_promise_command_message::Completion::CompletionValue(
+                        Bytes::from_static(b"123").into(),
+                    ),
                 ),
-            ),
-            ..Default::default()
-        })
-        .run(|vm| {
-            vm.sys_input().unwrap();
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
 
-            vm.sys_complete_promise(
-                "my-prom".to_owned(),
-                // Different bytes than recorded, but marked as unstable.
-                NonEmptyValue::Success(Bytes::from_static(b"456")),
-                PayloadOptions::unstable(),
-            )
-            .unwrap();
+                vm.sys_complete_promise(
+                    "my-prom".to_owned(),
+                    // Different bytes than recorded, but marked as unstable.
+                    NonEmptyValue::Success(Bytes::from_static(b"456")),
+                    PayloadOptions::unstable(),
+                )
+                .unwrap();
 
-            vm.sys_end().unwrap();
-        });
+                vm.sys_end().unwrap();
+            });
 
-    assert_eq!(
-        output.next_decoded::<EndMessage>().unwrap(),
-        EndMessage::default()
-    );
-    assert_eq!(output.next(), None);
-}
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
 
-#[test]
-fn payload_unstable_options_skip_payload_equality_for_complete_awakeable() {
-    // sys_complete_awakeable with PayloadOptions::unstable() should skip payload check
-    let mut output = VMTestCase::new()
-        .input(start_message(2))
-        .input(input_entry_message(b"my-data"))
-        .input(CompleteAwakeableCommandMessage {
-            awakeable_id: "awk-123".to_owned(),
-            result: Some(complete_awakeable_command_message::Result::Value(
-                Bytes::from_static(b"123").into(),
-            )),
-            ..Default::default()
-        })
-        .run(|vm| {
-            vm.sys_input().unwrap();
+    #[test]
+    fn complete_awakeable_with_unstable_payload() {
+        // sys_complete_awakeable with PayloadOptions::unstable() should skip payload check
+        let mut output = VMTestCase::new()
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(CompleteAwakeableCommandMessage {
+                awakeable_id: "awk-123".to_owned(),
+                result: Some(complete_awakeable_command_message::Result::Value(
+                    Bytes::from_static(b"123").into(),
+                )),
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
 
-            vm.sys_complete_awakeable(
-                "awk-123".to_owned(),
-                // Different bytes than recorded, but marked as unstable.
-                NonEmptyValue::Success(Bytes::from_static(b"456")),
-                PayloadOptions::unstable(),
-            )
-            .unwrap();
+                vm.sys_complete_awakeable(
+                    "awk-123".to_owned(),
+                    // Different bytes than recorded, but marked as unstable.
+                    NonEmptyValue::Success(Bytes::from_static(b"456")),
+                    PayloadOptions::unstable(),
+                )
+                .unwrap();
 
-            vm.sys_end().unwrap();
-        });
+                vm.sys_end().unwrap();
+            });
 
-    assert_eq!(
-        output.next_decoded::<EndMessage>().unwrap(),
-        EndMessage::default()
-    );
-    assert_eq!(output.next(), None);
-}
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
 
-#[test]
-fn payload_unstable_options_skip_payload_equality_for_write_output() {
-    // sys_write_output with PayloadOptions::unstable() should skip payload check
-    let mut output = VMTestCase::new()
-        .input(start_message(2))
-        .input(input_entry_message(b"my-data"))
-        .input(OutputCommandMessage {
-            result: Some(output_command_message::Result::Value(
-                Bytes::from_static(b"123").into(),
-            )),
-            ..Default::default()
-        })
-        .run(|vm| {
-            vm.sys_input().unwrap();
+    #[test]
+    fn write_output_with_unstable_payload() {
+        // sys_write_output with PayloadOptions::unstable() should skip payload check
+        let mut output = VMTestCase::new()
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(OutputCommandMessage {
+                result: Some(output_command_message::Result::Value(
+                    Bytes::from_static(b"123").into(),
+                )),
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
 
-            vm.sys_write_output(
-                // Different bytes than recorded, but marked as unstable.
-                NonEmptyValue::Success(Bytes::from_static(b"456")),
-                PayloadOptions::unstable(),
-            )
-            .unwrap();
+                vm.sys_write_output(
+                    // Different bytes than recorded, but marked as unstable.
+                    NonEmptyValue::Success(Bytes::from_static(b"456")),
+                    PayloadOptions::unstable(),
+                )
+                .unwrap();
 
-            vm.sys_end().unwrap();
-        });
+                vm.sys_end().unwrap();
+            });
 
-    assert_eq!(
-        output.next_decoded::<EndMessage>().unwrap(),
-        EndMessage::default()
-    );
-    assert_eq!(output.next(), None);
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
 }
