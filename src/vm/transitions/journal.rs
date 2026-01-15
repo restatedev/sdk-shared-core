@@ -742,7 +742,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
                         propose_run_completion_message::Result::Failure(f.into())
                     }
                     RunExitResult::RetryableFailure {
-                        error,
+                        mut error,
                         attempt_duration,
                     } => {
                         let mut retry_info = if processing_first_entry {
@@ -755,7 +755,6 @@ impl Transition<Context, ProposeRunCompletion> for State {
 
                         match retry_policy.next_retry(retry_info) {
                             NextRetry::Retry(next_retry_interval) => {
-                                let mut error = Error::new(error.code, error.message);
                                 error.next_retry_delay = next_retry_interval;
                                 error.related_command = Some(CommandMetadata::new_named(
                                     run_name,
