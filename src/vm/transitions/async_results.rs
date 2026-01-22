@@ -1,4 +1,7 @@
+use crate::error::CommandMetadata;
+use crate::service_protocol::MessageType;
 use crate::vm::context::Context;
+use crate::vm::errors::AwaitedRunDuringReplay;
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{DoProgressResponse, Error, NotificationHandle, Value};
@@ -19,6 +22,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
         match self {
             State::Replaying {
                 ref mut async_results,
+                ref mut run_state,
                 ..
             } => {
                 // Check first if any was completed already
@@ -30,7 +34,8 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                     return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
                 }
 
-                let notification_ids = async_results.resolve_notification_handles(awaiting_on);
+                let notification_ids =
+                    async_results.resolve_notification_handles(awaiting_on.clone());
                 if notification_ids.is_empty() {
                     // This can happen if `do_progress` was called while the SDK has all the results already.
                     return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
@@ -44,6 +49,19 @@ impl TransitionAndReturn<Context, DoProgress> for State {
 
                 // Check suspension condition
                 if context.input_is_closed {
+                    // If we need to suspend, but there is at least one run to execute,
+                    // We couldn't find any notification for the given ids, let's check if there's some run to execute
+                    if let Some((run_name, run_command_index)) =
+                        run_state.any_to_execute(&awaiting_on.iter().cloned().collect())
+                    {
+                        return Err(Error::from(AwaitedRunDuringReplay)
+                            .with_related_command_metadata(CommandMetadata::new_named(
+                                run_name,
+                                run_command_index,
+                                MessageType::RunCommand,
+                            )));
+                    }
+
                     let state = self.transition(context, HitSuspensionPoint(notification_ids))?;
                     return Ok((state, Err(Suspended)));
                 };

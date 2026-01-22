@@ -233,6 +233,11 @@ This typically happens when some parts of the code are non-deterministic.
 impl<M: RestateMessage + CommandMessageHeaderDiff> std::error::Error for CommandMismatchError<M> {}
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[error("Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.\n\
+Awaiting a 'run' during replay with no recorded result. This usually means you added 'await' before a 'run' call, changing it from fire-and-forget to awaited, without registering a new service revision.")]
+pub struct AwaitedRunDuringReplay;
+
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("Cannot convert a eager state key into UTF-8 String: {0:?}")]
 pub struct BadEagerStateKeyError(#[from] pub(crate) std::string::FromUtf8Error);
 
@@ -301,6 +306,7 @@ impl_error_code!(UnavailableEntryError, PROTOCOL_VIOLATION);
 impl_error_code!(UnexpectedStateError, PROTOCOL_VIOLATION);
 impl_error_code!(ClosedError, CLOSED);
 impl_error_code!(CommandTypeMismatchError, JOURNAL_MISMATCH);
+impl_error_code!(AwaitedRunDuringReplay, JOURNAL_MISMATCH);
 impl<M: RestateMessage + CommandMessageHeaderDiff> WithInvocationErrorCode
     for CommandMismatchError<M>
 {

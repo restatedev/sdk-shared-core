@@ -3,7 +3,8 @@ use super::*;
 use crate::service_protocol::messages::{
     propose_run_completion_message, run_completion_notification_message, EndMessage, ErrorMessage,
     Failure, OutputCommandMessage, ProposeRunCompletionMessage, RunCommandMessage,
-    RunCompletionNotificationMessage, StartMessage, SuspensionMessage,
+    RunCompletionNotificationMessage, SleepCommandMessage, SleepCompletionNotificationMessage,
+    StartMessage, SuspensionMessage,
 };
 use crate::PayloadOptions;
 use assert2::let_assert;
@@ -339,6 +340,89 @@ fn replay_without_completion() {
     assert_that!(
         output.next_decoded::<SuspensionMessage>().unwrap(),
         suspended_waiting_completion(1)
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn replay_without_completion_with_any() {
+    let mut output = VMTestCase::new()
+        .input(start_message(5))
+        .input(input_entry_message(b"my-data"))
+        .input(RunCommandMessage {
+            result_completion_id: 1,
+            name: "my-side-effect".to_owned(),
+        })
+        .input(SleepCommandMessage {
+            wake_up_time: 0,
+            result_completion_id: 2,
+            ..Default::default()
+        })
+        .input(SleepCommandMessage {
+            wake_up_time: 0,
+            result_completion_id: 3,
+            ..Default::default()
+        })
+        .input(SleepCompletionNotificationMessage {
+            completion_id: 2,
+            void: Some(Default::default()),
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            let run_handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let first_sleep_handle = vm
+                .sys_sleep(Default::default(), Duration::ZERO, None)
+                .unwrap();
+
+            // await any(run, first_sleep), we're still replaying here!
+            assert_eq!(
+                vm.do_progress(vec![run_handle, first_sleep_handle])
+                    .unwrap(),
+                DoProgressResponse::AnyCompleted
+            );
+            assert!(vm.is_replaying());
+
+            // Now we try to run!
+            let second_sleep_handle = vm
+                .sys_sleep(Default::default(), Duration::ZERO, None)
+                .unwrap();
+            assert!(vm.is_processing());
+            assert_that!(
+                vm.do_progress(vec![run_handle, second_sleep_handle]),
+                ok(eq(DoProgressResponse::ExecuteRun(run_handle)))
+            );
+
+            vm.propose_run_completion(
+                run_handle,
+                RunExitResult::Success(Bytes::from_static(b"123")),
+                RetryPolicy::default(),
+            )
+            .unwrap();
+
+            assert_that!(
+                vm.do_progress(vec![run_handle, second_sleep_handle]),
+                err(is_suspended())
+            );
+        });
+
+    assert_eq!(
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap(),
+        ProposeRunCompletionMessage {
+            result_completion_id: 1,
+            result: Some(propose_run_completion_message::Result::Value(
+                Bytes::from_static(b"123")
+            )),
+        }
+    );
+    assert_that!(
+        output.next_decoded::<SuspensionMessage>().unwrap(),
+        pat!(SuspensionMessage {
+            waiting_completions: unordered_elements_are![eq(1), eq(3)],
+            waiting_signals: eq(vec![1])
+        })
     );
     assert_eq!(output.next(), None);
 }

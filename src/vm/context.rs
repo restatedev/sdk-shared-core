@@ -341,6 +341,18 @@ impl RunState {
         })
     }
 
+    pub fn any_to_execute(
+        &self,
+        any_handle: &HashSet<NotificationHandle>,
+    ) -> Option<(String, u32)> {
+        if let Some((_, run)) = self.0.iter().find(|(handle, run)| {
+            run.state == RunStateInner::ToExecute && any_handle.contains(handle)
+        }) {
+            return Some((run.command_name.clone(), run.command_index));
+        }
+        None
+    }
+
     pub fn notify_execution_completed(&mut self, executed: NotificationHandle) -> (String, u32) {
         let run = self
             .0

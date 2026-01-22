@@ -77,6 +77,9 @@ fn explicit_error_notification() {
 
 mod journal_mismatch {
     use super::*;
+    use crate::service_protocol::messages::{
+        RunCommandMessage, SleepCommandMessage, SleepCompletionNotificationMessage,
+    };
     use test_log::test;
 
     #[test]
@@ -567,6 +570,57 @@ mod journal_mismatch {
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
             EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn add_await_run_after_progress_was_made() {
+        let expected_error =
+            Error::from(vm::errors::AwaitedRunDuringReplay).with_related_command_metadata(
+                CommandMetadata::new_named("my-side-effect", 1, MessageType::RunCommand),
+            );
+
+        let mut output = VMTestCase::new()
+            .input(start_message(4))
+            .input(input_entry_message(b"my-data"))
+            // We have a run
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_owned(),
+            })
+            // Then we have a sleep that is already completed
+            .input(SleepCommandMessage {
+                wake_up_time: 0,
+                result_completion_id: 2,
+                ..Default::default()
+            })
+            .input(SleepCompletionNotificationMessage {
+                completion_id: 2,
+                void: Some(Default::default()),
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                let run_handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+
+                // On await, this is the expected error
+                assert_that!(
+                    vm.do_progress(vec![run_handle]),
+                    err(eq(expected_error.clone()))
+                );
+            });
+
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            all!(
+                error_message_as_error(expected_error),
+                pat!(ErrorMessage {
+                    related_command_type: eq(Some(u16::from(MessageType::RunCommand) as u32)),
+                    related_command_index: eq(Some(1)),
+                    related_command_name: eq(Some("my-side-effect".to_owned())),
+                })
+            )
         );
         assert_eq!(output.next(), None);
     }
