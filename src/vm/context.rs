@@ -238,11 +238,11 @@ impl AsyncResultsState {
 
     pub(crate) fn resolve_notification_handles(
         &self,
-        handles: Vec<NotificationHandle>,
+        handles: &[NotificationHandle],
     ) -> HashSet<NotificationId> {
         handles
-            .into_iter()
-            .filter_map(|h| self.handle_mapping.get(&h).cloned())
+            .iter()
+            .filter_map(|h| self.handle_mapping.get(h).cloned())
             .collect()
     }
 
@@ -333,24 +333,18 @@ impl RunState {
         None
     }
 
+    pub fn get_run_info(&self, handle: &NotificationHandle) -> Option<(u32, &str)> {
+        self.0
+            .get(handle)
+            .map(|run| (run.command_index, run.command_name.as_str()))
+    }
+
     pub fn any_executing(&self, any_handle: &[NotificationHandle]) -> bool {
         any_handle.iter().any(|h| {
             self.0
                 .get(h)
                 .is_some_and(|r| r.state == RunStateInner::Executing)
         })
-    }
-
-    pub fn any_to_execute(
-        &self,
-        any_handle: &HashSet<NotificationHandle>,
-    ) -> Option<(String, u32)> {
-        if let Some((_, run)) = self.0.iter().find(|(handle, run)| {
-            run.state == RunStateInner::ToExecute && any_handle.contains(handle)
-        }) {
-            return Some((run.command_name.clone(), run.command_index));
-        }
-        None
     }
 
     pub fn notify_execution_completed(&mut self, executed: NotificationHandle) -> (String, u32) {

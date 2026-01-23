@@ -52,6 +52,23 @@ impl CommandMetadata {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) enum NotificationMetadata {
+    RelatedToCommand(CommandMetadata),
+    Awakeable(String),
+    Cancellation,
+}
+
+impl fmt::Display for NotificationMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NotificationMetadata::RelatedToCommand(cmd) => write!(f, "{}", cmd),
+            NotificationMetadata::Awakeable(awk_id) => write!(f, "Awakeable {}", awk_id),
+            NotificationMetadata::Cancellation => write!(f, "Cancellation"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Error {
     pub(crate) code: u16,
     pub(crate) message: Cow<'static, str>,

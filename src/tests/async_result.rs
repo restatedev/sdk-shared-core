@@ -512,3 +512,76 @@ mod reverse_await_order {
         assert_eq!(output.next(), None);
     }
 }
+
+mod combinators {
+    use super::*;
+
+    use test_log::test;
+
+    #[test]
+    fn replay_with_combinator_and_entry_afterwards() {
+        let mut output = VMTestCase::new()
+            .input(start_message(5))
+            .input(input_entry_message(b"my-data"))
+            // Two sleep are created
+            .input(SleepCommandMessage {
+                wake_up_time: 0,
+                result_completion_id: 1,
+                ..Default::default()
+            })
+            .input(SleepCommandMessage {
+                wake_up_time: 0,
+                result_completion_id: 2,
+                ..Default::default()
+            })
+            // Only one of them completes
+            .input(SleepCompletionNotificationMessage {
+                completion_id: 2,
+                void: Some(Default::default()),
+            })
+            // Another sleep here
+            .input(SleepCommandMessage {
+                wake_up_time: 0,
+                result_completion_id: 3,
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                // Simulating the user code should be:
+                //
+                // val a = sleep()
+                // val b = sleep()
+                // await any(a, b)
+                // val c = sleep()
+                // await c
+
+                let a_handle = vm
+                    .sys_sleep(Default::default(), Duration::ZERO, None)
+                    .unwrap();
+                let b_handle = vm
+                    .sys_sleep(Default::default(), Duration::ZERO, None)
+                    .unwrap();
+
+                // Transition should work fine here!
+                assert_that!(
+                    vm.do_progress(vec![a_handle, b_handle]),
+                    ok(eq(DoProgressResponse::AnyCompleted))
+                );
+                assert!(!vm.is_completed(a_handle));
+                assert!(vm.is_completed(b_handle));
+
+                // Code moves on to c = sleep() and suspends
+                let c_handle = vm
+                    .sys_sleep(Default::default(), Duration::ZERO, None)
+                    .unwrap();
+                assert_that!(vm.do_progress(vec![c_handle]), err(is_suspended()));
+            });
+
+        assert_that!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            suspended_waiting_completion(3)
+        );
+        assert_eq!(output.next(), None);
+    }
+}
