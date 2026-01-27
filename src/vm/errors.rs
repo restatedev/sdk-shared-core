@@ -1,8 +1,10 @@
-use crate::fmt::{display_closed_error, DiffFormatter};
+use crate::error::NotificationMetadata;
+use crate::fmt::{display_closed_error, format_do_progress, DiffFormatter};
 use crate::service_protocol::messages::{CommandMessageHeaderDiff, RestateMessage};
-use crate::service_protocol::{ContentTypeError, DecodingError, MessageType};
+use crate::service_protocol::{ContentTypeError, DecodingError, MessageType, NotificationId};
 use crate::{Error, Version};
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 // Error codes
 
@@ -232,6 +234,88 @@ This typically happens when some parts of the code are non-deterministic.
 
 impl<M: RestateMessage + CommandMessageHeaderDiff> std::error::Error for CommandMismatchError<M> {}
 
+#[derive(Debug)]
+pub struct UncompletedDoProgressDuringReplay {
+    notification_ids: Vec<NotificationId>,
+    additional_known_metadata: HashMap<NotificationId, NotificationMetadata>,
+}
+
+impl UncompletedDoProgressDuringReplay {
+    pub(crate) fn new(
+        notification_ids: HashSet<NotificationId>,
+        additional_known_metadata: HashMap<NotificationId, NotificationMetadata>,
+    ) -> Self {
+        // Order notifications: completions first (by id), then named signals, then unnamed signals (awakeables by id), then built-in signals last
+        let mut ordered_notification_ids = Vec::from_iter(notification_ids);
+        ordered_notification_ids.sort_by(|a, b| match (a, b) {
+            (NotificationId::CompletionId(a_id), NotificationId::CompletionId(b_id)) => {
+                a_id.cmp(b_id)
+            }
+            (NotificationId::CompletionId(_), _) => std::cmp::Ordering::Less,
+            (_, NotificationId::CompletionId(_)) => std::cmp::Ordering::Greater,
+
+            (NotificationId::SignalName(a_name), NotificationId::SignalName(b_name)) => {
+                a_name.cmp(b_name)
+            }
+            (NotificationId::SignalName(_), NotificationId::SignalId(_)) => {
+                std::cmp::Ordering::Less
+            }
+            (NotificationId::SignalId(_), NotificationId::SignalName(_)) => {
+                std::cmp::Ordering::Greater
+            }
+
+            (NotificationId::SignalId(a_id), NotificationId::SignalId(b_id)) => {
+                let a_is_cancel = *a_id == crate::service_protocol::CANCEL_SIGNAL_ID;
+                let b_is_cancel = *b_id == crate::service_protocol::CANCEL_SIGNAL_ID;
+                match (a_is_cancel, b_is_cancel) {
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    _ => a_id.cmp(b_id),
+                }
+            }
+        });
+        Self {
+            notification_ids: ordered_notification_ids,
+            additional_known_metadata,
+        }
+    }
+}
+
+impl fmt::Display for UncompletedDoProgressDuringReplay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f,
+"Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.
+'{}' could not be replayed. This usually means the code was mutated adding an 'await' without registering a new service revision.
+Notifications awaited on this {} point:",
+               format_do_progress(),
+               format_do_progress(),
+        )?;
+
+        for notification_id in &self.notification_ids {
+            write!(f, "\n - ")?;
+            if let Some(metadata) = self.additional_known_metadata.get(notification_id) {
+                write!(f, "{}", metadata)?;
+            } else {
+                match notification_id {
+                    NotificationId::CompletionId(completion_id) => {
+                        write!(f, "completion id {}", completion_id)?;
+                    }
+                    NotificationId::SignalId(signal_id) => {
+                        write!(f, "signal [{}]", signal_id)?;
+                    }
+                    NotificationId::SignalName(signal_name) => {
+                        write!(f, "Named signal: {}", signal_name)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl std::error::Error for UncompletedDoProgressDuringReplay {}
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Cannot convert a eager state key into UTF-8 String: {0:?}")]
 pub struct BadEagerStateKeyError(#[from] pub(crate) std::string::FromUtf8Error);
@@ -301,6 +385,7 @@ impl_error_code!(UnavailableEntryError, PROTOCOL_VIOLATION);
 impl_error_code!(UnexpectedStateError, PROTOCOL_VIOLATION);
 impl_error_code!(ClosedError, CLOSED);
 impl_error_code!(CommandTypeMismatchError, JOURNAL_MISMATCH);
+impl_error_code!(UncompletedDoProgressDuringReplay, JOURNAL_MISMATCH);
 impl<M: RestateMessage + CommandMessageHeaderDiff> WithInvocationErrorCode
     for CommandMismatchError<M>
 {

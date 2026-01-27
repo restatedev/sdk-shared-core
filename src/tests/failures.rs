@@ -77,6 +77,13 @@ fn explicit_error_notification() {
 
 mod journal_mismatch {
     use super::*;
+    use crate::error::NotificationMetadata;
+    use crate::service_protocol::messages::{
+        RunCommandMessage, SleepCommandMessage, SleepCompletionNotificationMessage,
+    };
+    use crate::service_protocol::{NotificationId, CANCEL_SIGNAL_ID};
+    use crate::vm::awakeable_id_str;
+    use std::collections::{HashMap, HashSet};
     use test_log::test;
 
     #[test]
@@ -567,6 +574,202 @@ mod journal_mismatch {
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
             EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn add_await_run_after_progress_was_made() {
+        let expected_error = Error::from(vm::errors::UncompletedDoProgressDuringReplay::new(
+            HashSet::from([
+                NotificationId::CompletionId(1),
+                NotificationId::SignalId(CANCEL_SIGNAL_ID),
+            ]),
+            HashMap::from([
+                (
+                    NotificationId::CompletionId(1),
+                    NotificationMetadata::RelatedToCommand(CommandMetadata::new_named(
+                        "my-side-effect".to_owned(),
+                        1,
+                        MessageType::RunCommand,
+                    )),
+                ),
+                (
+                    NotificationId::SignalId(CANCEL_SIGNAL_ID),
+                    NotificationMetadata::Cancellation,
+                ),
+            ]),
+        ))
+        .with_related_command_metadata(CommandMetadata::new_named(
+            "my-side-effect".to_owned(),
+            1,
+            MessageType::RunCommand,
+        ));
+
+        let mut output = VMTestCase::new()
+            .input(start_message(4))
+            .input(input_entry_message(b"my-data"))
+            // We have a run
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_owned(),
+            })
+            // Then we have a sleep that is already completed
+            .input(SleepCommandMessage {
+                wake_up_time: 0,
+                result_completion_id: 2,
+                ..Default::default()
+            })
+            .input(SleepCompletionNotificationMessage {
+                completion_id: 2,
+                void: Some(Default::default()),
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                let run_handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+
+                // On await, this is the expected error
+                assert_that!(
+                    vm.do_progress(vec![run_handle]),
+                    err(eq(expected_error.clone()))
+                );
+            });
+
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            error_message_as_error(expected_error)
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn add_await_sleep_after_progress_was_made() {
+        let expected_error = Error::from(vm::errors::UncompletedDoProgressDuringReplay::new(
+            HashSet::from([
+                NotificationId::CompletionId(1),
+                NotificationId::SignalId(CANCEL_SIGNAL_ID),
+            ]),
+            HashMap::from([(
+                NotificationId::SignalId(CANCEL_SIGNAL_ID),
+                NotificationMetadata::Cancellation,
+            )]),
+        ));
+
+        let mut output = VMTestCase::new()
+            .input(start_message(4))
+            .input(input_entry_message(b"my-data"))
+            // We have the first sleep
+            .input(SleepCommandMessage {
+                wake_up_time: 0,
+                result_completion_id: 1,
+                ..Default::default()
+            })
+            // Then we have a sleep that is already completed
+            .input(SleepCommandMessage {
+                wake_up_time: 0,
+                result_completion_id: 2,
+                ..Default::default()
+            })
+            .input(SleepCompletionNotificationMessage {
+                completion_id: 2,
+                void: Some(Default::default()),
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                // Simulating the user code to be:
+                //
+                // await sleep()
+                // await sleep()
+                //
+                // But this journal could have been created only with the following code:
+                // sleep()
+                // await sleep()
+                //
+                // Otherwise the notification for the first sleep should be in the journal before the second sleep!
+
+                let sleep_handle = vm
+                    .sys_sleep(Default::default(), Duration::ZERO, None)
+                    .unwrap();
+
+                // On await, this is the expected error
+                assert_that!(
+                    vm.do_progress(vec![sleep_handle]),
+                    err(eq(expected_error.clone()))
+                );
+            });
+
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            error_message_as_error(expected_error)
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn add_await_awakeable_after_progress_was_made() {
+        let invocation_id = Bytes::from_static(b"123");
+
+        let expected_error = Error::from(vm::errors::UncompletedDoProgressDuringReplay::new(
+            HashSet::from([
+                NotificationId::SignalId(17),
+                NotificationId::SignalId(CANCEL_SIGNAL_ID),
+            ]),
+            HashMap::from([
+                (
+                    NotificationId::SignalId(17),
+                    NotificationMetadata::Awakeable(awakeable_id_str(&invocation_id, 17)),
+                ),
+                (
+                    NotificationId::SignalId(CANCEL_SIGNAL_ID),
+                    NotificationMetadata::Cancellation,
+                ),
+            ]),
+        ));
+
+        let mut output = VMTestCase::new()
+            .input(messages::StartMessage {
+                id: invocation_id,
+                ..start_message(3)
+            })
+            .input(input_entry_message(b"my-data"))
+            // Then we have a sleep that is already completed
+            .input(SleepCommandMessage {
+                wake_up_time: 0,
+                result_completion_id: 2,
+                ..Default::default()
+            })
+            .input(SleepCompletionNotificationMessage {
+                completion_id: 2,
+                void: Some(Default::default()),
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                // Simulating the user code to be:
+                //
+                // await awakeable()
+                // await sleep()
+                //
+                // But this journal could have been created only with the following code:
+                // awakeable()
+                // await sleep()
+                //
+                // Otherwise the notification for the awakeable should be in the journal before the second awakeable!
+
+                let (_, awakeable_handle) = vm.sys_awakeable().unwrap();
+
+                // On await, this is the expected error
+                assert_that!(
+                    vm.do_progress(vec![awakeable_handle]),
+                    err(eq(expected_error.clone()))
+                );
+            });
+
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            error_message_as_error(expected_error)
         );
         assert_eq!(output.next(), None);
     }

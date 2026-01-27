@@ -238,11 +238,11 @@ impl AsyncResultsState {
 
     pub(crate) fn resolve_notification_handles(
         &self,
-        handles: Vec<NotificationHandle>,
+        handles: &[NotificationHandle],
     ) -> HashSet<NotificationId> {
         handles
-            .into_iter()
-            .filter_map(|h| self.handle_mapping.get(&h).cloned())
+            .iter()
+            .filter_map(|h| self.handle_mapping.get(h).cloned())
             .collect()
     }
 
@@ -331,6 +331,12 @@ impl RunState {
             return Some(*handle);
         }
         None
+    }
+
+    pub fn get_run_info(&self, handle: &NotificationHandle) -> Option<(u32, &str)> {
+        self.0
+            .get(handle)
+            .map(|run| (run.command_index, run.command_name.as_str()))
     }
 
     pub fn any_executing(&self, any_handle: &[NotificationHandle]) -> bool {

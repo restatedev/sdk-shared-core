@@ -1352,7 +1352,7 @@ const URL_SAFE: GeneralPurpose = GeneralPurpose::new(&alphabet::URL_SAFE, INDIFF
 
 const AWAKEABLE_PREFIX: &str = "sign_1";
 
-fn awakeable_id_str(id: &[u8], completion_index: u32) -> String {
+pub(super) fn awakeable_id_str(id: &[u8], completion_index: u32) -> String {
     let mut input_buf = BytesMut::with_capacity(id.len() + size_of::<u32>());
     input_buf.put_slice(id);
     input_buf.put_u32(completion_index);
