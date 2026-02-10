@@ -31,6 +31,7 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
                         headers: Vec::new(),
                     },
                     Bytes::new(),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
@@ -98,6 +99,7 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
                         headers: Vec::new(),
                     },
                     Bytes::new(),
+                    None,
                     None,
                     PayloadOptions::default(),
                 )

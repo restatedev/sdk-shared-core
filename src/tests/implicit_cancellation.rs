@@ -30,6 +30,7 @@ fn call_then_get_invocation_id_then_cancel() {
                         headers: Vec::new(),
                     },
                     Bytes::new(),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
@@ -103,6 +104,7 @@ fn call_then_cancel() {
                         headers: Vec::new(),
                     },
                     Bytes::new(),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
@@ -159,6 +161,7 @@ fn call_then_cancel_without_invocation_id() {
                         headers: Vec::new(),
                     },
                     Bytes::new(),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
@@ -213,6 +216,7 @@ fn call_then_then_cancel_disabling_children_cancellation() {
                     headers: Vec::new(),
                 },
                 Bytes::new(),
+                None,
                 PayloadOptions::default(),
             )
             .unwrap();
@@ -263,6 +267,7 @@ fn disabled_implicit_cancellation() {
                     headers: Vec::new(),
                 },
                 Bytes::new(),
+                None,
                 PayloadOptions::default(),
             )
             .unwrap();
@@ -340,6 +345,7 @@ fn replay_while_cancelling() {
                         headers: Vec::new(),
                     },
                     Bytes::new(),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
@@ -354,6 +360,7 @@ fn replay_while_cancelling() {
                         headers: Vec::new(),
                     },
                     Bytes::new(),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();

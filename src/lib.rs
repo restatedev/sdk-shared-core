@@ -337,6 +337,7 @@ pub trait VM: Sized {
         &mut self,
         target: Target,
         input: Bytes,
+        name: Option<String>,
         options: PayloadOptions,
     ) -> VMResult<CallHandle>;
 
@@ -345,6 +346,7 @@ pub trait VM: Sized {
         target: Target,
         input: Bytes,
         execution_time_since_unix_epoch: Option<Duration>,
+        name: Option<String>,
         options: PayloadOptions,
     ) -> VMResult<SendHandle>;
 
