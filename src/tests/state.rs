@@ -1168,7 +1168,7 @@ mod state_keys {
     fn get_state_keys_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_state_get_keys().unwrap();
+        let h1 = vm.sys_state_get_keys().expect("Expected to get state keys");
 
         if vm
             .do_progress(vec![h1])

@@ -615,13 +615,28 @@ fn process_get_entry_keys_during_replay(
                 result: notification_result,
             });
         }
-        MessageType::GetLazyStateKeysCommand => {
-            context.journal.current_entry_ty = MessageType::GetLazyStateKeysCommand;
-            let get_lazy_state_command = actual
-                .decode_to::<GetLazyStateKeysCommandMessage>(context.journal.command_index())?;
+        MessageType::GetLazyStateCommand => {
+            context.journal.current_entry_ty = MessageType::GetLazyStateCommand;
+            let get_lazy_state_command =
+                actual.decode_to::<GetLazyStateCommandMessage>(context.journal.command_index())?;
             check_entry_header_match(
                 context.journal.command_index(),
                 &get_lazy_state_command,
+                &GetLazyStateCommandMessage {
+                    key: vec![].into(),
+                    result_completion_id: completion_id,
+                    name: "".to_string(),
+                },
+                ignore_payload_equality,
+            )?;
+        }
+        MessageType::GetLazyStateKeysCommand => {
+            context.journal.current_entry_ty = MessageType::GetLazyStateKeysCommand;
+            let get_lazy_state_keys_command = actual
+                .decode_to::<GetLazyStateKeysCommandMessage>(context.journal.command_index())?;
+            check_entry_header_match(
+                context.journal.command_index(),
+                &get_lazy_state_keys_command,
                 &GetLazyStateKeysCommandMessage {
                     result_completion_id: completion_id,
                     name: "".to_string(),
