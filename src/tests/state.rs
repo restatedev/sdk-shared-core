@@ -1154,12 +1154,14 @@ mod eager {
 }
 
 mod state_keys {
+
     use super::*;
 
     use crate::service_protocol::messages::StateKeys;
     use crate::tests::{
         input_entry_message, is_closed, is_output_with_success, suspended_waiting_completion,
     };
+    use crate::DoProgressResponse;
     use googletest::prelude::*;
     use test_log::test;
 
@@ -1321,6 +1323,100 @@ mod state_keys {
         assert_that!(
             output.next_decoded::<OutputCommandMessage>().unwrap(),
             is_output_with_success(b"MY-STATE,ANOTHER-STATE")
+        );
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    /// Replay a lazy state keys entry without completion (should suspend)
+    #[test]
+    fn lazy_entry_not_completed_on_replay() {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 2,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"Till"))
+            .input(GetLazyStateKeysCommandMessage {
+                result_completion_id: 1,
+                ..Default::default()
+            })
+            .run(get_state_keys_handler);
+
+        assert_that!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            suspended_waiting_completion(1)
+        );
+
+        assert_eq!(output.next(), None);
+    }
+
+    /// Replay a lazy state keys entry followed by a lazy state get entry.
+    /// This simulates: first execution produced GetLazyStateKeys + GetLazyState,
+    /// and now we replay both entries.
+    #[test]
+    fn lazy_state_keys_then_lazy_state_get_on_replay() {
+        fn get_lazy_state_keys(vm: &mut CoreVM) {
+            vm.sys_input().unwrap();
+
+            let h1: crate::NotificationHandle = vm
+                .sys_state_get_keys()
+                .expect("A notification handle should be returned for state keys get");
+
+            match vm.do_progress(vec![h1]) {
+                Err(e) if e.is_suspended_error() => {
+                    unreachable!("State keys get should not suspend because the state keys entry is already known from the journal")
+                }
+                Err(e) => panic!("Unexpected error from do_progress: {e:?}"),
+                Ok(DoProgressResponse::AnyCompleted) => {}
+                _ => panic!("Unexpected response from do_progress"),
+            };
+
+            match vm.take_notification(h1) {
+                Err(e) => unreachable!("Unexpected error taking notification: {e:?}"),
+                Ok(None) => unreachable!("Expected a notification for state keys get"),
+                Ok(Some(Value::StateKeys(..))) => {}
+                Ok(Some(_)) => unreachable!("Unexpected notification value for state keys get"),
+            };
+
+            vm.sys_write_output(
+                NonEmptyValue::Success(Bytes::from_static(b"bob")),
+                PayloadOptions::default(),
+            )
+            .unwrap();
+            vm.sys_end().unwrap()
+        }
+
+        let state_keys = StateKeys { keys: vec![] };
+
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 3,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"joe"))
+            .input(GetLazyStateCommandMessage {
+                result_completion_id: 1,
+                ..Default::default()
+            })
+            .input(GetLazyStateKeysCompletionNotificationMessage {
+                completion_id: 1,
+                state_keys: Some(state_keys),
+            })
+            .run(get_lazy_state_keys);
+
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"bob")
         );
         assert_eq!(
             output.next_decoded::<EndMessage>().unwrap(),
