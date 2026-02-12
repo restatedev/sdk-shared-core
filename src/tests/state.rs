@@ -1357,11 +1357,9 @@ mod state_keys {
         assert_eq!(output.next(), None);
     }
 
-    /// Replay a lazy state keys entry followed by a lazy state get entry.
-    /// This simulates: first execution produced GetLazyStateKeys + GetLazyState,
-    /// and now we replay both entries.
+    /// Replay a lazy state keys entry with completion (should proceed)
     #[test]
-    fn lazy_state_keys_then_lazy_state_get_on_replay() {
+    fn lazy_state_keys_on_replay() {
         fn get_lazy_state_keys(vm: &mut CoreVM) {
             vm.sys_input().unwrap();
 
