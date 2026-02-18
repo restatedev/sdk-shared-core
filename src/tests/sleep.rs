@@ -3,7 +3,6 @@ use super::*;
 use crate::service_protocol::messages::*;
 
 use crate::{PayloadOptions, Value};
-use assert2::let_assert;
 use test_log::test;
 
 fn sleep_handler(vm: &mut CoreVM) {
@@ -20,7 +19,7 @@ fn sleep_handler(vm: &mut CoreVM) {
         assert_that!(vm.take_notification(h1), err(is_closed()));
         return;
     }
-    let_assert!(Some(Value::Void) = vm.take_notification(h1).unwrap());
+    assert2::assert!(let Some(Value::Void) = vm.take_notification(h1).unwrap());
 
     vm.sys_write_output(
         NonEmptyValue::Success(Bytes::default()),

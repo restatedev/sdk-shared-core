@@ -2,7 +2,6 @@ use super::*;
 
 use crate::service_protocol::messages::*;
 use crate::{PayloadOptions, Value};
-use assert2::let_assert;
 
 use test_log::test;
 
@@ -194,8 +193,8 @@ mod reverse_await_order {
             );
             return;
         }
-        let_assert!(
-            Some(Value::Success(h2_value)) =
+        assert2::assert!(
+            let Some(Value::Success(h2_value)) =
                 vm.take_notification(h2.call_notification_handle).unwrap()
         );
 
@@ -212,8 +211,8 @@ mod reverse_await_order {
             );
             return;
         }
-        let_assert!(
-            Some(Value::Success(h1_value)) =
+        assert2::assert!(
+            let Some(Value::Success(h1_value)) =
                 vm.take_notification(h1.call_notification_handle).unwrap()
         );
 

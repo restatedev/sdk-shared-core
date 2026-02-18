@@ -2,11 +2,10 @@ use super::*;
 
 use crate::service_protocol::messages::{EndMessage, OutputCommandMessage, StartMessage};
 use crate::PayloadOptions;
-use assert2::let_assert;
 use test_log::test;
 
 fn echo_handler(vm: &mut CoreVM) {
-    let_assert!(Input { input, .. } = vm.sys_input().unwrap());
+    assert2::assert!(let Input { input, .. } = vm.sys_input().unwrap());
     assert_eq!(input, b"my-data".to_vec());
 
     vm.sys_write_output(NonEmptyValue::Success(input), PayloadOptions::default())
@@ -55,7 +54,7 @@ fn headers() {
             ..InputCommandMessage::default()
         })
         .run(|vm| {
-            let_assert!(Input { headers, .. } = vm.sys_input().unwrap());
+            assert2::assert!(let Input { headers, .. } = vm.sys_input().unwrap());
 
             assert_that!(
                 headers,
