@@ -1,7 +1,6 @@
 use crate::service_protocol::messages::{start_message::StateEntry, *};
 use crate::tests::{is_closed, VMTestCase};
 use crate::{CoreVM, NonEmptyValue, PayloadOptions, Value, VM};
-use assert2::let_assert;
 use bytes::Bytes;
 use googletest::assert_that;
 use googletest::matchers::pat;
@@ -720,7 +719,7 @@ mod eager {
             assert_that!(vm.take_notification(h2), err(is_suspended()));
             return;
         }
-        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
+        assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         vm.sys_write_output(
             NonEmptyValue::Success(first_get_result),
@@ -877,13 +876,13 @@ mod eager {
             .sys_state_get("STATE".to_owned(), PayloadOptions::default())
             .unwrap();
         vm.do_progress(vec![h2]).unwrap();
-        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
+        assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         let h3 = vm
             .sys_state_get("ANOTHER_STATE".to_owned(), PayloadOptions::default())
             .unwrap();
         vm.do_progress(vec![h3]).unwrap();
-        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h3));
+        assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h3));
 
         vm.sys_write_output(
             NonEmptyValue::Success(first_get_result),
@@ -1047,13 +1046,13 @@ mod eager {
             .sys_state_get("key-0".to_owned(), PayloadOptions::default())
             .unwrap();
         vm.do_progress(vec![h1]).unwrap();
-        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h1));
+        assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h1));
 
         let h2 = vm
             .sys_state_get("key-0".to_owned(), PayloadOptions::default())
             .unwrap();
         vm.do_progress(vec![h2]).unwrap();
-        let_assert!(Ok(Some(Value::Void)) = vm.take_notification(h2));
+        assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         vm.sys_write_output(
             NonEmptyValue::Success(Bytes::default()),

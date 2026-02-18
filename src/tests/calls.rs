@@ -5,7 +5,6 @@ use crate::service_protocol::messages::*;
 use crate::service_protocol::CANCEL_SIGNAL_ID;
 use crate::PayloadOptions;
 use crate::Value;
-use assert2::let_assert;
 use googletest::prelude::*;
 use test_log::test;
 
@@ -41,8 +40,8 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
                     .unwrap(),
                 DoProgressResponse::AnyCompleted
             );
-            let_assert!(
-                Some(Value::InvocationId(invocation_id)) = vm
+            assert2::assert!(
+                let Some(Value::InvocationId(invocation_id)) = vm
                     .take_notification(call_handle.invocation_id_notification_handle)
                     .unwrap()
             );
@@ -110,8 +109,8 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
                     .unwrap(),
                 DoProgressResponse::AnyCompleted
             );
-            let_assert!(
-                Some(Value::InvocationId(invocation_id)) = vm
+            assert2::assert!(
+                let Some(Value::InvocationId(invocation_id)) = vm
                     .take_notification(send_handle.invocation_id_notification_handle)
                     .unwrap()
             );

@@ -7,7 +7,6 @@ use crate::service_protocol::messages::{
     StartMessage, SuspensionMessage,
 };
 use crate::PayloadOptions;
-use assert2::let_assert;
 use test_log::test;
 
 #[test]
@@ -115,7 +114,7 @@ fn enter_then_propose_completion_then_complete() {
                 DoProgressResponse::AnyCompleted
             );
             let result = vm.take_notification(handle).unwrap().unwrap();
-            let_assert!(Value::Success(s) = result);
+            assert2::assert!(let Value::Success(s) = result);
 
             // Write the result as output
             vm.sys_write_output(NonEmptyValue::Success(s), PayloadOptions::default())
@@ -198,7 +197,7 @@ fn enter_then_propose_completion_then_complete_with_failure() {
                 DoProgressResponse::AnyCompleted
             );
             let result = vm.take_notification(handle).unwrap().unwrap();
-            let_assert!(Value::Failure(f) = result);
+            assert2::assert!(let Value::Failure(f) = result);
 
             // Write the result as output
             vm.sys_write_output(NonEmptyValue::Failure(f), PayloadOptions::default())
@@ -453,7 +452,7 @@ fn replay_with_completion() {
 
             // We should now get the side effect result
             let result = vm.take_notification(handle).unwrap().unwrap();
-            let_assert!(Value::Success(s) = result);
+            assert2::assert!(let Value::Success(s) = result);
 
             // Write the result as output
             vm.sys_write_output(NonEmptyValue::Success(s), PayloadOptions::default())
