@@ -160,6 +160,7 @@ mod journal_mismatch {
                     },
                     Bytes::from_static(b"456"),
                     None,
+                    None,
                     PayloadOptions::default(),
                 )
             },
@@ -271,6 +272,7 @@ mod journal_mismatch {
                 // NOTE: this is different payload!
                 Bytes::from_static(b"456"),
                 None,
+                None,
                 PayloadOptions::default(),
             )
             .unwrap();
@@ -285,6 +287,7 @@ mod journal_mismatch {
                 },
                 // NOTE: this is different payload!
                 Bytes::from_static(b"456"),
+                None,
                 PayloadOptions::default(),
             )
             .unwrap();
@@ -341,6 +344,7 @@ mod journal_mismatch {
                     // Different bytes than recorded, but current side is flagged.
                     Bytes::from_static(b"456"),
                     None,
+                    None,
                     PayloadOptions::unstable(),
                 )
                 .unwrap();
@@ -383,6 +387,7 @@ mod journal_mismatch {
                     },
                     // Different bytes than recorded, but marked as unstable.
                     Bytes::from_static(b"456"),
+                    None,
                     PayloadOptions::unstable(),
                 )
                 .unwrap();

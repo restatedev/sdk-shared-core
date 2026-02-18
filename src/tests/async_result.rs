@@ -33,6 +33,7 @@ fn dont_await_call() {
                 .sys_call(
                     greeter_target(),
                     Bytes::from_static(b"Francesco"),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
@@ -82,6 +83,7 @@ fn dont_await_call_dont_notify_input_closed() {
                 .sys_call(
                     greeter_target(),
                     Bytes::from_static(b"Francesco"),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
@@ -169,6 +171,7 @@ mod reverse_await_order {
             .sys_call(
                 greeter_target(),
                 Bytes::from_static(b"Francesco"),
+                None,
                 PayloadOptions::default(),
             )
             .unwrap();
@@ -176,6 +179,7 @@ mod reverse_await_order {
             .sys_call(
                 greeter_target(),
                 Bytes::from_static(b"Till"),
+                None,
                 PayloadOptions::default(),
             )
             .unwrap();

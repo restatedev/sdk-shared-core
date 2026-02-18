@@ -723,6 +723,7 @@ impl super::VM for CoreVM {
         &mut self,
         target: Target,
         input: Bytes,
+        name: Option<String>,
         options: PayloadOptions,
     ) -> VMResult<CallHandle> {
         invocation_debug_logs!(
@@ -755,8 +756,8 @@ impl super::VM for CoreVM {
                     .collect(),
                 parameter: input,
                 invocation_id_notification_idx: call_invocation_id_completion_id,
+                name: name.unwrap_or_default(),
                 result_completion_id,
-                ..Default::default()
             },
             vec![call_invocation_id_completion_id, result_completion_id],
             options,
@@ -797,6 +798,7 @@ impl super::VM for CoreVM {
         target: Target,
         input: Bytes,
         delay: Option<Duration>,
+        name: Option<String>,
         options: PayloadOptions,
     ) -> VMResult<SendHandle> {
         invocation_debug_logs!(
@@ -832,7 +834,7 @@ impl super::VM for CoreVM {
                     })
                     .unwrap_or_default(),
                 invocation_id_notification_idx: call_invocation_id_completion_id,
-                ..Default::default()
+                name: name.unwrap_or_default(),
             },
             call_invocation_id_completion_id,
             options,
