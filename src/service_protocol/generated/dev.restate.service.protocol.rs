@@ -41,7 +41,7 @@ pub struct StartMessage {
 /// Nested message and enum types in `StartMessage`.
 pub mod start_message {
     #[allow(dead_code)]
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct StateEntry {
         #[prost(bytes = "bytes", tag = "1")]
         pub key: ::prost::bytes::Bytes,
@@ -58,7 +58,7 @@ pub mod start_message {
 /// The runtime will resume the invocation as soon as either one of the given notification_idx or notification_name is completed.
 /// Between the two lists there MUST be at least one element.
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SuspensionMessage {
     #[prost(uint32, repeated, tag = "1")]
     pub waiting_completions: ::prost::alloc::vec::Vec<u32>,
@@ -69,7 +69,7 @@ pub struct SuspensionMessage {
 }
 /// Type: 0x0000 + 2
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ErrorMessage {
     /// The code can be any HTTP status code, as described <https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml.>
     /// In addition, we define the following error codes that MAY be used by the SDK for better error reporting:
@@ -101,11 +101,11 @@ pub struct ErrorMessage {
 /// Type: 0x0000 + 3
 /// Implementations MUST send this message when the invocation lifecycle ends.
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct EndMessage {}
 /// Type: 0x0000 + 4
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommandAckMessage {
     #[prost(uint32, tag = "1")]
     pub command_index: u32,
@@ -148,8 +148,7 @@ pub struct NotificationTemplate {
 pub mod notification_template {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Eq, Hash)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Id {
         #[prost(uint32, tag = "1")]
         CompletionId(u32),
@@ -217,7 +216,7 @@ pub mod output_command_message {
 /// Fallible: No
 /// Type: 0x0400 + 2
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetLazyStateCommandMessage {
     #[prost(bytes = "bytes", tag = "1")]
     pub key: ::prost::bytes::Bytes,
@@ -229,7 +228,7 @@ pub struct GetLazyStateCommandMessage {
 /// Notification for GetLazyStateCommandMessage
 /// Type: 0x8000 + 2
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetLazyStateCompletionNotificationMessage {
     #[prost(uint32, tag = "1")]
     pub completion_id: u32,
@@ -245,7 +244,7 @@ pub struct GetLazyStateCompletionNotificationMessage {
 pub mod get_lazy_state_completion_notification_message {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "4")]
         Void(super::Void),
@@ -257,7 +256,7 @@ pub mod get_lazy_state_completion_notification_message {
 /// Fallible: No
 /// Type: 0x0400 + 3
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SetStateCommandMessage {
     #[prost(bytes = "bytes", tag = "1")]
     pub key: ::prost::bytes::Bytes,
@@ -271,7 +270,7 @@ pub struct SetStateCommandMessage {
 /// Fallible: No
 /// Type: 0x0400 + 4
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClearStateCommandMessage {
     #[prost(bytes = "bytes", tag = "1")]
     pub key: ::prost::bytes::Bytes,
@@ -283,7 +282,7 @@ pub struct ClearStateCommandMessage {
 /// Fallible: No
 /// Type: 0x0400 + 5
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClearAllStateCommandMessage {
     /// Entry name
     #[prost(string, tag = "12")]
@@ -293,7 +292,7 @@ pub struct ClearAllStateCommandMessage {
 /// Fallible: No
 /// Type: 0x0400 + 6
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetLazyStateKeysCommandMessage {
     #[prost(uint32, tag = "11")]
     pub result_completion_id: u32,
@@ -303,7 +302,7 @@ pub struct GetLazyStateKeysCommandMessage {
 /// Notification for GetLazyStateKeysCommandMessage
 /// Type: 0x8000 + 6
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetLazyStateKeysCompletionNotificationMessage {
     #[prost(uint32, tag = "1")]
     pub completion_id: u32,
@@ -314,7 +313,7 @@ pub struct GetLazyStateKeysCompletionNotificationMessage {
 /// Fallible: No
 /// Type: 0x0400 + 7
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetEagerStateCommandMessage {
     #[prost(bytes = "bytes", tag = "1")]
     pub key: ::prost::bytes::Bytes,
@@ -328,7 +327,7 @@ pub struct GetEagerStateCommandMessage {
 pub mod get_eager_state_command_message {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "13")]
         Void(super::Void),
@@ -340,7 +339,7 @@ pub mod get_eager_state_command_message {
 /// Fallible: No
 /// Type: 0x0400 + 8
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetEagerStateKeysCommandMessage {
     #[prost(message, optional, tag = "14")]
     pub value: ::core::option::Option<StateKeys>,
@@ -352,7 +351,7 @@ pub struct GetEagerStateKeysCommandMessage {
 /// Fallible: No
 /// Type: 0x0400 + 9
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetPromiseCommandMessage {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
@@ -392,7 +391,7 @@ pub mod get_promise_completion_notification_message {
 /// Fallible: No
 /// Type: 0x0400 + A
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PeekPromiseCommandMessage {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
@@ -490,7 +489,7 @@ pub mod complete_promise_completion_notification_message {
 /// Fallible: No
 /// Type: 0x0400 + C
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SleepCommandMessage {
     /// Wake up time.
     /// The time is set as duration since UNIX Epoch.
@@ -504,7 +503,7 @@ pub struct SleepCommandMessage {
 /// Notification for SleepCommandMessage
 /// Type: 0x8000 + C
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SleepCompletionNotificationMessage {
     #[prost(uint32, tag = "1")]
     pub completion_id: u32,
@@ -541,7 +540,7 @@ pub struct CallCommandMessage {
 /// Notification for CallCommandMessage and OneWayCallCommandMessage
 /// Type: 0x8000 + E
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CallInvocationIdCompletionNotificationMessage {
     #[prost(uint32, tag = "1")]
     pub completion_id: u32,
@@ -621,7 +620,7 @@ pub struct SendSignalCommandMessage {
 pub mod send_signal_command_message {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum SignalId {
         #[prost(uint32, tag = "2")]
         Idx(u32),
@@ -646,7 +645,7 @@ pub mod send_signal_command_message {
 /// Fallible: No
 /// Type: 0x0400 + 11
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunCommandMessage {
     #[prost(uint32, tag = "11")]
     pub result_completion_id: u32,
@@ -679,7 +678,7 @@ pub mod run_completion_notification_message {
 /// Fallible: Yes
 /// Type: 0x0400 + 12
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AttachInvocationCommandMessage {
     #[prost(uint32, tag = "11")]
     pub result_completion_id: u32,
@@ -692,7 +691,7 @@ pub struct AttachInvocationCommandMessage {
 pub mod attach_invocation_command_message {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Target {
         /// Target invocation id
         #[prost(string, tag = "1")]
@@ -736,7 +735,7 @@ pub mod attach_invocation_completion_notification_message {
 /// Fallible: Yes
 /// Type: 0x0400 + 13
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetInvocationOutputCommandMessage {
     #[prost(uint32, tag = "11")]
     pub result_completion_id: u32,
@@ -749,7 +748,7 @@ pub struct GetInvocationOutputCommandMessage {
 pub mod get_invocation_output_command_message {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Target {
         /// Target invocation id
         #[prost(string, tag = "1")]
@@ -832,7 +831,7 @@ pub struct SignalNotificationMessage {
 pub mod signal_notification_message {
     #[allow(dead_code)]
     #[allow(clippy::enum_variant_names)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum SignalId {
         #[prost(uint32, tag = "2")]
         Idx(u32),
@@ -852,13 +851,13 @@ pub mod signal_notification_message {
     }
 }
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StateKeys {
     #[prost(bytes = "bytes", repeated, tag = "1")]
     pub keys: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
 }
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Value {
     #[prost(bytes = "bytes", tag = "1")]
     pub content: ::prost::bytes::Bytes,
@@ -879,7 +878,7 @@ pub struct Failure {
     pub metadata: ::prost::alloc::vec::Vec<FailureMetadata>,
 }
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FailureMetadata {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
@@ -887,7 +886,7 @@ pub struct FailureMetadata {
     pub value: ::prost::alloc::string::String,
 }
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Header {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
@@ -895,7 +894,7 @@ pub struct Header {
     pub value: ::prost::alloc::string::String,
 }
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkflowTarget {
     #[prost(string, tag = "1")]
     pub workflow_name: ::prost::alloc::string::String,
@@ -903,7 +902,7 @@ pub struct WorkflowTarget {
     pub workflow_key: ::prost::alloc::string::String,
 }
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct IdempotentRequestTarget {
     #[prost(string, tag = "1")]
     pub service_name: ::prost::alloc::string::String,
@@ -915,7 +914,7 @@ pub struct IdempotentRequestTarget {
     pub idempotency_key: ::prost::alloc::string::String,
 }
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Void {}
 /// Service protocol version.
 #[allow(dead_code)]
