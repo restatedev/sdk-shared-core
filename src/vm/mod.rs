@@ -43,6 +43,7 @@ const CONTENT_TYPE: &str = "content-type";
 #[derive(Debug, IntoStaticStr)]
 pub(crate) enum State {
     WaitingStart,
+    WaitingEagerState,
     WaitingReplayEntries {
         received_entries: u32,
         commands: VecDeque<RawMessage>,
@@ -396,7 +397,9 @@ impl super::VM for CoreVM {
     )]
     fn is_ready_to_execute(&self) -> Result<bool, Error> {
         match &self.last_transition {
-            Ok(State::WaitingStart) | Ok(State::WaitingReplayEntries { .. }) => Ok(false),
+            Ok(State::WaitingStart)
+            | Ok(State::WaitingEagerState)
+            | Ok(State::WaitingReplayEntries { .. }) => Ok(false),
             Ok(State::Processing { .. }) | Ok(State::Replaying { .. }) => Ok(true),
             Ok(s) => Err(s.as_unexpected_state("IsReadyToExecute")),
             Err(e) => Err(e.clone()),
@@ -1328,7 +1331,9 @@ impl super::VM for CoreVM {
     fn is_waiting_preflight(&self) -> bool {
         matches!(
             &self.last_transition,
-            Ok(State::WaitingStart) | Ok(State::WaitingReplayEntries { .. })
+            Ok(State::WaitingStart)
+                | Ok(State::WaitingEagerState)
+                | Ok(State::WaitingReplayEntries { .. })
         )
     }
 

@@ -134,6 +134,31 @@ pub mod propose_run_completion_message {
         Failure(super::Failure),
     }
 }
+/// Type: 0x0000 + 6
+/// Carries a batch of state entries to the SDK during the state transfer
+/// phase between StartMessage and journal replay entries.
+/// May be sent zero or more times. Only valid in V7+.
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EagerStateEntryMessage {
+    /// protolint:disable:next REPEATED_FIELD_NAMES_PLURALIZED
+    #[prost(message, repeated, tag = "1")]
+    pub state_map: ::prost::alloc::vec::Vec<start_message::StateEntry>,
+}
+/// Type: 0x0000 + 7
+/// Signals the end of the eager state transfer phase.
+/// Sent exactly once, after the last EagerStateEntryMessage (or
+/// immediately after StartMessage if no entries are streamed).
+/// Only valid in V7+.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct EagerStateCompleteMessage {
+    /// When true, the combined state from StartMessage.state_map and all
+    /// preceding EagerStateEntryMessages is only a partial view.
+    /// The SDK must use lazy state commands for missing keys.
+    #[prost(bool, tag = "1")]
+    pub partial_state: bool,
+}
 /// A notification message follows the following duck-type:
 ///
 #[allow(dead_code)]
@@ -944,6 +969,11 @@ pub enum ServiceProtocolVersion {
     /// * StartMessage.random_seed
     /// * Failure.metadata
     V6 = 6,
+    /// Added:
+    /// * EagerStateEntryMessage and EagerStateCompleteMessage for streaming state
+    ///    entries after the StartMessage, allowing state sizes to exceed the
+    ///    maximum message size limit.
+    V7 = 7,
 }
 impl ServiceProtocolVersion {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -959,6 +989,7 @@ impl ServiceProtocolVersion {
             Self::V4 => "V4",
             Self::V5 => "V5",
             Self::V6 => "V6",
+            Self::V7 => "V7",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -971,6 +1002,7 @@ impl ServiceProtocolVersion {
             "V4" => Some(Self::V4),
             "V5" => Some(Self::V5),
             "V6" => Some(Self::V6),
+            "V7" => Some(Self::V7),
             _ => None,
         }
     }

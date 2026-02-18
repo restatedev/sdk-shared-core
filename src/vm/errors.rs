@@ -106,6 +106,16 @@ pub const UNEXPECTED_ENTRY_MESSAGE: Error = Error::new_const(
     "Expected entry messages only when waiting replay entries",
 );
 
+pub const UNEXPECTED_EAGER_STATE_ENTRY_MESSAGE: Error = Error::new_const(
+    codes::PROTOCOL_VIOLATION,
+    "Received EagerStateEntryMessage outside of the eager state transfer phase. This message is only valid between StartMessage and EagerStateCompleteMessage in protocol V7+.",
+);
+
+pub const UNEXPECTED_EAGER_STATE_COMPLETE_MESSAGE: Error = Error::new_const(
+    codes::PROTOCOL_VIOLATION,
+    "Received EagerStateCompleteMessage outside of the eager state transfer phase. This message is only valid between StartMessage and the first journal entry in protocol V7+.",
+);
+
 pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: Error = Error::new_const(
     codes::PROTOCOL_VIOLATION,
     "The input was closed while still waiting to receive all journal to replay",

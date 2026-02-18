@@ -16,8 +16,9 @@ use test_log::test;
 
 #[test]
 fn got_closed_stream_before_end_of_replay() {
-    let mut vm = CoreVM::mock_init(Version::maximum_supported_version());
-    let encoder = Encoder::new(Version::maximum_supported_version());
+    let version = Version::maximum_supported_version();
+    let mut vm = CoreVM::mock_init(version);
+    let encoder = Encoder::new(version);
 
     vm.notify_input(encoder.encode(&StartMessage {
         id: Bytes::from_static(b"123"),
@@ -26,6 +27,14 @@ fn got_closed_stream_before_end_of_replay() {
         known_entries: 2,
         ..Default::default()
     }));
+
+    // In V7+, we need to send eager state messages after StartMessage
+    if version >= Version::V7 {
+        vm.notify_input(encoder.encode(&EagerStateCompleteMessage {
+            partial_state: false,
+        }));
+    }
+
     vm.notify_input(encoder.encode(&InputCommandMessage::default()));
 
     // Now notify input closed
@@ -48,7 +57,7 @@ fn got_closed_stream_before_end_of_replay() {
 #[test]
 fn explicit_error_notification() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run(|vm| {
             vm.sys_input().unwrap();
@@ -175,7 +184,7 @@ mod journal_mismatch {
         user_code: impl FnOnce(&mut CoreVM) -> Result<T, Error>,
     ) {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"123"),
                 debug_id: "123".to_string(),
                 known_entries: 2,
@@ -211,7 +220,7 @@ mod journal_mismatch {
             non_determinism_checks: NonDeterministicChecksOption::PayloadChecksDisabled,
             ..VMOptions::default()
         })
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 5,
@@ -317,7 +326,7 @@ mod journal_mismatch {
         // When SDK marks the current call with unstable serialization,
         // payload equality check is skipped (we trust the SDK).
         let mut output = VMTestCase::new()
-            .input(start_message(2))
+            .input_start(start_message(2))
             .input(input_entry_message(b"my-data"))
             .input(OneWayCallCommandMessage {
                 service_name: "greeter".to_owned(),
@@ -359,7 +368,7 @@ mod journal_mismatch {
     fn call_with_unstable_payload() {
         // sys_call with PayloadOptions::unstable() should skip payload check
         let mut output = VMTestCase::new()
-            .input(start_message(2))
+            .input_start(start_message(2))
             .input(input_entry_message(b"my-data"))
             .input(CallCommandMessage {
                 service_name: "greeter".to_owned(),
@@ -401,7 +410,7 @@ mod journal_mismatch {
     fn set_state_with_unstable_payload() {
         // sys_state_set with PayloadOptions::unstable() should skip payload check
         let mut output = VMTestCase::new()
-            .input(start_message(2))
+            .input_start(start_message(2))
             .input(input_entry_message(b"my-data"))
             .input(SetStateCommandMessage {
                 key: Bytes::from_static(b"my-key"),
@@ -436,7 +445,7 @@ mod journal_mismatch {
         // sys_state_get with PayloadOptions::unstable() should skip payload check
         // when replaying GetEagerStateCommand with different value
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"123"),
                 debug_id: "123".to_string(),
                 known_entries: 2,
@@ -479,7 +488,7 @@ mod journal_mismatch {
     fn complete_promise_with_unstable_payload() {
         // sys_complete_promise with PayloadOptions::unstable() should skip payload check
         let mut output = VMTestCase::new()
-            .input(start_message(2))
+            .input_start(start_message(2))
             .input(input_entry_message(b"my-data"))
             .input(CompletePromiseCommandMessage {
                 key: "my-prom".to_owned(),
@@ -516,7 +525,7 @@ mod journal_mismatch {
     fn complete_awakeable_with_unstable_payload() {
         // sys_complete_awakeable with PayloadOptions::unstable() should skip payload check
         let mut output = VMTestCase::new()
-            .input(start_message(2))
+            .input_start(start_message(2))
             .input(input_entry_message(b"my-data"))
             .input(CompleteAwakeableCommandMessage {
                 awakeable_id: "awk-123".to_owned(),
@@ -550,7 +559,7 @@ mod journal_mismatch {
     fn write_output_with_unstable_payload() {
         // sys_write_output with PayloadOptions::unstable() should skip payload check
         let mut output = VMTestCase::new()
-            .input(start_message(2))
+            .input_start(start_message(2))
             .input(input_entry_message(b"my-data"))
             .input(OutputCommandMessage {
                 result: Some(output_command_message::Result::Value(
@@ -607,7 +616,7 @@ mod journal_mismatch {
         ));
 
         let mut output = VMTestCase::new()
-            .input(start_message(4))
+            .input_start(start_message(4))
             .input(input_entry_message(b"my-data"))
             // We have a run
             .input(RunCommandMessage {
@@ -657,7 +666,7 @@ mod journal_mismatch {
         ));
 
         let mut output = VMTestCase::new()
-            .input(start_message(4))
+            .input_start(start_message(4))
             .input(input_entry_message(b"my-data"))
             // We have the first sleep
             .input(SleepCommandMessage {
@@ -729,7 +738,7 @@ mod journal_mismatch {
         ));
 
         let mut output = VMTestCase::new()
-            .input(messages::StartMessage {
+            .input_start(messages::StartMessage {
                 id: invocation_id,
                 ..start_message(3)
             })
