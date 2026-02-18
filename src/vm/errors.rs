@@ -232,7 +232,10 @@ This typically happens when some parts of the code are non-deterministic.
     }
 }
 
-impl<M: RestateMessage + CommandMessageHeaderDiff> std::error::Error for CommandMismatchError<M> {}
+impl<M: RestateMessage + CommandMessageHeaderDiff + std::fmt::Debug> std::error::Error
+    for CommandMismatchError<M>
+{
+}
 
 #[derive(Debug)]
 pub struct UncompletedDoProgressDuringReplay {
