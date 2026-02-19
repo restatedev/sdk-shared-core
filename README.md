@@ -12,7 +12,7 @@ This library follows [Semantic Versioning](https://semver.org/).
 
 The compatibility with Restate is described in the following table:
 
-| Restate Server\sdk-shared-core | <= 0.2.x | 0.3.x - 0.5.x | 0.6.x - 0.7.x |
+| Restate Server\sdk-shared-core | <= 0.2.x | 0.3.x - 0.5.x | 0.6.x - 0.8.x |
 |--------------------------------|----------|---------------|---------------|
 | <= 1.2                         | ✅        | ❌             | ❌             |
 | 1.3 - 1.4                      | ✅        | ✅             | ✅             |
