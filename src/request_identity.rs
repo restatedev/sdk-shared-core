@@ -162,8 +162,9 @@ impl IdentityVerifier {
 mod tests {
     use super::*;
 
-    use ring::rand::SystemRandom;
-    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use ed25519_dalek::pkcs8::EncodePrivateKey;
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
     use serde::Serialize;
     use std::time::SystemTime;
 
@@ -239,14 +240,15 @@ mod tests {
     }
 
     fn mock_token_and_key() -> (String, String) {
-        let serialized_keypair = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
-        let keypair = Ed25519KeyPair::from_pkcs8(serialized_keypair.as_ref()).unwrap();
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let public_key_bytes = signing_key.verifying_key().to_bytes();
+        let pkcs8_der = signing_key.to_pkcs8_der().unwrap();
 
         let kid = format!(
             "{IDENTITY_V1_PREFIX}{}",
-            bs58::encode(keypair.public_key()).into_string()
+            bs58::encode(&public_key_bytes).into_string()
         );
-        let signing_key = jsonwebtoken::EncodingKey::from_ed_der(serialized_keypair.as_ref());
+        let encoding_key = jsonwebtoken::EncodingKey::from_ed_der(pkcs8_der.as_bytes());
 
         let header = jsonwebtoken::Header {
             typ: Some("JWT".into()),
@@ -264,7 +266,7 @@ mod tests {
             iat: unix_seconds,
             exp: unix_seconds.saturating_add(60),
         };
-        let jwt = jsonwebtoken::encode(&header, &claims, &signing_key).unwrap();
+        let jwt = jsonwebtoken::encode(&header, &claims, &encoding_key).unwrap();
 
         (jwt, kid)
     }
