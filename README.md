@@ -32,3 +32,10 @@ To release we use [cargo-release](https://github.com/crate-ci/cargo-release):
 cargo release <VERSION>
 ```
 
+After the dry-run succeeded, run with `--execute`:
+
+```
+cargo release <VERSION> --execute
+```
+
+Last but not least, push the newly created commit and tag and create a GitHub release.
