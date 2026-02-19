@@ -17,7 +17,7 @@ prost = "0.14"
 bytes = "1.10"
 bytes-utils = "0.1"
 tracing = "0.1"
-paste = "1.0"
+pastey = "0.2"
 strum = { version = "0.27", features = ["derive"] }
 base64 = "0.22"
 serde = { version = "1.0", features = ["derive"] }

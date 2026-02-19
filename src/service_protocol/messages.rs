@@ -1,6 +1,6 @@
 use crate::service_protocol::{MessageHeader, MessageType, NotificationResult};
 use bytes::Bytes;
-use paste::paste;
+use pastey::paste;
 use std::borrow::Cow;
 use std::fmt;
 
