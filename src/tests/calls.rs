@@ -11,7 +11,7 @@ use test_log::test;
 #[test]
 fn call_then_get_invocation_id_then_cancel_invocation() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .input(CallInvocationIdCompletionNotificationMessage {
             completion_id: 1,
@@ -79,7 +79,7 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
 #[test]
 fn send_then_get_invocation_id_then_cancel_invocation() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .input(CallInvocationIdCompletionNotificationMessage {
             completion_id: 1,

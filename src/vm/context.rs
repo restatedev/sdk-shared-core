@@ -421,6 +421,10 @@ impl EagerState {
         }
     }
 
+    pub(crate) fn set_partial(&mut self, is_partial: bool) {
+        self.is_partial = is_partial;
+    }
+
     pub(crate) fn set(&mut self, k: String, v: Bytes) {
         self.values.insert(k, Some(v));
     }

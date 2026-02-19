@@ -18,7 +18,7 @@ fn greeter_target() -> Target {
 #[test]
 fn dont_await_call() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 1,
@@ -69,7 +69,7 @@ fn dont_await_call() {
 #[test]
 fn dont_await_call_dont_notify_input_closed() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 1,
@@ -124,7 +124,7 @@ mod do_progress {
     #[test]
     fn await_twice_the_same_handle() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"123"),
                 debug_id: "123".to_string(),
                 known_entries: 1,
@@ -227,7 +227,7 @@ mod reverse_await_order {
     #[test]
     fn none_completed() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -270,7 +270,7 @@ mod reverse_await_order {
     #[test]
     fn a1_and_a2_completed_later() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -345,7 +345,7 @@ mod reverse_await_order {
     #[test]
     fn a2_and_a1_completed_later() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -412,7 +412,7 @@ mod reverse_await_order {
     #[test]
     fn only_a2_completed() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -469,7 +469,7 @@ mod reverse_await_order {
     #[test]
     fn only_a1_completed() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -524,7 +524,7 @@ mod combinators {
     #[test]
     fn replay_with_combinator_and_entry_afterwards() {
         let mut output = VMTestCase::new()
-            .input(start_message(5))
+            .input_start(start_message(5))
             .input(input_entry_message(b"my-data"))
             // Two sleep are created
             .input(SleepCommandMessage {

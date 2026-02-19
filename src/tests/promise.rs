@@ -37,7 +37,7 @@ mod get_promise {
     #[test]
     fn completed_with_success() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -74,7 +74,7 @@ mod get_promise {
     #[test]
     fn completed_with_failure() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -146,7 +146,7 @@ mod peek_promise {
     #[test]
     fn completed_with_success() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -184,7 +184,7 @@ mod peek_promise {
     #[test]
     fn completed_with_failure() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -226,7 +226,7 @@ mod peek_promise {
     #[test]
     fn completed_with_null() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -301,7 +301,7 @@ mod complete_promise {
     #[test]
     fn resolve_promise_succeeds() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -350,7 +350,7 @@ mod complete_promise {
     #[test]
     fn resolve_promise_fails() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -401,7 +401,7 @@ mod complete_promise {
     #[test]
     fn reject_promise_succeeds() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,
@@ -454,7 +454,7 @@ mod complete_promise {
     #[test]
     fn reject_promise_fails() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 id: Bytes::from_static(b"abc"),
                 debug_id: "abc".to_owned(),
                 known_entries: 1,

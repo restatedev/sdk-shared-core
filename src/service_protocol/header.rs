@@ -73,6 +73,8 @@ gen_message_type_enum!(
     Error = 0x0002,
     End = 0x0003,
     ProposeRunCompletion = 0x0005,
+    EagerStateEntry = 0x0006,
+    EagerStateComplete = 0x0007,
     InputCommand = 0x0400,
     OutputCommand = 0x0401,
     GetLazyStateCommand = 0x0402,

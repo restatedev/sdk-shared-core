@@ -12,9 +12,9 @@ mod suspensions;
 use super::*;
 
 use crate::service_protocol::messages::{
-    output_command_message, signal_notification_message, ErrorMessage, InputCommandMessage,
-    OutputCommandMessage, RestateMessage, SignalNotificationMessage, StartMessage,
-    SuspensionMessage,
+    output_command_message, signal_notification_message, EagerStateCompleteMessage,
+    EagerStateEntryMessage, ErrorMessage, InputCommandMessage, OutputCommandMessage,
+    RestateMessage, SignalNotificationMessage, StartMessage, SuspensionMessage,
 };
 use crate::service_protocol::{messages, CompletionId, Decoder, Encoder, RawMessage, Version};
 use bytes::Bytes;
@@ -48,20 +48,27 @@ impl CoreVM {
 }
 
 struct VMTestCase {
+    version: Version,
     encoder: Encoder,
     vm: CoreVM,
 }
 
 impl VMTestCase {
     fn new() -> Self {
+        Self::with_version(Version::maximum_supported_version())
+    }
+
+    fn with_version(version: Version) -> Self {
         Self {
-            encoder: Encoder::new(Version::maximum_supported_version()),
-            vm: CoreVM::mock_init(Version::maximum_supported_version()),
+            version,
+            encoder: Encoder::new(version),
+            vm: CoreVM::mock_init(version),
         }
     }
 
     fn with_vm_options(options: VMOptions) -> Self {
         Self {
+            version: Version::maximum_supported_version(),
             encoder: Encoder::new(Version::maximum_supported_version()),
             vm: CoreVM::mock_init_with_options(Version::maximum_supported_version(), options),
         }
@@ -69,6 +76,40 @@ impl VMTestCase {
 
     fn input<M: RestateMessage>(mut self, m: M) -> Self {
         self.vm.notify_input(self.encoder.encode(&m));
+        self
+    }
+
+    /// Send a StartMessage with V7 eager state streaming support.
+    /// In V7+, state_map entries are extracted from the StartMessage and sent
+    /// as EagerStateEntry/EagerStateComplete messages after it.
+    /// In V5/V6, the StartMessage is sent as-is.
+    fn input_start(mut self, msg: StartMessage) -> Self {
+        if self.version >= Version::V7 {
+            let state_map = msg.state_map.clone();
+            let partial_state = msg.partial_state;
+
+            // Send StartMessage with empty state_map for V7
+            let v7_start = StartMessage {
+                state_map: vec![],
+                partial_state: false, // irrelevant in V7
+                ..msg
+            };
+            self.vm.notify_input(self.encoder.encode(&v7_start));
+
+            // Stream state entries if any
+            if !state_map.is_empty() {
+                self.vm
+                    .notify_input(self.encoder.encode(&EagerStateEntryMessage { state_map }));
+            }
+
+            // Send the terminator
+            self.vm.notify_input(
+                self.encoder
+                    .encode(&EagerStateCompleteMessage { partial_state }),
+            );
+        } else {
+            self.vm.notify_input(self.encoder.encode(&msg));
+        }
         self
     }
 

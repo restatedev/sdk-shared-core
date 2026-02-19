@@ -9,7 +9,7 @@ use test_log::test;
 #[test]
 fn call_then_get_invocation_id_then_cancel() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .input(CallInvocationIdCompletionNotificationMessage {
             completion_id: 1,
@@ -83,7 +83,7 @@ fn call_then_get_invocation_id_then_cancel() {
 #[test]
 fn call_then_cancel() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .input(CallInvocationIdCompletionNotificationMessage {
             completion_id: 1,
@@ -144,7 +144,7 @@ fn call_then_cancel() {
 #[test]
 fn call_then_cancel_without_invocation_id() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .input(cancel_signal_notification())
         .run(|vm| {
@@ -199,7 +199,7 @@ fn call_then_then_cancel_disabling_children_cancellation() {
         },
         ..VMOptions::default()
     })
-    .input(start_message(1))
+    .input_start(start_message(1))
     .input(input_entry_message(b"my-data"))
     .input(cancel_signal_notification())
     .run(|vm| {
@@ -250,7 +250,7 @@ fn disabled_implicit_cancellation() {
         implicit_cancellation: ImplicitCancellationOption::Disabled,
         ..VMOptions::default()
     })
-    .input(start_message(1))
+    .input_start(start_message(1))
     .input(input_entry_message(b"my-data"))
     .input(cancel_signal_notification())
     .run(|vm| {
@@ -300,7 +300,7 @@ fn disabled_implicit_cancellation() {
 #[test]
 fn replay_while_cancelling() {
     let mut output = VMTestCase::new()
-        .input(start_message(7))
+        .input_start(start_message(7))
         .input(input_entry_message(b"my-data"))
         .input(CallCommandMessage {
             service_name: "MySvc".to_string(),

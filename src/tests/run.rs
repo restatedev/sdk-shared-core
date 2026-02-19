@@ -12,7 +12,7 @@ use test_log::test;
 #[test]
 fn enter_then_propose_completion_then_suspend() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 1,
@@ -76,7 +76,7 @@ fn enter_then_propose_completion_then_suspend() {
 #[test]
 fn enter_then_propose_completion_then_complete() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 1,
@@ -151,7 +151,7 @@ fn enter_then_propose_completion_then_complete() {
 #[test]
 fn enter_then_propose_completion_then_complete_with_failure() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 1,
@@ -236,7 +236,7 @@ fn enter_then_propose_completion_then_complete_with_failure() {
 #[test]
 fn enter_then_notify_input_closed_then_propose_completion() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 1,
@@ -300,7 +300,7 @@ fn enter_then_notify_input_closed_then_propose_completion() {
 #[test]
 fn replay_without_completion() {
     let mut output = VMTestCase::new()
-        .input(start_message(2))
+        .input_start(start_message(2))
         .input(input_entry_message(b"my-data"))
         .input(RunCommandMessage {
             result_completion_id: 1,
@@ -346,7 +346,7 @@ fn replay_without_completion() {
 #[test]
 fn replay_without_completion_with_any() {
     let mut output = VMTestCase::new()
-        .input(start_message(5))
+        .input_start(start_message(5))
         .input(input_entry_message(b"my-data"))
         .input(RunCommandMessage {
             result_completion_id: 1,
@@ -429,7 +429,7 @@ fn replay_without_completion_with_any() {
 #[test]
 fn replay_with_completion() {
     let mut output = VMTestCase::new()
-        .input(start_message(3))
+        .input_start(start_message(3))
         .input(input_entry_message(b"my-data"))
         .input(RunCommandMessage {
             result_completion_id: 1,
@@ -471,7 +471,7 @@ fn replay_with_completion() {
 #[test]
 fn enter_then_notify_error() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run(|vm| {
             vm.sys_input().unwrap();
@@ -515,7 +515,7 @@ mod retry_policy {
         retry_policy: RetryPolicy,
     ) {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 retry_count_since_last_stored_entry,
                 duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis()
                     as u64,
@@ -601,7 +601,7 @@ mod retry_policy {
         next_retry_interval: Option<Duration>,
     ) {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 retry_count_since_last_stored_entry,
                 duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis()
                     as u64,
@@ -803,7 +803,7 @@ mod retry_policy {
     #[test]
     fn retry_info_is_zero_when_entry_is_the_one_after_the_first_new_entry() {
         let mut output = VMTestCase::new()
-            .input(StartMessage {
+            .input_start(StartMessage {
                 retry_count_since_last_stored_entry: 10,
                 duration_since_last_stored_entry: Duration::from_secs(10).as_millis() as u64,
                 ..start_message(1)
