@@ -51,21 +51,46 @@ pub mod start_message {
         pub value: ::prost::bytes::Bytes,
     }
 }
-/// Type: 0x0000 + 1
-/// Implementations MUST send this message when suspending an invocation.
+/// Recursively describes an await point as a tree of future combinators.
 ///
-/// These lists represent any of the notification_idx and/or notification_name the invocation is waiting on to progress.
-/// The runtime will resume the invocation as soon as either one of the given notification_idx or notification_name is completed.
-/// Between the two lists there MUST be at least one element.
+/// Leaf data is the set of notification IDs this node is waiting for.
+/// For representation purposes, the list of notification ids is flattened in 3 lists to avoid a per-element oneof wrapper.
+/// Inner nodes combine their children (leaves + nested) via `combinator_type`.
+///
+/// Example: Promise.all(\[completion_3, Promise.race([signal_1, signal_2\])]) becomes:
+///
+///    Future {
+///      combinator_type: ALL_SUCCEEDED_OR_FIRST_FAILED
+///      waiting_completions: \[3\]
+///      nested: [
+///        Future {
+///          combinator_type: FIRST_COMPLETED
+///          waiting_signals: \[1, 2\]
+///        }
+///      ]
+///    }
 #[allow(dead_code)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SuspensionMessage {
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Future {
     #[prost(uint32, repeated, tag = "1")]
     pub waiting_completions: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint32, repeated, tag = "2")]
     pub waiting_signals: ::prost::alloc::vec::Vec<u32>,
     #[prost(string, repeated, tag = "3")]
     pub waiting_named_signals: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "4")]
+    pub nested_futures: ::prost::alloc::vec::Vec<Future>,
+    #[prost(enumeration = "CombinatorType", tag = "5")]
+    pub combinator_type: i32,
+}
+/// Type: 0x0000 + 1
+/// Implementations MUST send this message when suspending an invocation.
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SuspensionMessage {
+    /// Describes the await point.
+    #[prost(message, optional, tag = "1")]
+    pub awaiting_on: ::core::option::Option<Future>,
 }
 /// Type: 0x0000 + 2
 #[allow(dead_code)]
@@ -133,6 +158,19 @@ pub mod propose_run_completion_message {
         #[prost(message, tag = "15")]
         Failure(super::Failure),
     }
+}
+/// Type: 0x0000 + 6
+/// The SDK MAY send this message to the runtime when inside an await point, to notify what the user code is currently blocked awaiting on.
+/// This information SHOULD be considered outdated by the runtime as soon as a notification in the future tree is sent over.
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AwaitingOnMessage {
+    /// Describes the await point.
+    #[prost(message, optional, tag = "1")]
+    pub awaiting_on: ::core::option::Option<Future>,
+    /// True if any of the notifications the SDK is awaiting on are side effects the SDK is currently executing.
+    #[prost(bool, tag = "2")]
+    pub executing_side_effects: bool,
 }
 /// A notification message follows the following duck-type:
 ///
@@ -943,6 +981,9 @@ pub enum ServiceProtocolVersion {
     /// * StartMessage.random_seed
     /// * Failure.metadata
     V6 = 6,
+    /// Added:
+    /// * Future & AwaitingOnMessage + Changed the SuspensionMessage
+    V7 = 7,
 }
 impl ServiceProtocolVersion {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -958,6 +999,7 @@ impl ServiceProtocolVersion {
             Self::V4 => "V4",
             Self::V5 => "V5",
             Self::V6 => "V6",
+            Self::V7 => "V7",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -970,6 +1012,50 @@ impl ServiceProtocolVersion {
             "V4" => Some(Self::V4),
             "V5" => Some(Self::V5),
             "V6" => Some(Self::V6),
+            "V7" => Some(Self::V7),
+            _ => None,
+        }
+    }
+}
+/// Defines how a set of child futures are combined.
+#[allow(dead_code)]
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CombinatorType {
+    /// Should be treated as FIRST_COMPLETED.
+    CombinatorUnknown = 0,
+    /// Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
+    FirstCompleted = 1,
+    /// Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
+    AllCompleted = 2,
+    /// Resolve on the first success; fail only if all children fail (same as JS Promise.any).
+    FirstSucceededOrAllFailed = 3,
+    /// Resolve when all children succeed; short-circuit on the first failure (same as JS Promise.all).
+    AllSucceededOrFirstFailed = 4,
+}
+impl CombinatorType {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::CombinatorUnknown => "COMBINATOR_UNKNOWN",
+            Self::FirstCompleted => "FIRST_COMPLETED",
+            Self::AllCompleted => "ALL_COMPLETED",
+            Self::FirstSucceededOrAllFailed => "FIRST_SUCCEEDED_OR_ALL_FAILED",
+            Self::AllSucceededOrFirstFailed => "ALL_SUCCEEDED_OR_FIRST_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COMBINATOR_UNKNOWN" => Some(Self::CombinatorUnknown),
+            "FIRST_COMPLETED" => Some(Self::FirstCompleted),
+            "ALL_COMPLETED" => Some(Self::AllCompleted),
+            "FIRST_SUCCEEDED_OR_ALL_FAILED" => Some(Self::FirstSucceededOrAllFailed),
+            "ALL_SUCCEEDED_OR_FIRST_FAILED" => Some(Self::AllSucceededOrFirstFailed),
             _ => None,
         }
     }
@@ -979,7 +1065,7 @@ impl ServiceProtocolVersion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum BuiltInSignal {
-    Unknown = 0,
+    SignalUnknown = 0,
     Cancel = 1,
 }
 impl BuiltInSignal {
@@ -989,14 +1075,14 @@ impl BuiltInSignal {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Unknown => "UNKNOWN",
+            Self::SignalUnknown => "SIGNAL_UNKNOWN",
             Self::Cancel => "CANCEL",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "UNKNOWN" => Some(Self::Unknown),
+            "SIGNAL_UNKNOWN" => Some(Self::SignalUnknown),
             "CANCEL" => Some(Self::Cancel),
             _ => None,
         }
