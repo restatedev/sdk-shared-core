@@ -137,17 +137,20 @@ mod do_progress {
                 let (_, h) = vm.sys_awakeable().unwrap();
 
                 assert_eq!(
-                    vm.do_progress(vec![h]).unwrap(),
+                    vm.do_progress(UnresolvedFuture::Single(h)).unwrap(),
                     DoProgressResponse::ReadFromInput
                 );
                 assert_eq!(
-                    vm.do_progress(vec![h]).unwrap(),
+                    vm.do_progress(UnresolvedFuture::Single(h)).unwrap(),
                     DoProgressResponse::ReadFromInput
                 );
 
                 vm.notify_input_closed();
 
-                assert_that!(vm.do_progress(vec![h]), err(is_suspended()));
+                assert_that!(
+                    vm.do_progress(UnresolvedFuture::Single(h)),
+                    err(is_suspended())
+                );
             });
 
         assert_that!(
@@ -184,7 +187,7 @@ mod reverse_await_order {
             .unwrap();
 
         if vm
-            .do_progress(vec![h2.call_notification_handle])
+            .do_progress(UnresolvedFuture::Single(h2.call_notification_handle))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(
@@ -202,7 +205,7 @@ mod reverse_await_order {
             .unwrap();
 
         if vm
-            .do_progress(vec![h1.call_notification_handle])
+            .do_progress(UnresolvedFuture::Single(h1.call_notification_handle))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(
@@ -568,7 +571,10 @@ mod combinators {
 
                 // Transition should work fine here!
                 assert_that!(
-                    vm.do_progress(vec![a_handle, b_handle]),
+                    vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                        UnresolvedFuture::Single(a_handle),
+                        UnresolvedFuture::Single(b_handle)
+                    ])),
                     ok(eq(DoProgressResponse::AnyCompleted))
                 );
                 assert!(!vm.is_completed(a_handle));
@@ -578,7 +584,10 @@ mod combinators {
                 let c_handle = vm
                     .sys_sleep(Default::default(), Duration::ZERO, None)
                     .unwrap();
-                assert_that!(vm.do_progress(vec![c_handle]), err(is_suspended()));
+                assert_that!(
+                    vm.do_progress(UnresolvedFuture::Single(c_handle)),
+                    err(is_suspended())
+                );
             });
 
         assert_that!(

@@ -28,4 +28,11 @@ pub(crate) struct Notification {
     pub(crate) result: NotificationResult,
 }
 
+impl NotificationResult {
+    // A notification is considered failure only if it's failure variant
+    pub fn is_failure(&self) -> bool {
+        matches!(self, NotificationResult::Failure(_))
+    }
+}
+
 pub(crate) const CANCEL_SIGNAL_ID: u32 = 1;

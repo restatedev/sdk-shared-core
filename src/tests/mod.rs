@@ -13,8 +13,8 @@ use super::*;
 
 use crate::service_protocol::messages::{
     output_command_message, signal_notification_message, ErrorMessage, InputCommandMessage,
-    OutputCommandMessage, RestateMessage, SignalNotificationMessage, StartMessage,
-    SuspensionMessage,
+    OutputCommandMessage, RestateEncodableMessage, RestateMessage, SignalNotificationMessage,
+    StartMessage, SuspensionMessage,
 };
 use crate::service_protocol::{messages, CompletionId, Decoder, Encoder, RawMessage, Version};
 use bytes::Bytes;
@@ -67,7 +67,7 @@ impl VMTestCase {
         }
     }
 
-    fn input<M: RestateMessage>(mut self, m: M) -> Self {
+    fn input<M: RestateEncodableMessage>(mut self, m: M) -> Self {
         self.vm.notify_input(self.encoder.encode(&m));
         self
     }
@@ -146,14 +146,25 @@ pub fn suspended_waiting_completion(
     completion_id: CompletionId,
 ) -> impl Matcher<ActualT = SuspensionMessage> {
     pat!(SuspensionMessage {
-        waiting_completions: eq(vec![completion_id]),
-        waiting_signals: eq(vec![1])
+        awaiting_on: some(pat!(messages::Future {
+            waiting_completions: eq(vec![completion_id]),
+            waiting_signals: eq(vec![1]),
+            nested_futures: empty(),
+            waiting_named_signals: empty(),
+            combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+        }))
     })
 }
 
 pub fn suspended_waiting_signal(signal_idx: u32) -> impl Matcher<ActualT = SuspensionMessage> {
     pat!(SuspensionMessage {
-        waiting_signals: all!(contains(eq(signal_idx)), contains(eq(1)))
+        awaiting_on: some(pat!(messages::Future {
+            waiting_completions: empty(),
+            waiting_signals: all!(contains(eq(signal_idx)), contains(eq(1))),
+            nested_futures: empty(),
+            waiting_named_signals: empty(),
+            combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+        }))
     })
 }
 

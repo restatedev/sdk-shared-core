@@ -1,16 +1,16 @@
 use crate::error::{CommandMetadata, NotificationMetadata};
 use crate::service_protocol::{MessageType, NotificationId, CANCEL_SIGNAL_ID};
+use crate::vm::async_results_state::ResolveFutureResult;
 use crate::vm::context::Context;
 use crate::vm::errors::UncompletedDoProgressDuringReplay;
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::{awakeable_id_str, State};
-use crate::{DoProgressResponse, Error, NotificationHandle, Value};
+use crate::{DoProgressResponse, Error, NotificationHandle, UnresolvedFuture, Value};
 use std::collections::HashMap;
-use tracing::trace;
 
 pub(crate) struct Suspended;
 
-pub(crate) struct DoProgress(pub(crate) Vec<NotificationHandle>);
+pub(crate) struct DoProgress(pub(crate) UnresolvedFuture);
 
 impl TransitionAndReturn<Context, DoProgress> for State {
     type Output = Result<DoProgressResponse, Suspended>;
@@ -18,7 +18,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        DoProgress(awaiting_on): DoProgress,
+        DoProgress(unresolved_future): DoProgress,
     ) -> Result<(Self, Self::Output), Error> {
         match self {
             State::Replaying {
@@ -26,27 +26,12 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 ref run_state,
                 ..
             } => {
-                // Check first if any was completed already
-                if awaiting_on
-                    .iter()
-                    .any(|h| async_results.is_handle_completed(*h))
-                {
+                let ResolveFutureResult::Unresolved(unresolved_future) =
+                    async_results.try_resolve_future(unresolved_future)
+                else {
                     // We're good, let's give back control to user code
                     return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
-                }
-
-                let notification_ids = async_results.resolve_notification_handles(&awaiting_on);
-                if notification_ids.is_empty() {
-                    // This can happen if `do_progress` was called while the SDK has all the results already.
-                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
-                }
-
-                // Let's try to find it in the notifications we already have
-                if async_results.process_next_until_any_found(&notification_ids) {
-                    // We're good, let's give back control to user code
-                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
-                }
-
+                };
                 // This assertion proves the user mutated the code, adding an await point.
                 //
                 // Proof by contradiction:
@@ -64,10 +49,13 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 // the journal was originally created.
 
                 // Prepare error metadata here, we gotta be nice to make sure users can debug this
+                let awaiting_on_handles = unresolved_future.handles();
+                let notification_ids =
+                    async_results.resolve_notification_handles(&awaiting_on_handles);
                 let mut known_notification_metadata = HashMap::with_capacity(2);
                 let mut known_command_metadata: Option<CommandMetadata> = None;
                 // Collect run info
-                for handle in awaiting_on {
+                for handle in awaiting_on_handles {
                     if let Some((command_index, name)) = run_state.get_run_info(&handle) {
                         let notification_id =
                             async_results.must_resolve_notification_handle(&handle);
@@ -116,31 +104,17 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 ref mut run_state,
                 ..
             } => {
-                // Check first if any was completed already
-                if awaiting_on
-                    .iter()
-                    .any(|h| async_results.is_handle_completed(*h))
-                {
+                let ResolveFutureResult::Unresolved(unresolved_future) =
+                    async_results.try_resolve_future(unresolved_future)
+                else {
                     // We're good, let's give back control to user code
                     return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
-                }
+                };
 
-                let notification_ids = async_results.resolve_notification_handles(&awaiting_on);
-                if notification_ids.is_empty() {
-                    trace!("Could not resolve any of the {awaiting_on:?} handles");
-                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
-                }
-
-                // Let's try to find it in the notifications we already have
-                if async_results.process_next_until_any_found(&notification_ids) {
-                    // We're good, let's give back control to user code
-                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
-                }
+                let awaiting_on_handles = unresolved_future.handles();
 
                 // We couldn't find any notification for the given ids, let's check if there's some run to execute
-                if let Some(run_to_execute) =
-                    run_state.try_execute_run(&awaiting_on.iter().cloned().collect())
-                {
+                if let Some(run_to_execute) = run_state.try_execute_run(&awaiting_on_handles) {
                     return Ok((self, Ok(DoProgressResponse::ExecuteRun(run_to_execute))));
                 }
 
@@ -148,11 +122,11 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 if context.input_is_closed {
                     // Maybe something is executing and we're awaiting it to complete,
                     // in this case we don't suspend yet!
-                    if run_state.any_executing(&awaiting_on) {
+                    if run_state.any_executing(&awaiting_on_handles) {
                         return Ok((self, Ok(DoProgressResponse::WaitingPendingRun)));
                     }
 
-                    let state = self.transition(context, HitSuspensionPoint(notification_ids))?;
+                    let state = self.transition(context, HitSuspensionPoint(unresolved_future))?;
                     return Ok((state, Err(Suspended)));
                 };
 

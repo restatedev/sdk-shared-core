@@ -36,8 +36,10 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
                 .unwrap();
 
             assert_eq!(
-                vm.do_progress(vec![call_handle.invocation_id_notification_handle])
-                    .unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(
+                    call_handle.invocation_id_notification_handle
+                ))
+                .unwrap(),
                 DoProgressResponse::AnyCompleted
             );
             assert2::assert!(
@@ -105,8 +107,10 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
                 .unwrap();
 
             assert_eq!(
-                vm.do_progress(vec![send_handle.invocation_id_notification_handle])
-                    .unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(
+                    send_handle.invocation_id_notification_handle
+                ))
+                .unwrap(),
                 DoProgressResponse::AnyCompleted
             );
             assert2::assert!(

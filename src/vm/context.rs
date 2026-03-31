@@ -1,14 +1,13 @@
 use crate::error::CommandMetadata;
-use crate::service_protocol::messages::{NamedCommandMessage, RestateMessage};
-use crate::service_protocol::{
-    Encoder, MessageType, Notification, NotificationId, NotificationResult, Version,
+use crate::service_protocol::messages::{
+    NamedCommandMessage, RestateEncodableMessage, RestateMessage,
 };
-use crate::{CommandRelationship, EntryRetryInfo, NotificationHandle, CANCEL_NOTIFICATION_HANDLE};
+use crate::service_protocol::{Encoder, MessageType, Version};
+use crate::{CommandRelationship, EntryRetryInfo};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::time::Duration;
-use tracing::instrument;
 
 #[derive(Clone, Debug)]
 pub(crate) struct StartInfo {
@@ -128,7 +127,7 @@ impl Output {
         }
     }
 
-    pub(crate) fn send<M: RestateMessage>(&mut self, msg: &M) {
+    pub(crate) fn send<M: RestateEncodableMessage>(&mut self, msg: &M) {
         if !self.is_closed {
             self.buffer.push(self.encoder.encode(msg))
         }
@@ -140,219 +139,6 @@ impl Output {
 
     pub(crate) fn is_closed(&self) -> bool {
         self.is_closed
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct AsyncResultsState {
-    to_process: VecDeque<Notification>,
-    ready: HashMap<NotificationId, NotificationResult>,
-
-    handle_mapping: HashMap<NotificationHandle, NotificationId>,
-    next_notification_handle: NotificationHandle,
-}
-
-impl Default for AsyncResultsState {
-    fn default() -> Self {
-        Self {
-            to_process: Default::default(),
-            ready: Default::default(),
-
-            // First 15 are reserved for built-in signals!
-            handle_mapping: HashMap::from([(
-                CANCEL_NOTIFICATION_HANDLE,
-                NotificationId::SignalId(1),
-            )]),
-            next_notification_handle: NotificationHandle(17),
-        }
-    }
-}
-
-impl AsyncResultsState {
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.journal.notification.id = ?notification.id,
-        ),
-        ret
-    )]
-    pub(crate) fn enqueue(&mut self, notification: Notification) {
-        self.to_process.push_back(notification);
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.journal.notification.id = ?notification.id,
-        ),
-        ret
-    )]
-    pub(crate) fn insert_ready(&mut self, notification: Notification) {
-        self.ready.insert(notification.id, notification.result);
-    }
-
-    pub(crate) fn create_handle_mapping(
-        &mut self,
-        notification_id: NotificationId,
-    ) -> NotificationHandle {
-        let assigned_handle = self.next_notification_handle;
-        self.next_notification_handle.0 += 1;
-        self.handle_mapping.insert(assigned_handle, notification_id);
-        assigned_handle
-    }
-
-    #[instrument(level = "trace", skip(self), ret)]
-    pub(crate) fn process_next_until_any_found(&mut self, ids: &HashSet<NotificationId>) -> bool {
-        while let Some(notif) = self.to_process.pop_front() {
-            let any_found = ids.contains(&notif.id);
-            self.ready.insert(notif.id, notif.result);
-            if any_found {
-                return true;
-            }
-        }
-        false
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.shared_core.notification.handle = ?handle,
-        ),
-        ret
-    )]
-    pub(crate) fn is_handle_completed(&self, handle: NotificationHandle) -> bool {
-        self.handle_mapping
-            .get(&handle)
-            .is_some_and(|id| self.ready.contains_key(id))
-    }
-
-    pub(crate) fn non_deterministic_find_id(&self, id: &NotificationId) -> bool {
-        if self.ready.contains_key(id) {
-            return true;
-        }
-        self.to_process.iter().any(|notif| notif.id == *id)
-    }
-
-    pub(crate) fn resolve_notification_handles(
-        &self,
-        handles: &[NotificationHandle],
-    ) -> HashSet<NotificationId> {
-        handles
-            .iter()
-            .filter_map(|h| self.handle_mapping.get(h).cloned())
-            .collect()
-    }
-
-    pub(crate) fn must_resolve_notification_handle(
-        &self,
-        handle: &NotificationHandle,
-    ) -> NotificationId {
-        self.handle_mapping
-            .get(handle)
-            .expect("If there is an handle, there must be a corresponding id")
-            .clone()
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.shared_core.notification.handle = ?handle,
-        ),
-        ret
-    )]
-    pub(crate) fn take_handle(&mut self, handle: NotificationHandle) -> Option<NotificationResult> {
-        let id = self.handle_mapping.get(&handle)?;
-        if let Some(res) = self.ready.remove(id) {
-            self.handle_mapping.remove(&handle);
-            Some(res)
-        } else {
-            None
-        }
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.shared_core.notification.handle = ?handle,
-        ),
-        ret
-    )]
-    pub(crate) fn copy_handle(&mut self, handle: NotificationHandle) -> Option<NotificationResult> {
-        self.ready.get(self.handle_mapping.get(&handle)?).cloned()
-    }
-}
-
-#[derive(Debug)]
-struct Run {
-    command_index: u32,
-    command_name: String,
-    state: RunStateInner,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum RunStateInner {
-    ToExecute,
-    Executing,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct RunState(HashMap<NotificationHandle, Run>);
-
-impl RunState {
-    pub fn insert_run_to_execute(
-        &mut self,
-        handle: NotificationHandle,
-        command_index: u32,
-        command_name: String,
-    ) {
-        self.0.insert(
-            handle,
-            Run {
-                command_index,
-                command_name,
-                state: RunStateInner::ToExecute,
-            },
-        );
-    }
-
-    pub fn try_execute_run(
-        &mut self,
-        any_handle: &HashSet<NotificationHandle>,
-    ) -> Option<NotificationHandle> {
-        if let Some((handle, run)) = self.0.iter_mut().find(|(handle, run)| {
-            run.state == RunStateInner::ToExecute && any_handle.contains(handle)
-        }) {
-            run.state = RunStateInner::Executing;
-            return Some(*handle);
-        }
-        None
-    }
-
-    pub fn get_run_info(&self, handle: &NotificationHandle) -> Option<(u32, &str)> {
-        self.0
-            .get(handle)
-            .map(|run| (run.command_index, run.command_name.as_str()))
-    }
-
-    pub fn any_executing(&self, any_handle: &[NotificationHandle]) -> bool {
-        any_handle.iter().any(|h| {
-            self.0
-                .get(h)
-                .is_some_and(|r| r.state == RunStateInner::Executing)
-        })
-    }
-
-    pub fn notify_execution_completed(&mut self, executed: NotificationHandle) -> (String, u32) {
-        let run = self
-            .0
-            .remove(&executed)
-            .expect("There must be a corresponding run for the given handle");
-        (run.command_name, run.command_index)
     }
 }
 

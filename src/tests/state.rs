@@ -1,6 +1,6 @@
 use crate::service_protocol::messages::{start_message::StateEntry, *};
 use crate::tests::{is_closed, VMTestCase};
-use crate::{CoreVM, NonEmptyValue, PayloadOptions, Value, VM};
+use crate::{CoreVM, NonEmptyValue, PayloadOptions, UnresolvedFuture, Value, VM};
 use bytes::Bytes;
 use googletest::assert_that;
 use googletest::matchers::pat;
@@ -15,7 +15,7 @@ fn get_state_handler(vm: &mut CoreVM) {
         .unwrap();
 
     if vm
-        .do_progress(vec![h1])
+        .do_progress(UnresolvedFuture::Single(h1))
         .is_err_and(|e| e.is_suspended_error())
     {
         assert_that!(vm.take_notification(h1), err(is_closed()));
@@ -268,7 +268,7 @@ mod eager {
             .unwrap();
 
         if vm
-            .do_progress(vec![h1])
+            .do_progress(UnresolvedFuture::Single(h1))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(vm.take_notification(h1), err(is_closed()));
@@ -501,7 +501,7 @@ mod eager {
             .unwrap();
 
         if vm
-            .do_progress(vec![h1])
+            .do_progress(UnresolvedFuture::Single(h1))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(vm.take_notification(h1), err(is_suspended()));
@@ -534,7 +534,7 @@ mod eager {
             .unwrap();
 
         if vm
-            .do_progress(vec![h2])
+            .do_progress(UnresolvedFuture::Single(h2))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(vm.take_notification(h2), err(is_suspended()));
@@ -692,7 +692,7 @@ mod eager {
             .unwrap();
 
         if vm
-            .do_progress(vec![h1])
+            .do_progress(UnresolvedFuture::Single(h1))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(vm.take_notification(h1), err(is_suspended()));
@@ -713,7 +713,7 @@ mod eager {
             .unwrap();
 
         if vm
-            .do_progress(vec![h2])
+            .do_progress(UnresolvedFuture::Single(h2))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(vm.take_notification(h2), err(is_suspended()));
@@ -856,7 +856,7 @@ mod eager {
             .unwrap();
 
         if vm
-            .do_progress(vec![h1])
+            .do_progress(UnresolvedFuture::Single(h1))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(vm.take_notification(h1), err(is_suspended()));
@@ -875,13 +875,13 @@ mod eager {
         let h2 = vm
             .sys_state_get("STATE".to_owned(), PayloadOptions::default())
             .unwrap();
-        vm.do_progress(vec![h2]).unwrap();
+        vm.do_progress(UnresolvedFuture::Single(h2)).unwrap();
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         let h3 = vm
             .sys_state_get("ANOTHER_STATE".to_owned(), PayloadOptions::default())
             .unwrap();
-        vm.do_progress(vec![h3]).unwrap();
+        vm.do_progress(UnresolvedFuture::Single(h3)).unwrap();
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h3));
 
         vm.sys_write_output(
@@ -1045,13 +1045,13 @@ mod eager {
         let h1 = vm
             .sys_state_get("key-0".to_owned(), PayloadOptions::default())
             .unwrap();
-        vm.do_progress(vec![h1]).unwrap();
+        vm.do_progress(UnresolvedFuture::Single(h1)).unwrap();
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h1));
 
         let h2 = vm
             .sys_state_get("key-0".to_owned(), PayloadOptions::default())
             .unwrap();
-        vm.do_progress(vec![h2]).unwrap();
+        vm.do_progress(UnresolvedFuture::Single(h2)).unwrap();
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         vm.sys_write_output(
@@ -1168,7 +1168,7 @@ mod state_keys {
         let h1 = vm.sys_state_get_keys().unwrap();
 
         if vm
-            .do_progress(vec![h1])
+            .do_progress(UnresolvedFuture::Single(h1))
             .is_err_and(|e| e.is_suspended_error())
         {
             assert_that!(vm.take_notification(h1), err(is_closed()));

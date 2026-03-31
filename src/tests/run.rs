@@ -26,7 +26,7 @@ fn enter_then_propose_completion_then_suspend() {
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
 
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::ExecuteRun(handle)
             );
 
@@ -39,13 +39,16 @@ fn enter_then_propose_completion_then_suspend() {
 
             // Not yet closed, we could still receive the completion here
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::ReadFromInput
             );
 
             // Input closed, we won't receive the ack anymore
             vm.notify_input_closed();
-            assert_that!(vm.do_progress(vec![handle]), err(is_suspended()));
+            assert_that!(
+                vm.do_progress(UnresolvedFuture::Single(handle)),
+                err(is_suspended())
+            );
         });
 
     assert_that!(
@@ -89,7 +92,7 @@ fn enter_then_propose_completion_then_complete() {
 
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::ExecuteRun(handle)
             );
 
@@ -110,7 +113,7 @@ fn enter_then_propose_completion_then_complete() {
 
             // We should now get the side effect result
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::AnyCompleted
             );
             let result = vm.take_notification(handle).unwrap().unwrap();
@@ -165,7 +168,7 @@ fn enter_then_propose_completion_then_complete_with_failure() {
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
 
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::ExecuteRun(handle)
             );
             vm.propose_run_completion(
@@ -193,7 +196,7 @@ fn enter_then_propose_completion_then_complete_with_failure() {
 
             // We should now get the side effect result
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::AnyCompleted
             );
             let result = vm.take_notification(handle).unwrap().unwrap();
@@ -249,7 +252,7 @@ fn enter_then_notify_input_closed_then_propose_completion() {
 
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::ExecuteRun(handle)
             );
 
@@ -257,7 +260,7 @@ fn enter_then_notify_input_closed_then_propose_completion() {
             vm.notify_input_closed();
 
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::WaitingPendingRun
             );
 
@@ -269,7 +272,10 @@ fn enter_then_notify_input_closed_then_propose_completion() {
             )
             .unwrap();
 
-            assert_that!(vm.do_progress(vec![handle]), err(is_suspended()));
+            assert_that!(
+                vm.do_progress(UnresolvedFuture::Single(handle)),
+                err(is_suspended())
+            );
         });
 
     assert_that!(
@@ -312,7 +318,7 @@ fn replay_without_completion() {
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
 
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::ExecuteRun(handle)
             );
             vm.propose_run_completion(
@@ -322,7 +328,10 @@ fn replay_without_completion() {
             )
             .unwrap();
 
-            assert_that!(vm.do_progress(vec![handle]), err(is_suspended()));
+            assert_that!(
+                vm.do_progress(UnresolvedFuture::Single(handle)),
+                err(is_suspended())
+            );
         });
 
     assert_eq!(
@@ -376,8 +385,11 @@ fn replay_without_completion_with_any() {
 
             // await any(run, first_sleep), we're still replaying here!
             assert_eq!(
-                vm.do_progress(vec![run_handle, first_sleep_handle])
-                    .unwrap(),
+                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                    UnresolvedFuture::Single(run_handle),
+                    UnresolvedFuture::Single(first_sleep_handle)
+                ]))
+                .unwrap(),
                 DoProgressResponse::AnyCompleted
             );
             assert!(vm.is_replaying());
@@ -388,7 +400,10 @@ fn replay_without_completion_with_any() {
                 .unwrap();
             assert!(vm.is_processing());
             assert_that!(
-                vm.do_progress(vec![run_handle, second_sleep_handle]),
+                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                    UnresolvedFuture::Single(run_handle),
+                    UnresolvedFuture::Single(second_sleep_handle)
+                ])),
                 ok(eq(DoProgressResponse::ExecuteRun(run_handle)))
             );
 
@@ -400,7 +415,10 @@ fn replay_without_completion_with_any() {
             .unwrap();
 
             assert_that!(
-                vm.do_progress(vec![run_handle, second_sleep_handle]),
+                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                    UnresolvedFuture::Single(run_handle),
+                    UnresolvedFuture::Single(second_sleep_handle)
+                ])),
                 err(is_suspended())
             );
         });
@@ -416,11 +434,23 @@ fn replay_without_completion_with_any() {
             )),
         }
     );
+    // Cancel signal wraps the original future: FirstCompleted([original, cancel])
     assert_that!(
         output.next_decoded::<SuspensionMessage>().unwrap(),
         pat!(SuspensionMessage {
-            waiting_completions: unordered_elements_are![eq(1), eq(3)],
-            waiting_signals: eq(vec![1])
+            awaiting_on: some(pat!(messages::Future {
+                waiting_completions: empty(),
+                waiting_signals: eq(vec![1]),
+                waiting_named_signals: empty(),
+                nested_futures: elements_are![pat!(messages::Future {
+                    waiting_completions: unordered_elements_are![eq(1), eq(3)],
+                    waiting_signals: empty(),
+                    waiting_named_signals: empty(),
+                    nested_futures: empty(),
+                    combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+                })],
+                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+            }))
         })
     );
     assert_eq!(output.next(), None);
@@ -446,7 +476,7 @@ fn replay_with_completion() {
 
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
             assert_eq!(
-                vm.do_progress(vec![handle]).unwrap(),
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::AnyCompleted
             );
 
@@ -551,7 +581,7 @@ mod retry_policy {
                 .unwrap();
 
                 assert_eq!(
-                    vm.do_progress(vec![handle]).unwrap(),
+                    vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                     DoProgressResponse::AnyCompleted
                 );
                 let value = vm.take_notification(handle).unwrap().unwrap();

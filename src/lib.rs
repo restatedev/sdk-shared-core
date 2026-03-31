@@ -263,6 +263,59 @@ impl Default for VMOptions {
     }
 }
 
+#[cfg_attr(test, derive(Eq, PartialEq))]
+pub enum UnresolvedFuture {
+    /// Waiting only this handle.
+    Single(NotificationHandle),
+    /// Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
+    FirstCompleted(Vec<UnresolvedFuture>),
+    /// Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
+    AllCompleted(Vec<UnresolvedFuture>),
+    /// Resolve on the first success; fail only if all children fail (same as JS Promise.any).
+    FirstSucceededOrAllFailed(Vec<UnresolvedFuture>),
+    /// Resolve when all children succeed; short-circuit on the first failure (same as JS Promise.all).
+    AllSucceededOrFirstFailed(Vec<UnresolvedFuture>),
+    /// Unknown combinator. This should be used when the future type is not known by the SDK,
+    /// or not representable by the other future types.
+    Unknown(Vec<UnresolvedFuture>),
+}
+
+impl std::fmt::Debug for UnresolvedFuture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn fmt_combinator(
+            f: &mut std::fmt::Formatter<'_>,
+            name: &str,
+            children: &[UnresolvedFuture],
+        ) -> std::fmt::Result {
+            write!(f, "{name}(")?;
+            for (i, child) in children.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{child:?}")?;
+            }
+            write!(f, ")")
+        }
+
+        match self {
+            UnresolvedFuture::Unknown(children) => fmt_combinator(f, "unknown", children),
+            UnresolvedFuture::Single(h) => write!(f, "{}", u32::from(*h)),
+            UnresolvedFuture::FirstCompleted(children) => {
+                fmt_combinator(f, "first_completed", children)
+            }
+            UnresolvedFuture::AllCompleted(children) => {
+                fmt_combinator(f, "all_completed", children)
+            }
+            UnresolvedFuture::FirstSucceededOrAllFailed(children) => {
+                fmt_combinator(f, "first_succeeded_or_all_failed", children)
+            }
+            UnresolvedFuture::AllSucceededOrFirstFailed(children) => {
+                fmt_combinator(f, "all_succeeded_or_first_failed", children)
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum DoProgressResponse {
     /// Any of the given AsyncResultHandle completed
@@ -304,7 +357,7 @@ pub trait VM: Sized {
 
     fn is_completed(&self, handle: NotificationHandle) -> bool;
 
-    fn do_progress(&mut self, any_handle: Vec<NotificationHandle>) -> VMResult<DoProgressResponse>;
+    fn do_progress(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<DoProgressResponse>;
 
     fn take_notification(&mut self, handle: NotificationHandle) -> VMResult<Option<Value>>;
 
