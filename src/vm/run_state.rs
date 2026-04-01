@@ -53,12 +53,18 @@ impl RunState {
             .map(|run| (run.command_index, run.command_name.as_str()))
     }
 
-    pub fn any_executing(&self, any_handle: &[NotificationHandle]) -> bool {
+    pub fn any_executing_in_this_set(&self, any_handle: &[NotificationHandle]) -> bool {
         any_handle.iter().any(|h| {
             self.0
                 .get(h)
                 .is_some_and(|r| r.state == RunStateInner::Executing)
         })
+    }
+
+    pub fn any_executing(&self) -> bool {
+        self.0
+            .iter()
+            .any(|(_, r)| r.state == RunStateInner::Executing)
     }
 
     pub fn notify_execution_completed(&mut self, executed: NotificationHandle) -> (String, u32) {

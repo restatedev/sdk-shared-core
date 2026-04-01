@@ -153,9 +153,334 @@ mod do_progress {
                 );
             });
 
+        // Two do_progress calls returned ReadFromInput, each emits AwaitingOnMessage
+        // The future is FirstCompleted([Single(signal_17), Single(cancel_signal)])
+        for _ in 0..2 {
+            assert_that!(
+                output.next_decoded::<AwaitingOnMessage>().unwrap(),
+                pat!(AwaitingOnMessage {
+                    awaiting_on: some(pat!(Future {
+                        waiting_signals: unordered_elements_are![eq(17), eq(1)],
+                        waiting_completions: empty(),
+                        waiting_named_signals: empty(),
+                        nested_futures: empty(),
+                        combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                    })),
+                    executing_side_effects: eq(false)
+                })
+            );
+        }
         assert_that!(
             output.next_decoded::<SuspensionMessage>().unwrap(),
             suspended_waiting_signal(17)
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    /// AwaitingOnMessage should reflect the partially resolved future, not the original.
+    /// all_completed(h1, h2): h1 completes in the queue, h2 still pending.
+    /// The AwaitingOn should contain only h2 (the reduced future).
+    #[test]
+    fn awaiting_on_reflects_partially_resolved_future() {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+
+                let (_, h1) = vm.sys_awakeable().unwrap(); // signal 17
+                let (_, h2) = vm.sys_awakeable().unwrap(); // signal 18
+
+                // Send completion for h1 before calling do_progress
+                vm.notify_input(encoder.encode(&SignalNotificationMessage {
+                    signal_id: Some(signal_notification_message::SignalId::Idx(17)),
+                    result: Some(signal_notification_message::Result::Value(
+                        Bytes::from_static(b"v1").into(),
+                    )),
+                }));
+
+                // do_progress with all_completed(h1, h2):
+                // h1 resolves from queue, h2 still pending → ReadFromInput
+                assert_eq!(
+                    vm.do_progress(UnresolvedFuture::AllCompleted(vec![
+                        UnresolvedFuture::Single(h1),
+                        UnresolvedFuture::Single(h2),
+                    ]))
+                    .unwrap(),
+                    DoProgressResponse::ReadFromInput
+                );
+
+                vm.notify_input_closed();
+                assert_that!(
+                    vm.do_progress(UnresolvedFuture::AllCompleted(vec![
+                        UnresolvedFuture::Single(h1),
+                        UnresolvedFuture::Single(h2),
+                    ])),
+                    err(is_suspended())
+                );
+            });
+
+        // AwaitingOn should have the REDUCED future: only h2 remaining
+        // The cancel signal wraps it: FirstCompleted([AllCompleted([Single(signal_18)]), Single(cancel)])
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            pat!(AwaitingOnMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_completions: empty(),
+                    waiting_signals: eq(vec![1]),
+                    waiting_named_signals: empty(),
+                    nested_futures: elements_are![pat!(Future {
+                        waiting_signals: eq(vec![18]),
+                        waiting_completions: empty(),
+                        nested_futures: empty(),
+                        combinator_type: eq(CombinatorType::AllCompleted as i32)
+                    })],
+                    combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                })),
+                executing_side_effects: eq(false)
+            })
+        );
+        // Suspension has the same reduced future (only h2 remaining)
+        // Cancel signal wraps: FirstCompleted([AllCompleted([Single(signal_18)]), Single(cancel)])
+        assert_that!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            pat!(SuspensionMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_completions: empty(),
+                    waiting_signals: eq(vec![1]),
+                    waiting_named_signals: empty(),
+                    nested_futures: elements_are![pat!(Future {
+                        waiting_signals: eq(vec![18]),
+                        waiting_completions: empty(),
+                        nested_futures: empty(),
+                        combinator_type: eq(CombinatorType::AllCompleted as i32)
+                    })],
+                    combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                }))
+            })
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    /// AwaitingOnMessage should reflect the normalized future.
+    /// asff(h1, unknown(h2)) normalizes to unknown(h1, h2).
+    #[test]
+    fn awaiting_on_reflects_normalized_future() {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, _| {
+                vm.sys_input().unwrap();
+
+                let (_, h1) = vm.sys_awakeable().unwrap(); // signal 17
+                let (_, h2) = vm.sys_awakeable().unwrap(); // signal 18
+
+                // do_progress with asff(h1, unknown(h2))
+                // Normalization: asff extracts unknown → unknown(h1, h2)
+                assert_eq!(
+                    vm.do_progress(UnresolvedFuture::AllSucceededOrFirstFailed(vec![
+                        UnresolvedFuture::Single(h1),
+                        UnresolvedFuture::Unknown(vec![UnresolvedFuture::Single(h2)]),
+                    ]))
+                    .unwrap(),
+                    DoProgressResponse::ReadFromInput
+                );
+
+                vm.notify_input_closed();
+                assert_that!(
+                    vm.do_progress(UnresolvedFuture::AllSucceededOrFirstFailed(vec![
+                        UnresolvedFuture::Single(h1),
+                        UnresolvedFuture::Unknown(vec![UnresolvedFuture::Single(h2)]),
+                    ])),
+                    err(is_suspended())
+                );
+            });
+
+        // Cancel wraps BEFORE normalization: FirstCompleted([asff(h1, unknown(h2)), cancel])
+        // Then normalization extracts unknown from asff (inside FirstCompleted context inherited from cancel wrapper):
+        // Wait — the cancel wrapper is FirstCompleted, not fsaf/asff. So extract=false for the wrapper.
+        // But asff IS fsaf/asff, so it sets extract=true for its own children.
+        // asff(h1, unknown(h2)): extract unknown(h2) → unknown_nodes=[h2], asff collapses to h1.
+        // Root normalize: unknown_nodes=[h2] → wrap: Unknown([FirstCompleted([h1, cancel]), h2])
+        // Serialized: root=CombinatorUnknown, h2 inlined, nested FirstCompleted with h1+cancel
+        // AwaitingOn: root=Unknown, h2 inlined, nested FirstCompleted(h1, cancel)
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            pat!(AwaitingOnMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_signals: eq(vec![18]),
+                    waiting_completions: empty(),
+                    waiting_named_signals: empty(),
+                    nested_futures: elements_are![pat!(Future {
+                        waiting_signals: unordered_elements_are![eq(17), eq(1)],
+                        waiting_completions: empty(),
+                        nested_futures: empty(),
+                        combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                    })],
+                    combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
+                })),
+                executing_side_effects: eq(false)
+            })
+        );
+        // Suspension has the same normalized form
+        assert_that!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            pat!(SuspensionMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_signals: eq(vec![18]),
+                    waiting_completions: empty(),
+                    nested_futures: elements_are![pat!(Future {
+                        waiting_signals: unordered_elements_are![eq(17), eq(1)],
+                        combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                    })],
+                    combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
+                }))
+            })
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    /// Multiple do_progress calls with progressively shrinking future.
+    /// all_completed(h1, h2, h3): first call nothing ready, second call h1 arrives,
+    /// third call h2 arrives. Each AwaitingOn should reflect the current state.
+    #[test]
+    fn awaiting_on_shrinks_across_calls() {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+
+                let (_, h1) = vm.sys_awakeable().unwrap(); // signal 17
+                let (_, h2) = vm.sys_awakeable().unwrap(); // signal 18
+                let (_, h3) = vm.sys_awakeable().unwrap(); // signal 19
+
+                let fut = || {
+                    UnresolvedFuture::AllCompleted(vec![
+                        UnresolvedFuture::Single(h1),
+                        UnresolvedFuture::Single(h2),
+                        UnresolvedFuture::Single(h3),
+                    ])
+                };
+
+                // First call: nothing ready → ReadFromInput, AwaitingOn has all 3
+                assert_eq!(
+                    vm.do_progress(fut()).unwrap(),
+                    DoProgressResponse::ReadFromInput
+                );
+
+                // h1 arrives
+                vm.notify_input(encoder.encode(&SignalNotificationMessage {
+                    signal_id: Some(signal_notification_message::SignalId::Idx(17)),
+                    result: Some(signal_notification_message::Result::Value(
+                        Bytes::from_static(b"v1").into(),
+                    )),
+                }));
+
+                // Second call: h1 resolves, h2+h3 still pending → ReadFromInput
+                assert_eq!(
+                    vm.do_progress(fut()).unwrap(),
+                    DoProgressResponse::ReadFromInput
+                );
+
+                // h2 arrives
+                vm.notify_input(encoder.encode(&SignalNotificationMessage {
+                    signal_id: Some(signal_notification_message::SignalId::Idx(18)),
+                    result: Some(signal_notification_message::Result::Value(
+                        Bytes::from_static(b"v2").into(),
+                    )),
+                }));
+
+                // Third call: h1+h2 resolved, h3 still pending → ReadFromInput
+                assert_eq!(
+                    vm.do_progress(fut()).unwrap(),
+                    DoProgressResponse::ReadFromInput
+                );
+
+                vm.notify_input_closed();
+                assert_that!(vm.do_progress(fut()), err(is_suspended()));
+            });
+
+        // First AwaitingOn: all 3 handles
+        // Cancel wraps: FirstCompleted([AllCompleted([17, 18, 19]), Single(cancel)])
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            pat!(AwaitingOnMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_signals: eq(vec![1]),
+                    nested_futures: elements_are![pat!(Future {
+                        waiting_signals: unordered_elements_are![eq(17), eq(18), eq(19)],
+                        combinator_type: eq(CombinatorType::AllCompleted as i32)
+                    })],
+                    combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                })),
+                executing_side_effects: eq(false)
+            })
+        );
+
+        // Second AwaitingOn: h1 resolved, only h2+h3 remain
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            pat!(AwaitingOnMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_signals: eq(vec![1]),
+                    nested_futures: elements_are![pat!(Future {
+                        waiting_signals: unordered_elements_are![eq(18), eq(19)],
+                        combinator_type: eq(CombinatorType::AllCompleted as i32)
+                    })],
+                    combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                })),
+                executing_side_effects: eq(false)
+            })
+        );
+
+        // Third AwaitingOn: h1+h2 resolved, only h3 remains
+        // AllCompleted([h3]) stays as-is (no collapse during resolution, only normalization)
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            pat!(AwaitingOnMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_signals: eq(vec![1]),
+                    waiting_completions: empty(),
+                    nested_futures: elements_are![pat!(Future {
+                        waiting_signals: eq(vec![19]),
+                        combinator_type: eq(CombinatorType::AllCompleted as i32)
+                    })],
+                    combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                })),
+                executing_side_effects: eq(false)
+            })
+        );
+
+        // Suspension with only h3, same structure
+        assert_that!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            pat!(SuspensionMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_signals: eq(vec![1]),
+                    waiting_completions: empty(),
+                    nested_futures: elements_are![pat!(Future {
+                        waiting_signals: eq(vec![19]),
+                        combinator_type: eq(CombinatorType::AllCompleted as i32)
+                    })],
+                    combinator_type: eq(CombinatorType::FirstCompleted as i32)
+                }))
+            })
         );
         assert_eq!(output.next(), None);
     }

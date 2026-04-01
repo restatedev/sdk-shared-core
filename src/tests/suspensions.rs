@@ -1,8 +1,8 @@
 use super::*;
 
 use crate::service_protocol::messages::{
-    signal_notification_message, EndMessage, GetLazyStateCommandMessage, SignalNotificationMessage,
-    SuspensionMessage,
+    signal_notification_message, AwaitingOnMessage, EndMessage, GetLazyStateCommandMessage,
+    SignalNotificationMessage, SuspensionMessage,
 };
 use crate::Value;
 use test_log::test;
@@ -194,6 +194,22 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             vm.sys_end().unwrap();
         });
 
+    // First do_progress returned ReadFromInput, emits AwaitingOnMessage
+    // Future is FirstCompleted([FirstCompleted([Single(signal_17), Single(signal_18)]), Single(cancel)])
+    assert_that!(
+        output.next_decoded::<AwaitingOnMessage>().unwrap(),
+        pat!(AwaitingOnMessage {
+            awaiting_on: some(pat!(messages::Future {
+                waiting_signals: eq(vec![1]),
+                nested_futures: elements_are![pat!(messages::Future {
+                    waiting_signals: unordered_elements_are![eq(17), eq(18)],
+                    combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+                })],
+                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+            })),
+            executing_side_effects: eq(false)
+        })
+    );
     assert_that!(
         output.next_decoded::<OutputCommandMessage>().unwrap(),
         is_output_with_success(completion)

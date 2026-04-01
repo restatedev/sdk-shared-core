@@ -227,6 +227,14 @@ pub enum TakeOutputResult {
 
 pub type VMResult<T> = Result<T, Error>;
 
+#[derive(Debug, Copy, Clone, Default)]
+pub enum AwaitingOnPolicy {
+    SendAlways,
+    #[default]
+    DontSendWhenExecutingRun,
+    DontSend,
+}
+
 #[derive(Debug)]
 pub enum ImplicitCancellationOption {
     Disabled,
@@ -249,6 +257,7 @@ pub enum NonDeterministicChecksOption {
 pub struct VMOptions {
     pub implicit_cancellation: ImplicitCancellationOption,
     pub non_determinism_checks: NonDeterministicChecksOption,
+    pub awaiting_on_policy: AwaitingOnPolicy,
 }
 
 impl Default for VMOptions {
@@ -259,6 +268,7 @@ impl Default for VMOptions {
                 cancel_children_one_way_calls: false,
             },
             non_determinism_checks: NonDeterministicChecksOption::Enabled,
+            awaiting_on_policy: AwaitingOnPolicy::DontSendWhenExecutingRun,
         }
     }
 }

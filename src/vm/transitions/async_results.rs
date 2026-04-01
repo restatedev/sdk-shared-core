@@ -1,11 +1,15 @@
 use crate::error::{CommandMetadata, NotificationMetadata};
+use crate::service_protocol::messages::AwaitingOnMessage;
 use crate::service_protocol::{MessageType, NotificationId, CANCEL_SIGNAL_ID};
 use crate::vm::async_results_state::ResolveFutureResult;
 use crate::vm::context::Context;
 use crate::vm::errors::UncompletedDoProgressDuringReplay;
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::{awakeable_id_str, State};
-use crate::{DoProgressResponse, Error, NotificationHandle, UnresolvedFuture, Value};
+use crate::{
+    AwaitingOnPolicy, DoProgressResponse, Error, NotificationHandle, UnresolvedFuture, Value,
+    Version,
+};
 use std::collections::HashMap;
 
 pub(crate) struct Suspended;
@@ -122,13 +126,32 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 if context.input_is_closed {
                     // Maybe something is executing and we're awaiting it to complete,
                     // in this case we don't suspend yet!
-                    if run_state.any_executing(&awaiting_on_handles) {
+                    if run_state.any_executing_in_this_set(&awaiting_on_handles) {
                         return Ok((self, Ok(DoProgressResponse::WaitingPendingRun)));
                     }
 
                     let state = self.transition(context, HitSuspensionPoint(unresolved_future))?;
                     return Ok((state, Err(Suspended)));
                 };
+
+                // The only thing we can do at this point is to wait for some notification from the runtime,
+                // which will be received reading from input.
+
+                // Before returning, let's see if we need to send AwaitingOnMessage
+                if context.negotiated_protocol_version >= Version::V7
+                    && match context.awaiting_on_policy {
+                        AwaitingOnPolicy::SendAlways => true,
+                        AwaitingOnPolicy::DontSendWhenExecutingRun => !run_state.any_executing(),
+                        AwaitingOnPolicy::DontSend => false,
+                    }
+                {
+                    context.output.send(&AwaitingOnMessage {
+                        awaiting_on: Some(
+                            async_results.resolve_unresolved_future(unresolved_future),
+                        ),
+                        executing_side_effects: false,
+                    })
+                }
 
                 // Nothing else can be done, we need more input
                 Ok((self, Ok(DoProgressResponse::ReadFromInput)))

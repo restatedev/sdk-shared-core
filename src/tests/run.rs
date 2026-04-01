@@ -1,10 +1,10 @@
 use super::*;
 
 use crate::service_protocol::messages::{
-    propose_run_completion_message, run_completion_notification_message, EndMessage, ErrorMessage,
-    Failure, OutputCommandMessage, ProposeRunCompletionMessage, RunCommandMessage,
-    RunCompletionNotificationMessage, SleepCommandMessage, SleepCompletionNotificationMessage,
-    StartMessage, SuspensionMessage,
+    propose_run_completion_message, run_completion_notification_message, AwaitingOnMessage,
+    EndMessage, ErrorMessage, Failure, OutputCommandMessage, ProposeRunCompletionMessage,
+    RunCommandMessage, RunCompletionNotificationMessage, SleepCommandMessage,
+    SleepCompletionNotificationMessage, StartMessage, SuspensionMessage,
 };
 use crate::PayloadOptions;
 use test_log::test;
@@ -70,6 +70,19 @@ fn enter_then_propose_completion_then_suspend() {
         })
     );
     assert_that!(
+        output.next_decoded::<AwaitingOnMessage>().unwrap(),
+        pat!(AwaitingOnMessage {
+            awaiting_on: some(pat!(messages::Future {
+                waiting_completions: eq(vec![1]),
+                waiting_signals: eq(vec![1]),
+                waiting_named_signals: empty(),
+                nested_futures: empty(),
+                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+            })),
+            executing_side_effects: eq(false)
+        })
+    );
+    assert_that!(
         output.next_decoded::<SuspensionMessage>().unwrap(),
         suspended_waiting_completion(1)
     );
@@ -96,12 +109,24 @@ fn enter_then_propose_completion_then_complete() {
                 DoProgressResponse::ExecuteRun(handle)
             );
 
+            // This should not generate AwaitingOnMessage
+            assert_eq!(
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
+                DoProgressResponse::ReadFromInput
+            );
+
             vm.propose_run_completion(
                 handle,
                 RunExitResult::Success(Bytes::from_static(b"123")),
                 RetryPolicy::default(),
             )
             .unwrap();
+
+            // This will generate AwaitingOnMessage
+            assert_eq!(
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
+                DoProgressResponse::ReadFromInput
+            );
 
             vm.notify_input(encoder.encode(&RunCompletionNotificationMessage {
                 completion_id: 1,
@@ -142,6 +167,19 @@ fn enter_then_propose_completion_then_complete() {
                 Bytes::from_static(b"123")
             )),
         }
+    );
+    assert_that!(
+        output.next_decoded::<AwaitingOnMessage>().unwrap(),
+        pat!(AwaitingOnMessage {
+            awaiting_on: some(pat!(messages::Future {
+                waiting_completions: eq(vec![1]),
+                waiting_signals: eq(vec![1]),
+                waiting_named_signals: empty(),
+                nested_futures: empty(),
+                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+            })),
+            executing_side_effects: eq(false)
+        })
     );
     assert_that!(
         output.next_decoded::<OutputCommandMessage>().unwrap(),

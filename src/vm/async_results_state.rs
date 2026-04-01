@@ -538,12 +538,12 @@ impl UnresolvedFuture {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::ResolveFutureResult::{Resolved, Unresolved};
+    use super::*;
 
-    use googletest::prelude::*;
     use crate::service_protocol::messages::{Failure, Void};
-    use crate::service_protocol::{ Notification, NotificationId, NotificationResult};
+    use crate::service_protocol::{Notification, NotificationId, NotificationResult};
+    use googletest::prelude::*;
     use pastey::paste;
 
     // --- Helpers ---
@@ -610,9 +610,7 @@ mod tests {
     fn handles(handles: impl IntoIterator<Item = (u32, NotificationId)>) -> AsyncResultsState {
         let mut state = AsyncResultsState::default();
         for (handle, id) in handles {
-            state
-                .handle_mapping
-                .insert(handle.into(), id);
+            state.handle_mapping.insert(handle.into(), id);
         }
         state
     }
@@ -982,7 +980,6 @@ mod tests {
     test_try_future_resolve!(duplicated_leaf_partial_resolution:
         state([success(1)]), all_completed([single(1), single(2), single(1)])
         => Unresolved(all_completed([single(2)])));
-
 
     // ==================== Conversions to protocol future type ====================
 

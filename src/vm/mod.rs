@@ -245,6 +245,7 @@ impl super::VM for CoreVM {
             options.non_determinism_checks,
             NonDeterministicChecksOption::PayloadChecksDisabled
         );
+        let awaiting_on_policy = options.awaiting_on_policy;
 
         Ok(Self {
             options,
@@ -257,6 +258,7 @@ impl super::VM for CoreVM {
                 eager_state: Default::default(),
                 non_deterministic_checks_ignore_payload_equality,
                 negotiated_protocol_version: version,
+                awaiting_on_policy,
             },
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],
