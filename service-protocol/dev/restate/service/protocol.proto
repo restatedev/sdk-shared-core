@@ -130,8 +130,10 @@ message Future {
 // Type: 0x0000 + 1
 // Implementations MUST send this message when suspending an invocation.
 message SuspensionMessage {
+  // These used to be the old waiting_ fields. Reserved to simplify parsing.
+  reserved 1, 2, 3;
   // Describes the await point.
-  Future awaiting_on = 1;
+  Future awaiting_on = 4;
 }
 
 // Type: 0x0000 + 2
