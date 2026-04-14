@@ -89,7 +89,7 @@ pub struct Future {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuspensionMessage {
     /// Describes the await point.
-    #[prost(message, optional, tag = "1")]
+    #[prost(message, optional, tag = "4")]
     pub awaiting_on: ::core::option::Option<Future>,
 }
 /// Type: 0x0000 + 2

@@ -158,7 +158,10 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
                     UnresolvedFuture::Single(h1),
                     UnresolvedFuture::Single(h2)
                 ])),
-                ok(eq(DoProgressResponse::ReadFromInput))
+                ok(eq(DoProgressResponse::WaitingExternalProgress {
+                    waiting_input: true,
+                    waiting_run_proposal: false
+                }))
             );
 
             // Let's send Completion for h2
@@ -194,7 +197,7 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             vm.sys_end().unwrap();
         });
 
-    // First do_progress returned ReadFromInput, emits AwaitingOnMessage
+    // First do_progress returned WaitingExternalProgress, emits AwaitingOnMessage
     // Future is FirstCompleted([FirstCompleted([Single(signal_17), Single(signal_18)]), Single(cancel)])
     assert_that!(
         output.next_decoded::<AwaitingOnMessage>().unwrap(),

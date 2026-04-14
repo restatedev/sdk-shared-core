@@ -29,6 +29,13 @@ fn enter_then_propose_completion_then_suspend() {
                 vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
                 DoProgressResponse::ExecuteRun(handle)
             );
+            assert_eq!(
+                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
+                DoProgressResponse::WaitingExternalProgress {
+                    waiting_input: true,
+                    waiting_run_proposal: true
+                }
+            );
 
             vm.propose_run_completion(
                 handle,
@@ -40,7 +47,10 @@ fn enter_then_propose_completion_then_suspend() {
             // Not yet closed, we could still receive the completion here
             assert_eq!(
                 vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::ReadFromInput
+                DoProgressResponse::WaitingExternalProgress {
+                    waiting_input: true,
+                    waiting_run_proposal: false
+                }
             );
 
             // Input closed, we won't receive the ack anymore
@@ -112,7 +122,10 @@ fn enter_then_propose_completion_then_complete() {
             // This should not generate AwaitingOnMessage
             assert_eq!(
                 vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::ReadFromInput
+                DoProgressResponse::WaitingExternalProgress {
+                    waiting_input: true,
+                    waiting_run_proposal: true
+                }
             );
 
             vm.propose_run_completion(
@@ -125,7 +138,10 @@ fn enter_then_propose_completion_then_complete() {
             // This will generate AwaitingOnMessage
             assert_eq!(
                 vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::ReadFromInput
+                DoProgressResponse::WaitingExternalProgress {
+                    waiting_input: true,
+                    waiting_run_proposal: false
+                }
             );
 
             vm.notify_input(encoder.encode(&RunCompletionNotificationMessage {
@@ -299,7 +315,10 @@ fn enter_then_notify_input_closed_then_propose_completion() {
 
             assert_eq!(
                 vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::WaitingPendingRun
+                DoProgressResponse::WaitingExternalProgress {
+                    waiting_input: false,
+                    waiting_run_proposal: true
+                }
             );
 
             // Propose run completion

@@ -330,12 +330,16 @@ impl std::fmt::Debug for UnresolvedFuture {
 pub enum DoProgressResponse {
     /// Any of the given AsyncResultHandle completed
     AnyCompleted,
-    /// The SDK should read from input at this point
-    ReadFromInput,
+    /// There isn't enough information to make progress.
+    /// The SDK should call do_progress again after any of notify_input/notify_input_closed/propose_run_completion are called.
+    WaitingExternalProgress {
+        // The VM expects any of notify_input/notify_input_closed to be called.
+        waiting_input: bool,
+        // The VM expects propose_run_completion to be called.
+        waiting_run_proposal: bool,
+    },
     /// The SDK should execute a pending run
     ExecuteRun(NotificationHandle),
-    /// Any of the run given before with ExecuteRun is waiting for completion
-    WaitingPendingRun,
     /// Returned only when [ImplicitCancellationOption::Enabled].
     CancelSignalReceived,
 }

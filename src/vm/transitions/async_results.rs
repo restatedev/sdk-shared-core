@@ -122,12 +122,21 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                     return Ok((self, Ok(DoProgressResponse::ExecuteRun(run_to_execute))));
                 }
 
+                // Maybe any of the handles in the awaiting on set is executing?
+                let waiting_run_proposal =
+                    run_state.any_executing_in_this_set(&awaiting_on_handles);
+
                 // Check suspension condition
                 if context.input_is_closed {
-                    // Maybe something is executing and we're awaiting it to complete,
-                    // in this case we don't suspend yet!
-                    if run_state.any_executing_in_this_set(&awaiting_on_handles) {
-                        return Ok((self, Ok(DoProgressResponse::WaitingPendingRun)));
+                    // Some run still executing; it's not time to suspend yet!
+                    if waiting_run_proposal {
+                        return Ok((
+                            self,
+                            Ok(DoProgressResponse::WaitingExternalProgress {
+                                waiting_input: false,
+                                waiting_run_proposal: true,
+                            }),
+                        ));
                     }
 
                     let state = self.transition(context, HitSuspensionPoint(unresolved_future))?;
@@ -154,7 +163,13 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 }
 
                 // Nothing else can be done, we need more input
-                Ok((self, Ok(DoProgressResponse::ReadFromInput)))
+                Ok((
+                    self,
+                    Ok(DoProgressResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal,
+                    }),
+                ))
             }
             s => Err(s.as_unexpected_state(crate::fmt::format_do_progress())),
         }

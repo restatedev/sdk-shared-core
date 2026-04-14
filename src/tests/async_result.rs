@@ -138,11 +138,17 @@ mod do_progress {
 
                 assert_eq!(
                     vm.do_progress(UnresolvedFuture::Single(h)).unwrap(),
-                    DoProgressResponse::ReadFromInput
+                    DoProgressResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal: false
+                    }
                 );
                 assert_eq!(
                     vm.do_progress(UnresolvedFuture::Single(h)).unwrap(),
-                    DoProgressResponse::ReadFromInput
+                    DoProgressResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal: false
+                    }
                 );
 
                 vm.notify_input_closed();
@@ -153,7 +159,7 @@ mod do_progress {
                 );
             });
 
-        // Two do_progress calls returned ReadFromInput, each emits AwaitingOnMessage
+        // Two do_progress calls returned WaitingExternalProgress, each emits AwaitingOnMessage
         // The future is FirstCompleted([Single(signal_17), Single(cancel_signal)])
         for _ in 0..2 {
             assert_that!(
@@ -205,14 +211,17 @@ mod do_progress {
                 }));
 
                 // do_progress with all_completed(h1, h2):
-                // h1 resolves from queue, h2 still pending → ReadFromInput
+                // h1 resolves from queue, h2 still pending → WaitingExternalProgress
                 assert_eq!(
                     vm.do_progress(UnresolvedFuture::AllCompleted(vec![
                         UnresolvedFuture::Single(h1),
                         UnresolvedFuture::Single(h2),
                     ]))
                     .unwrap(),
-                    DoProgressResponse::ReadFromInput
+                    DoProgressResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal: false
+                    }
                 );
 
                 vm.notify_input_closed();
@@ -293,7 +302,10 @@ mod do_progress {
                         UnresolvedFuture::Unknown(vec![UnresolvedFuture::Single(h2)]),
                     ]))
                     .unwrap(),
-                    DoProgressResponse::ReadFromInput
+                    DoProgressResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal: false
+                    }
                 );
 
                 vm.notify_input_closed();
@@ -378,10 +390,13 @@ mod do_progress {
                     ])
                 };
 
-                // First call: nothing ready → ReadFromInput, AwaitingOn has all 3
+                // First call: nothing ready → WaitingExternalProgress, AwaitingOn has all 3
                 assert_eq!(
                     vm.do_progress(fut()).unwrap(),
-                    DoProgressResponse::ReadFromInput
+                    DoProgressResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal: false
+                    }
                 );
 
                 // h1 arrives
@@ -392,10 +407,13 @@ mod do_progress {
                     )),
                 }));
 
-                // Second call: h1 resolves, h2+h3 still pending → ReadFromInput
+                // Second call: h1 resolves, h2+h3 still pending → WaitingExternalProgress
                 assert_eq!(
                     vm.do_progress(fut()).unwrap(),
-                    DoProgressResponse::ReadFromInput
+                    DoProgressResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal: false
+                    }
                 );
 
                 // h2 arrives
@@ -406,10 +424,13 @@ mod do_progress {
                     )),
                 }));
 
-                // Third call: h1+h2 resolved, h3 still pending → ReadFromInput
+                // Third call: h1+h2 resolved, h3 still pending → WaitingExternalProgress
                 assert_eq!(
                     vm.do_progress(fut()).unwrap(),
-                    DoProgressResponse::ReadFromInput
+                    DoProgressResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal: false
+                    }
                 );
 
                 vm.notify_input_closed();
