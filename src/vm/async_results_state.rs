@@ -80,9 +80,14 @@ impl AsyncResultsState {
     ) -> ResolveFutureResult {
         // A bit of theory on future resolution.
         //
-        // ## 3 states and combinators
-        // In the Future data model a future can have any of these 3 states:
-        // * PENDING
+        // ## What is a future?
+        // A Future represents one or more results the SDK is awaiting before resuming user code.
+        //
+        // Futures are modeled as a tree: leaves reference Notifications in the restate service-protocol,
+        // while intermediate nodes are combinators that compose child futures.
+        //
+        // A future at any point in time can be in any of these 3 states:
+        // * PENDING (initial state)
         // * SUCCEEDED (completed with success)
         // * FAILED (completed with failure)
         //
