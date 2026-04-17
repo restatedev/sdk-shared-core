@@ -13,7 +13,7 @@ fn sleep_handler(vm: &mut CoreVM) {
         .unwrap();
 
     if vm
-        .do_progress(UnresolvedFuture::Single(h1))
+        .do_await(UnresolvedFuture::Single(h1))
         .is_err_and(|e| e.is_suspended_error())
     {
         assert_that!(vm.take_notification(h1), err(is_closed()));

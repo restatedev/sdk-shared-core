@@ -36,11 +36,11 @@ fn call_then_get_invocation_id_then_cancel() {
 
             // invocation id is here, let's take it and assert it
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(
+                vm.do_await(UnresolvedFuture::Single(
                     call_handle.invocation_id_notification_handle
                 ))
                 .unwrap(),
-                DoProgressResponse::AnyCompleted
+                AwaitResponse::AnyCompleted
             );
             assert2::assert!(
                 let Some(Value::InvocationId(invocation_id)) = vm
@@ -50,11 +50,11 @@ fn call_then_get_invocation_id_then_cancel() {
             assert_eq!(invocation_id, "my-id");
 
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(
+                vm.do_await(UnresolvedFuture::Single(
                     call_handle.call_notification_handle
                 ))
                 .unwrap(),
-                DoProgressResponse::CancelSignalReceived
+                AwaitResponse::CancelSignalReceived
             );
 
             vm.sys_end().unwrap();
@@ -113,11 +113,11 @@ fn call_then_cancel() {
                 .unwrap();
 
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(
+                vm.do_await(UnresolvedFuture::Single(
                     call_handle.call_notification_handle
                 ))
                 .unwrap(),
-                DoProgressResponse::CancelSignalReceived
+                AwaitResponse::CancelSignalReceived
             );
 
             vm.sys_end().unwrap();
@@ -173,7 +173,7 @@ fn call_then_cancel_without_invocation_id() {
 
             // Suspends because it's missing the invocation id to complete the cancellation
             assert_that!(
-                vm.do_progress(UnresolvedFuture::Single(
+                vm.do_await(UnresolvedFuture::Single(
                     call_handle.call_notification_handle
                 )),
                 err(is_suspended())
@@ -233,11 +233,11 @@ fn call_then_then_cancel_disabling_children_cancellation() {
             .unwrap();
 
         assert_eq!(
-            vm.do_progress(UnresolvedFuture::Single(
+            vm.do_await(UnresolvedFuture::Single(
                 call_handle.call_notification_handle
             ))
             .unwrap(),
-            DoProgressResponse::CancelSignalReceived
+            AwaitResponse::CancelSignalReceived
         );
 
         vm.sys_end().unwrap();
@@ -287,7 +287,7 @@ fn disabled_implicit_cancellation() {
 
         // Just suspended
         assert_that!(
-            vm.do_progress(UnresolvedFuture::Single(
+            vm.do_await(UnresolvedFuture::Single(
                 call_handle.call_notification_handle
             )),
             err(is_suspended())
@@ -386,12 +386,12 @@ fn replay_while_cancelling() {
 
             // First time, responds with any completed, then suspends because it's missing the invocation id to complete the cancellation
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
                     UnresolvedFuture::Single(call_handle_1.call_notification_handle),
                     UnresolvedFuture::Single(call_handle_2.call_notification_handle)
                 ]))
                 .unwrap(),
-                DoProgressResponse::CancelSignalReceived
+                AwaitResponse::CancelSignalReceived
             );
 
             vm.sys_end().unwrap();

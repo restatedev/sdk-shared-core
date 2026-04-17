@@ -26,12 +26,12 @@ fn enter_then_propose_completion_then_suspend() {
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
 
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::ExecuteRun(handle)
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::ExecuteRun(handle)
             );
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::WaitingExternalProgress {
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::WaitingExternalProgress {
                     waiting_input: true,
                     waiting_run_proposal: true
                 }
@@ -46,8 +46,8 @@ fn enter_then_propose_completion_then_suspend() {
 
             // Not yet closed, we could still receive the completion here
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::WaitingExternalProgress {
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::WaitingExternalProgress {
                     waiting_input: true,
                     waiting_run_proposal: false
                 }
@@ -56,7 +56,7 @@ fn enter_then_propose_completion_then_suspend() {
             // Input closed, we won't receive the ack anymore
             vm.notify_input_closed();
             assert_that!(
-                vm.do_progress(UnresolvedFuture::Single(handle)),
+                vm.do_await(UnresolvedFuture::Single(handle)),
                 err(is_suspended())
             );
         });
@@ -115,14 +115,14 @@ fn enter_then_propose_completion_then_complete() {
 
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::ExecuteRun(handle)
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::ExecuteRun(handle)
             );
 
             // This should not generate AwaitingOnMessage
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::WaitingExternalProgress {
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::WaitingExternalProgress {
                     waiting_input: true,
                     waiting_run_proposal: true
                 }
@@ -137,8 +137,8 @@ fn enter_then_propose_completion_then_complete() {
 
             // This will generate AwaitingOnMessage
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::WaitingExternalProgress {
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::WaitingExternalProgress {
                     waiting_input: true,
                     waiting_run_proposal: false
                 }
@@ -154,8 +154,8 @@ fn enter_then_propose_completion_then_complete() {
 
             // We should now get the side effect result
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::AnyCompleted
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::AnyCompleted
             );
             let result = vm.take_notification(handle).unwrap().unwrap();
             assert2::assert!(let Value::Success(s) = result);
@@ -222,8 +222,8 @@ fn enter_then_propose_completion_then_complete_with_failure() {
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
 
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::ExecuteRun(handle)
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::ExecuteRun(handle)
             );
             vm.propose_run_completion(
                 handle,
@@ -250,8 +250,8 @@ fn enter_then_propose_completion_then_complete_with_failure() {
 
             // We should now get the side effect result
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::AnyCompleted
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::AnyCompleted
             );
             let result = vm.take_notification(handle).unwrap().unwrap();
             assert2::assert!(let Value::Failure(f) = result);
@@ -306,16 +306,16 @@ fn enter_then_notify_input_closed_then_propose_completion() {
 
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::ExecuteRun(handle)
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::ExecuteRun(handle)
             );
 
             // Notify input closed here
             vm.notify_input_closed();
 
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::WaitingExternalProgress {
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::WaitingExternalProgress {
                     waiting_input: false,
                     waiting_run_proposal: true
                 }
@@ -330,7 +330,7 @@ fn enter_then_notify_input_closed_then_propose_completion() {
             .unwrap();
 
             assert_that!(
-                vm.do_progress(UnresolvedFuture::Single(handle)),
+                vm.do_await(UnresolvedFuture::Single(handle)),
                 err(is_suspended())
             );
         });
@@ -375,8 +375,8 @@ fn replay_without_completion() {
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
 
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::ExecuteRun(handle)
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::ExecuteRun(handle)
             );
             vm.propose_run_completion(
                 handle,
@@ -386,7 +386,7 @@ fn replay_without_completion() {
             .unwrap();
 
             assert_that!(
-                vm.do_progress(UnresolvedFuture::Single(handle)),
+                vm.do_await(UnresolvedFuture::Single(handle)),
                 err(is_suspended())
             );
         });
@@ -442,12 +442,12 @@ fn replay_without_completion_with_any() {
 
             // await any(run, first_sleep), we're still replaying here!
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
                     UnresolvedFuture::Single(run_handle),
                     UnresolvedFuture::Single(first_sleep_handle)
                 ]))
                 .unwrap(),
-                DoProgressResponse::AnyCompleted
+                AwaitResponse::AnyCompleted
             );
             assert!(vm.is_replaying());
 
@@ -457,11 +457,11 @@ fn replay_without_completion_with_any() {
                 .unwrap();
             assert!(vm.is_processing());
             assert_that!(
-                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
                     UnresolvedFuture::Single(run_handle),
                     UnresolvedFuture::Single(second_sleep_handle)
                 ])),
-                ok(eq(DoProgressResponse::ExecuteRun(run_handle)))
+                ok(eq(AwaitResponse::ExecuteRun(run_handle)))
             );
 
             vm.propose_run_completion(
@@ -472,7 +472,7 @@ fn replay_without_completion_with_any() {
             .unwrap();
 
             assert_that!(
-                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
                     UnresolvedFuture::Single(run_handle),
                     UnresolvedFuture::Single(second_sleep_handle)
                 ])),
@@ -533,8 +533,8 @@ fn replay_with_completion() {
 
             let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                DoProgressResponse::AnyCompleted
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::AnyCompleted
             );
 
             // We should now get the side effect result
@@ -638,8 +638,8 @@ mod retry_policy {
                 .unwrap();
 
                 assert_eq!(
-                    vm.do_progress(UnresolvedFuture::Single(handle)).unwrap(),
-                    DoProgressResponse::AnyCompleted
+                    vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                    AwaitResponse::AnyCompleted
                 );
                 let value = vm.take_notification(handle).unwrap().unwrap();
 

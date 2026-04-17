@@ -17,7 +17,7 @@ use crate::vm::errors::{
 use crate::vm::run_state::RunState;
 use crate::vm::transitions::*;
 use crate::{
-    AttachInvocationTarget, CallHandle, CommandRelationship, DoProgressResponse, Error, Header,
+    AttachInvocationTarget, AwaitResponse, CallHandle, CommandRelationship, Error, Header,
     ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
     NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, SendHandle,
     TakeOutputResult, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult, Value,
@@ -160,7 +160,7 @@ impl CoreVM {
     fn _do_progress(
         &mut self,
         unresolved_future: UnresolvedFuture,
-    ) -> Result<DoProgressResponse, Error> {
+    ) -> Result<AwaitResponse, Error> {
         match self.do_transition(DoProgress(unresolved_future)) {
             Ok(Ok(do_progress_response)) => Ok(do_progress_response),
             Ok(Err(_)) => Err(SUSPENDED),
@@ -435,7 +435,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn do_progress(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<DoProgressResponse> {
+    fn do_await(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<AwaitResponse> {
         if self.is_implicit_cancellation_enabled() {
             // We want the runtime to wake us up in case cancel notification comes in.
             let unresolved_future_with_cancellation = UnresolvedFuture::FirstCompleted(vec![
@@ -444,7 +444,7 @@ impl super::VM for CoreVM {
             ]);
 
             match self._do_progress(unresolved_future_with_cancellation) {
-                Ok(DoProgressResponse::AnyCompleted) => {
+                Ok(AwaitResponse::AnyCompleted) => {
                     // If it's cancel signal, then let's go on with the cancellation logic
                     if self._is_completed(CANCEL_NOTIFICATION_HANDLE) {
                         // Loop once over the tracked invocation ids to resolve the unresolved ones
@@ -457,7 +457,7 @@ impl super::VM for CoreVM {
 
                             // Try to resolve it
                             match self._do_progress(UnresolvedFuture::Single(handle)) {
-                                Ok(DoProgressResponse::AnyCompleted) => {
+                                Ok(AwaitResponse::AnyCompleted) => {
                                     let invocation_id = match self.do_transition(CopyNotification(handle)) {
                                         Ok(Ok(Some(Value::InvocationId(invocation_id)))) => Ok(invocation_id),
                                         Ok(Err(_)) => Err(SUSPENDED),
@@ -485,9 +485,9 @@ impl super::VM for CoreVM {
                         let _ = self.take_notification(CANCEL_NOTIFICATION_HANDLE);
 
                         // Done
-                        Ok(DoProgressResponse::CancelSignalReceived)
+                        Ok(AwaitResponse::CancelSignalReceived)
                     } else {
-                        Ok(DoProgressResponse::AnyCompleted)
+                        Ok(AwaitResponse::AnyCompleted)
                     }
                 }
                 res => res,
@@ -1365,4 +1365,26 @@ pub(super) fn awakeable_id_str(id: &[u8], completion_index: u32) -> String {
     input_buf.put_slice(id);
     input_buf.put_u32(completion_index);
     format!("{AWAKEABLE_PREFIX}{}", URL_SAFE.encode(input_buf.freeze()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::service_protocol::messages::Future;
+
+    impl CoreVM {
+        pub(crate) fn resolve_unresolved_future(
+            &self,
+            unresolved_future: UnresolvedFuture,
+        ) -> Future {
+            match &self.last_transition {
+                Ok(
+                    State::Replaying { async_results, .. }
+                    | State::Processing { async_results, .. },
+                ) => async_results.resolve_unresolved_future(unresolved_future),
+                _ => panic!("Could not resolve unresolved future"),
+            }
+        }
+    }
 }

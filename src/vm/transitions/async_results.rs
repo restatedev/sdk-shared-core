@@ -1,14 +1,13 @@
 use crate::error::{CommandMetadata, NotificationMetadata};
 use crate::service_protocol::messages::AwaitingOnMessage;
 use crate::service_protocol::{MessageType, NotificationId, CANCEL_SIGNAL_ID};
-use crate::vm::async_results_state::ResolveFutureResult;
+use crate::vm::async_results_state::ReduceFutureResult;
 use crate::vm::context::Context;
 use crate::vm::errors::UncompletedDoProgressDuringReplay;
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::{awakeable_id_str, State};
 use crate::{
-    AwaitingOnPolicy, DoProgressResponse, Error, NotificationHandle, UnresolvedFuture, Value,
-    Version,
+    AwaitResponse, AwaitingOnPolicy, Error, NotificationHandle, UnresolvedFuture, Value, Version,
 };
 use std::collections::HashMap;
 
@@ -17,7 +16,7 @@ pub(crate) struct Suspended;
 pub(crate) struct DoProgress(pub(crate) UnresolvedFuture);
 
 impl TransitionAndReturn<Context, DoProgress> for State {
-    type Output = Result<DoProgressResponse, Suspended>;
+    type Output = Result<AwaitResponse, Suspended>;
 
     fn transition_and_return(
         mut self,
@@ -30,11 +29,11 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 ref run_state,
                 ..
             } => {
-                let ResolveFutureResult::Unresolved(unresolved_future) =
-                    async_results.try_resolve_future(unresolved_future)
+                let ReduceFutureResult::Unchanged(unresolved_future) =
+                    async_results.try_reduce_future(unresolved_future)
                 else {
                     // We're good, let's give back control to user code
-                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
+                    return Ok((self, Ok(AwaitResponse::AnyCompleted)));
                 };
                 // This assertion proves the user mutated the code, adding an await point.
                 //
@@ -108,18 +107,18 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 ref mut run_state,
                 ..
             } => {
-                let ResolveFutureResult::Unresolved(unresolved_future) =
-                    async_results.try_resolve_future(unresolved_future)
+                let ReduceFutureResult::Unchanged(unresolved_future) =
+                    async_results.try_reduce_future(unresolved_future)
                 else {
                     // We're good, let's give back control to user code
-                    return Ok((self, Ok(DoProgressResponse::AnyCompleted)));
+                    return Ok((self, Ok(AwaitResponse::AnyCompleted)));
                 };
 
                 let awaiting_on_handles = unresolved_future.handles();
 
                 // We couldn't find any notification for the given ids, let's check if there's some run to execute
                 if let Some(run_to_execute) = run_state.try_execute_run(&awaiting_on_handles) {
-                    return Ok((self, Ok(DoProgressResponse::ExecuteRun(run_to_execute))));
+                    return Ok((self, Ok(AwaitResponse::ExecuteRun(run_to_execute))));
                 }
 
                 // Maybe any of the handles in the awaiting on set is executing?
@@ -132,7 +131,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                     if waiting_run_proposal {
                         return Ok((
                             self,
-                            Ok(DoProgressResponse::WaitingExternalProgress {
+                            Ok(AwaitResponse::WaitingExternalProgress {
                                 waiting_input: false,
                                 waiting_run_proposal: true,
                             }),
@@ -165,7 +164,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 // Nothing else can be done, we need more input
                 Ok((
                     self,
-                    Ok(DoProgressResponse::WaitingExternalProgress {
+                    Ok(AwaitResponse::WaitingExternalProgress {
                         waiting_input: true,
                         waiting_run_proposal,
                     }),

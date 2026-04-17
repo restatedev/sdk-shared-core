@@ -273,6 +273,7 @@ impl Default for VMOptions {
     }
 }
 
+#[derive(Clone)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 pub enum UnresolvedFuture {
     /// Waiting only this handle.
@@ -288,6 +289,12 @@ pub enum UnresolvedFuture {
     /// Unknown combinator. This should be used when the future type is not known by the SDK,
     /// or not representable by the other future types.
     Unknown(Vec<UnresolvedFuture>),
+}
+
+impl From<NotificationHandle> for UnresolvedFuture {
+    fn from(value: NotificationHandle) -> Self {
+        Self::Single(value)
+    }
 }
 
 impl std::fmt::Debug for UnresolvedFuture {
@@ -327,8 +334,10 @@ impl std::fmt::Debug for UnresolvedFuture {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum DoProgressResponse {
-    /// Any of the given AsyncResultHandle completed
+pub enum AwaitResponse {
+    /// Any of the futures in the tree completed.
+    ///
+    /// This doesn't mean the future is fully completed! Instead, it means a subtree of the future tree is ready to be completed using take_notification.
     AnyCompleted,
     /// There isn't enough information to make progress.
     /// The SDK should call do_progress again after any of notify_input/notify_input_closed/propose_run_completion are called.
@@ -371,7 +380,7 @@ pub trait VM: Sized {
 
     fn is_completed(&self, handle: NotificationHandle) -> bool;
 
-    fn do_progress(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<DoProgressResponse>;
+    fn do_await(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<AwaitResponse>;
 
     fn take_notification(&mut self, handle: NotificationHandle) -> VMResult<Option<Value>>;
 

@@ -31,10 +31,9 @@ impl Default for AsyncResultsState {
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
-pub(crate) enum ReduceFutureResult {
-    Completed,
-    Reduced,
-    Unchanged(UnresolvedFuture),
+pub(crate) enum ResolveFutureResult {
+    Resolved,
+    Unresolved(UnresolvedFuture),
 }
 
 impl AsyncResultsState {
@@ -72,13 +71,13 @@ impl AsyncResultsState {
         assigned_handle
     }
 
-    // If returns Ok, future is Completed.
+    // If returns Ok, future is resolved.
     // Otherwise, returns the future still to resolve.
     #[instrument(level = "trace", skip(self), ret)]
-    pub(crate) fn try_reduce_future(
+    pub(crate) fn try_resolve_future(
         &mut self,
         mut unresolved_future: UnresolvedFuture,
-    ) -> ReduceFutureResult {
+    ) -> ResolveFutureResult {
         // A bit of theory on future resolution.
         //
         // ## What is a future?
@@ -144,85 +143,59 @@ impl AsyncResultsState {
         // The SDK will try to normalize and resolve the nodes of the tree it can resolve.
         //
         // If the SDK can fully resolve the future with the local information, it will unblock the user code and move on
-        // If the SDK cannot resolve the future, it will shave off the tree the Completed nodes, and propagate back the remaining part of the tree.
+        // If the SDK cannot resolve the future, it will shave off the tree the resolved nodes, and propagate back the remaining part of the tree.
         //      Propagation will happen depending on the situation, via AwaitingOnMessage or SuspensionMessage.
 
         unresolved_future.normalize();
         loop {
-            let reduce_future_res = self._try_reduce_future(&mut unresolved_future);
+            if self
+                ._try_resolve_future(&mut unresolved_future)
+                .is_completed()
+            {
+                // We're good to go!
+                return ResolveFutureResult::Resolved;
+            }
 
-            match reduce_future_res {
-                Ok(handle_state) | Err(handle_state) if handle_state.is_completed() => {
-                    // Future is completed!
-                    return ReduceFutureResult::Completed;
-                }
-                Err(_) => {
-                    // HandleState is not completed, but the future was partially reduced
-                    // and we need to give chance to the SDK to consume the new notifications.
-                    return ReduceFutureResult::Reduced;
-                }
-                Ok(_) => {
-                    // HandleState is not completed
-
-                    // If we pop some element from the notification queue, we can try to resolve the future again.
-                    // Otherwise, the only possible way to make progress now is either reading from input stream, or running a ctx.run if any.
-                    if !self.pop_notification_queue() {
-                        return ReduceFutureResult::Unchanged(unresolved_future);
-                    }
-                }
+            // If we pop some element from the notification queue, we can try to resolve the future again.
+            // Otherwise, the only possible way to make progress now is either reading from input stream, or running a ctx.run if any.
+            if !self.pop_notification_queue() {
+                return ResolveFutureResult::Unresolved(unresolved_future);
             }
         }
     }
 
-    // Err() is used to resolve a future, but also "shortcircuit" the reduction process when "one at the time semantics" are required.
-    fn _try_reduce_future(
-        &self,
-        unresolved_future: &mut UnresolvedFuture,
-    ) -> Result<HandleState, HandleState> {
+    fn _try_resolve_future(&self, unresolved_future: &mut UnresolvedFuture) -> HandleState {
         match unresolved_future {
-            UnresolvedFuture::Single(h) => Ok(self.resolve_handle_state(*h)),
-            UnresolvedFuture::FirstCompleted(futures) | UnresolvedFuture::Unknown(futures) => {
-                let mut any_completed = false;
-                for fut in futures.iter_mut() {
-                    if self._try_reduce_future(fut)?.is_completed() {
-                        any_completed = true;
-                        break;
-                    }
-                }
-
+            UnresolvedFuture::Single(h) => self.resolve_handle_state(*h),
+            UnresolvedFuture::FirstCompleted(futures) => {
                 // Resolve on any child completion (success or failure)
-                if any_completed {
+                if futures
+                    .iter_mut()
+                    .any(|fut| self._try_resolve_future(fut).is_completed())
+                {
                     futures.clear();
-                    // First completed short-circuits!
-                    Err(HandleState::Succeeded)
+                    HandleState::Succeeded
                 } else {
-                    Ok(HandleState::Pending)
+                    HandleState::Pending
                 }
             }
             UnresolvedFuture::AllCompleted(futures) => {
                 // Wait for every child to complete
-                let mut i = 0;
-                while i < futures.len() {
-                    if self._try_reduce_future(&mut futures[i])?.is_completed() {
-                        futures.swap_remove(i);
-                    } else {
-                        i += 1;
-                    }
-                }
+                futures.retain_mut(|fut| self._try_resolve_future(fut) == HandleState::Pending);
                 if futures.is_empty() {
-                    Ok(HandleState::Succeeded)
+                    HandleState::Succeeded
                 } else {
-                    Ok(HandleState::Pending)
+                    HandleState::Pending
                 }
             }
             UnresolvedFuture::FirstSucceededOrAllFailed(futures) => {
                 // First success wins; fail only if all fail
                 let mut i = 0;
                 while i < futures.len() {
-                    let state = self._try_reduce_future(&mut futures[i])?;
+                    let state = self._try_resolve_future(&mut futures[i]);
                     if state == HandleState::Succeeded {
                         futures.clear();
-                        return Err(HandleState::Succeeded);
+                        return HandleState::Succeeded;
                     } else if state == HandleState::Failed {
                         futures.swap_remove(i);
                     } else {
@@ -230,19 +203,19 @@ impl AsyncResultsState {
                     }
                 }
                 if futures.is_empty() {
-                    Ok(HandleState::Failed)
+                    HandleState::Failed
                 } else {
-                    Ok(HandleState::Pending)
+                    HandleState::Pending
                 }
             }
             UnresolvedFuture::AllSucceededOrFirstFailed(futures) => {
                 // All must succeed; first failure short-circuits
                 let mut i = 0;
                 while i < futures.len() {
-                    let state = self._try_reduce_future(&mut futures[i])?;
+                    let state = self._try_resolve_future(&mut futures[i]);
                     if state == HandleState::Failed {
                         futures.clear();
-                        return Err(HandleState::Failed);
+                        return HandleState::Failed;
                     } else if state == HandleState::Succeeded {
                         futures.swap_remove(i);
                     } else {
@@ -250,9 +223,21 @@ impl AsyncResultsState {
                     }
                 }
                 if futures.is_empty() {
-                    Ok(HandleState::Succeeded)
+                    HandleState::Succeeded
                 } else {
-                    Ok(HandleState::Pending)
+                    HandleState::Pending
+                }
+            }
+            UnresolvedFuture::Unknown(futures) => {
+                // Wake on any child completion
+                if futures
+                    .iter_mut()
+                    .any(|fut| self._try_resolve_future(fut).is_completed())
+                {
+                    futures.clear();
+                    HandleState::Succeeded
+                } else {
+                    HandleState::Pending
                 }
             }
         }
@@ -558,19 +543,43 @@ impl UnresolvedFuture {
 
 #[cfg(test)]
 mod tests {
-    use super::ReduceFutureResult::*;
+    use super::ResolveFutureResult::{Resolved, Unresolved};
     use super::*;
 
     use crate::service_protocol::messages::{Failure, Void};
     use crate::service_protocol::{Notification, NotificationId, NotificationResult};
-    use crate::{
-        all_completed, all_succeeded_or_first_failed, first_completed,
-        first_succeeded_or_all_failed, unknown,
-    };
     use googletest::prelude::*;
     use pastey::paste;
 
     // --- Helpers ---
+
+    fn single(n: u32) -> UnresolvedFuture {
+        UnresolvedFuture::Single(n.into())
+    }
+
+    fn unknown(children: impl Into<Vec<UnresolvedFuture>>) -> UnresolvedFuture {
+        UnresolvedFuture::Unknown(children.into())
+    }
+
+    fn first_completed(children: impl Into<Vec<UnresolvedFuture>>) -> UnresolvedFuture {
+        UnresolvedFuture::FirstCompleted(children.into())
+    }
+
+    fn all_completed(children: impl Into<Vec<UnresolvedFuture>>) -> UnresolvedFuture {
+        UnresolvedFuture::AllCompleted(children.into())
+    }
+
+    fn first_succeeded_or_all_failed(
+        children: impl Into<Vec<UnresolvedFuture>>,
+    ) -> UnresolvedFuture {
+        UnresolvedFuture::FirstSucceededOrAllFailed(children.into())
+    }
+
+    fn all_succeeded_or_first_failed(
+        children: impl Into<Vec<UnresolvedFuture>>,
+    ) -> UnresolvedFuture {
+        UnresolvedFuture::AllSucceededOrFirstFailed(children.into())
+    }
 
     fn success(id: u32) -> Notification {
         Notification {
@@ -616,7 +625,7 @@ mod tests {
             paste! {
                 #[test]
                 fn [<normalize_ $test_name>] () {
-                    let mut fut: UnresolvedFuture = ($input).into();
+                    let mut fut = $input;
                     fut.normalize();
                     assert_eq!(fut, $expected);
                 }
@@ -630,8 +639,8 @@ mod tests {
                 #[test]
                 fn [<try_resolve_ $test_name>] () {
                     let mut state = $state;
-                    let fut: UnresolvedFuture = ($input).into();
-                    assert_eq!(state.try_reduce_future(fut), $expected);
+                    let fut = $input;
+                    assert_eq!(state.try_resolve_future(fut), $expected);
                 }
             }
         };
@@ -643,7 +652,7 @@ mod tests {
                 #[test]
                 fn [<unresolved_future_to_message_ $test_name>] () {
                     let state = $state;
-                    let fut: UnresolvedFuture = ($input).into();
+                    let fut = $input;
                     assert_that!(state.resolve_unresolved_future(fut), $expected);
                 }
             }
@@ -653,319 +662,335 @@ mod tests {
     // ==================== Single ====================
 
     test_try_future_resolve!(single_succeeded:
-        state([success(1)]), 1 => Completed);
+        state([success(1)]), single(1) => Resolved);
     test_try_future_resolve!(single_failed:
-        state([failure(1)]), 1 => Completed);
+        state([failure(1)]), single(1) => Resolved);
     test_try_future_resolve!(single_pending:
-        state([]), 1 => Unchanged(1.into()));
+        state([]), single(1) => Unresolved(single(1)));
 
     // ==================== FirstCompleted ====================
 
     test_normalization!(nested_combinators_no_unknowns_is_noop:
-        first_completed!(1, all_completed!(2, 3))
-        => first_completed!(1, all_completed!(2, 3)));
+        first_completed([single(1), all_completed([single(2), single(3)])])
+        => first_completed([single(1), all_completed([single(2), single(3)])]));
     // Unknown inside first_completed is fine — no extraction needed
     test_normalization!(first_completed_with_unknown_is_noop:
-        first_completed!(1, unknown!(2))
-        => first_completed!(1, unknown!(2)));
+        first_completed([single(1), unknown([single(2)])])
+        => first_completed([single(1), unknown([single(2)])]));
     // Unknown wrapping a combinator inside first_completed — no extraction
     test_normalization!(first_completed_with_unknown_wrapping_combinator:
-        first_completed!(unknown!(all_completed!(1, 2)), 3)
-        => first_completed!(unknown!(all_completed!(1, 2)), 3));
+    first_completed([
+        unknown([all_completed([single(1), single(2)])]),
+        single(3)
+    ])
+    => first_completed([
+        unknown([all_completed([single(1), single(2)])]),
+        single(3)
+    ]));
     // first_completed with one Unknown child — collapses (1 child)
     test_normalization!(first_completed_unknown_with_nested_unknown_collapses:
-        first_completed!(unknown!(all_completed!(1, unknown!(2))))
-        => unknown!(all_completed!(1, unknown!(2))));
+        first_completed([unknown([all_completed([single(1), unknown([single(2)])])])])
+        => unknown([all_completed([single(1), unknown([single(2)])])]));
 
     test_try_future_resolve!(first_completed_none_ready:
-        state([]), first_completed!(1, 2, 3)
-        => Unchanged(first_completed!(1, 2, 3)));
+        state([]), first_completed([single(1), single(2), single(3)])
+        => Unresolved(first_completed([single(1), single(2), single(3)])));
     test_try_future_resolve!(first_completed_one_succeeded:
-        state([success(2)]), first_completed!(1, 2, 3)
-        => Completed);
+        state([success(2)]), first_completed([single(1), single(2), single(3)])
+        => Resolved);
     // Resolves on any completion, even failure
     test_try_future_resolve!(first_completed_one_failed:
-        state([failure(1)]), first_completed!(1, 2, 3)
-        => Completed);
+        state([failure(1)]), first_completed([single(1), single(2), single(3)])
+        => Resolved);
     // first_completed(1, unknown(2)) — unknown(2) completes
     test_try_future_resolve!(first_completed_with_unknown_resolves:
-        state([success(2)]), first_completed!(1, unknown!(2))
-        => Completed);
+        state([success(2)]), first_completed([single(1), unknown([single(2)])])
+        => Resolved);
     // first_completed(unknown(all_completed(1, 2)), 3) — completing 3 resolves
     test_try_future_resolve!(first_completed_unknown_wrapping_combinator_resolves_on_leaf:
         state([success(3)]),
-        first_completed!(unknown!(all_completed!(1, 2)), 3)
-        => Completed);
+        first_completed([unknown([all_completed([single(1), single(2)])]), single(3)])
+        => Resolved);
     // Completing 1 alone doesn't resolve: unknown(all_completed(1,2)) needs both
     test_try_future_resolve!(first_completed_unknown_wrapping_combinator_partial_inner:
         state([success(1)]),
-        first_completed!(unknown!(all_completed!(1, 2)), 3)
-        => Unchanged(first_completed!(unknown!(all_completed!(2)), 3)));
+        first_completed([unknown([all_completed([single(1), single(2)])]), single(3)])
+        => Unresolved(first_completed([unknown([all_completed([single(2)])]), single(3)])));
     // Completing 1 and 2 resolves
     test_try_future_resolve!(first_completed_unknown_wrapping_combinator_inner_done:
         state([success(1), success(2)]),
-        first_completed!(unknown!(all_completed!(1, 2)), 3)
-        => Completed);
+        first_completed([unknown([all_completed([single(1), single(2)])]), single(3)])
+        => Resolved);
     // Completing just 1 is NOT enough
     test_try_future_resolve!(deep_unknown_not_prematurely_resolved:
         state([success(1)]),
-        first_completed!(unknown!(all_completed!(1, unknown!(2))))
-        => Unchanged(unknown!(all_completed!(unknown!(2)))));
+        first_completed([unknown([all_completed([single(1), unknown([single(2)])])])])
+        => Unresolved(unknown([all_completed([unknown([single(2)])])])));
     test_try_future_resolve!(deep_unknown_resolves_when_all_done:
         state([success(1), success(2)]),
-        first_completed!(unknown!(all_completed!(1, unknown!(2))))
-        => Completed);
+        first_completed([unknown([all_completed([single(1), unknown([single(2)])])])])
+        => Resolved);
 
     // ==================== AllCompleted ====================
 
     test_normalization!(no_unknowns_is_noop:
-        all_completed!(1, 2) => all_completed!(1, 2));
+        all_completed([single(1), single(2)]) => all_completed([single(1), single(2)]));
     // Unknown inside all_completed is fine — no extraction
     test_normalization!(all_completed_with_unknown_is_noop:
-        all_completed!(1, unknown!(2))
-        => all_completed!(1, unknown!(2)));
+        all_completed([single(1), unknown([single(2)])])
+        => all_completed([single(1), unknown([single(2)])]));
     test_normalization!(all_completed_multiple_unknowns_is_noop:
-        all_completed!(unknown!(1), unknown!(2))
-        => all_completed!(unknown!(1), unknown!(2)));
+        all_completed([unknown([single(1)]), unknown([single(2)])])
+        => all_completed([unknown([single(1)]), unknown([single(2)])]));
     test_normalization!(all_completed_nested_unknown_is_noop:
-        all_completed!(1, unknown!(unknown!(2)))
-        => all_completed!(1, unknown!(unknown!(2))));
+        all_completed([single(1), unknown([unknown([single(2)])])])
+        => all_completed([single(1), unknown([unknown([single(2)])])]));
 
     test_try_future_resolve!(all_completed_none_ready:
-        state([]), all_completed!(1, 2, 3)
-        => Unchanged(all_completed!(1, 2, 3)));
+        state([]), all_completed([single(1), single(2), single(3)])
+        => Unresolved(all_completed([single(1), single(2), single(3)])));
     test_try_future_resolve!(all_completed_partial:
-        state([success(1), failure(3)]), all_completed!(1, 2, 3)
-        => Unchanged(all_completed!(2)));
+        state([success(1), failure(3)]), all_completed([single(1), single(2), single(3)])
+        => Unresolved(all_completed([single(2)])));
     test_try_future_resolve!(all_completed_all_done:
-        state([success(1), failure(2)]), all_completed!(1, 2)
-        => Completed);
+        state([success(1), failure(2)]), all_completed([single(1), single(2)])
+        => Resolved);
     // Handle 1 completes but unknown(2) still pending
     test_try_future_resolve!(all_completed_with_unknown_partial:
-        state([success(1)]), all_completed!(1, unknown!(2))
-        => Unchanged(all_completed!(unknown!(2))));
+        state([success(1)]), all_completed([single(1), unknown([single(2)])])
+        => Unresolved(all_completed([unknown([single(2)])])));
     test_try_future_resolve!(all_completed_with_unknown_all_done:
-        state([success(1), success(2)]), all_completed!(1, unknown!(2))
-        => Completed);
+        state([success(1), success(2)]), all_completed([single(1), unknown([single(2)])])
+        => Resolved);
 
     // ==================== FirstSucceededOrAllFailed ====================
 
     // fsaf extracts unknowns
     test_normalization!(fsaf_extracts_unknown:
-        first_succeeded_or_all_failed!(1, unknown!(2))
-        => unknown!(1, 2));
+        first_succeeded_or_all_failed([single(1), unknown([single(2)])])
+        => unknown([single(1), single(2)]));
     test_normalization!(nested_unknown_inside_fsaf_asff:
-        first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => unknown!(first_succeeded_or_all_failed!(1, 2), 3));
+        first_succeeded_or_all_failed([single(1), all_succeeded_or_first_failed([single(2), unknown([single(3)])])])
+        => unknown([first_succeeded_or_all_failed([single(1), single(2)]), single(3)]));
     // Unknown deep inside fsaf subtree gets extracted
     test_normalization!(fsaf_with_all_completed_containing_unknown:
-        first_succeeded_or_all_failed!(1, all_completed!(2, unknown!(3)))
-        => unknown!(first_succeeded_or_all_failed!(1, 2), 3));
+        first_succeeded_or_all_failed([single(1), all_completed([single(2), unknown([single(3)])])])
+        => unknown([first_succeeded_or_all_failed([single(1), single(2)]), single(3)]));
     test_normalization!(fsaf_with_unknown_containing_asff:
-        first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => unknown!(1, all_succeeded_or_first_failed!(2, 3)));
+        first_succeeded_or_all_failed([single(1), unknown([all_succeeded_or_first_failed([single(2), single(3)])])])
+        => unknown([single(1), all_succeeded_or_first_failed([single(2), single(3)])]));
     // Cascading extraction
     test_normalization!(fsaf_with_unknown_containing_asff_with_unknown:
-        first_succeeded_or_all_failed!(1, unknown!(2, all_succeeded_or_first_failed!(3, unknown!(4))))
-        => unknown!(1, 2, 4, 3));
+        first_succeeded_or_all_failed([single(1), unknown([single(2), all_succeeded_or_first_failed([single(3), unknown([single(4)])])])])
+        => unknown([single(1), single(2), single(4), single(3)]));
 
     test_try_future_resolve!(first_succeeded_or_all_failed_none_ready:
-        state([]), first_succeeded_or_all_failed!(1, 2, 3)
-        => Unchanged(first_succeeded_or_all_failed!(1, 2, 3)));
+        state([]), first_succeeded_or_all_failed([single(1), single(2), single(3)])
+        => Unresolved(first_succeeded_or_all_failed([single(1), single(2), single(3)])));
     test_try_future_resolve!(first_succeeded_or_all_failed_one_succeeded:
-        state([success(2)]), first_succeeded_or_all_failed!(1, 2, 3)
-        => Completed);
+        state([success(2)]), first_succeeded_or_all_failed([single(1), single(2), single(3)])
+        => Resolved);
     // swap_remove changes order
     test_try_future_resolve!(first_succeeded_or_all_failed_some_failed_some_pending:
-        state([failure(1)]), first_succeeded_or_all_failed!(1, 2, 3)
-        => Unchanged(first_succeeded_or_all_failed!(3, 2)));
+        state([failure(1)]), first_succeeded_or_all_failed([single(1), single(2), single(3)])
+        => Unresolved(first_succeeded_or_all_failed([single(3), single(2)])));
     test_try_future_resolve!(first_succeeded_or_all_failed_all_failed:
-        state([failure(1), failure(2)]), first_succeeded_or_all_failed!(1, 2)
-        => Completed);
+        state([failure(1), failure(2)]), first_succeeded_or_all_failed([single(1), single(2)])
+        => Resolved);
 
     // fsaf(1, asff(2, unknown(3))) → unknown(fsaf(1, 2), 3)
     test_try_future_resolve!(normalization_fsaf_asff_unknown_success:
         state([success(3)]),
-        first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => Completed);
+        first_succeeded_or_all_failed([single(1), all_succeeded_or_first_failed([single(2), unknown([single(3)])])])
+        => Resolved);
     test_try_future_resolve!(normalization_fsaf_asff_unknown_failure:
         state([failure(3)]),
-        first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => Completed);
+        first_succeeded_or_all_failed([single(1), all_succeeded_or_first_failed([single(2), unknown([single(3)])])])
+        => Resolved);
     // 1 fails → fsaf prunes it, fsaf(2) still pending. 3 still pending.
     test_try_future_resolve!(normalization_nested_fsaf_asff_partial:
         state([failure(1)]),
-        first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => Unchanged(unknown!(first_succeeded_or_all_failed!(2), 3)));
+        first_succeeded_or_all_failed([single(1), all_succeeded_or_first_failed([single(2), unknown([single(3)])])])
+        => Unresolved(unknown([first_succeeded_or_all_failed([single(2)]), single(3)])));
     // fsaf(1, all_completed(2, unknown(3))) — deep extraction
     test_try_future_resolve!(normalization_fsaf_with_nested_unknown_in_all_completed:
         state([success(3)]),
-        first_succeeded_or_all_failed!(1, all_completed!(2, unknown!(3)))
-        => Completed);
+        first_succeeded_or_all_failed([single(1), all_completed([single(2), unknown([single(3)])])])
+        => Resolved);
     test_try_future_resolve!(normalization_fsaf_with_nested_unknown_in_all_completed_pending:
         state([]),
-        first_succeeded_or_all_failed!(1, all_completed!(2, unknown!(3)))
-        => Unchanged(unknown!(first_succeeded_or_all_failed!(1, 2), 3)));
+        first_succeeded_or_all_failed([single(1), all_completed([single(2), unknown([single(3)])])])
+        => Unresolved(unknown([first_succeeded_or_all_failed([single(1), single(2)]), single(3)])));
     // fsaf(1, unknown(asff(2, 3))) → unknown(1, asff(2, 3))
     test_try_future_resolve!(fsaf_unknown_asff_resolves_when_inner_done:
         state([success(2), success(3)]),
-        first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => Completed);
+        first_succeeded_or_all_failed([single(1), unknown([all_succeeded_or_first_failed([single(2), single(3)])])])
+        => Resolved);
     test_try_future_resolve!(fsaf_unknown_asff_inner_failure_resolves:
         state([failure(2)]),
-        first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => Completed);
+        first_succeeded_or_all_failed([single(1), unknown([all_succeeded_or_first_failed([single(2), single(3)])])])
+        => Resolved);
     test_try_future_resolve!(fsaf_unknown_asff_inner_partial:
         state([success(2)]),
-        first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => Unchanged(unknown!(1, all_succeeded_or_first_failed!(3))));
+        first_succeeded_or_all_failed([single(1), unknown([all_succeeded_or_first_failed([single(2), single(3)])])])
+        => Unresolved(unknown([single(1), all_succeeded_or_first_failed([single(3)])])));
 
     // ==================== AllSucceededOrFirstFailed ====================
 
     // asff extracts unknowns
     test_normalization!(asff_extracts_unknown:
-        all_succeeded_or_first_failed!(1, unknown!(2))
-        => unknown!(1, 2));
+        all_succeeded_or_first_failed([single(1), unknown([single(2)])])
+        => unknown([single(1), single(2)]));
     test_normalization!(asff_with_unknown_containing_fsaf:
-        all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => unknown!(1, 2, first_succeeded_or_all_failed!(3, 4)));
+        all_succeeded_or_first_failed([single(1), unknown([single(2), first_succeeded_or_all_failed([single(3), single(4)])])])
+        => unknown([single(1), single(2), first_succeeded_or_all_failed([single(3), single(4)])]));
     // all_completed inside extracted unknown is kept as-is
     test_normalization!(asff_with_unknown_containing_all_completed_with_unknown:
-        all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => unknown!(1, all_completed!(2, unknown!(3))));
+        all_succeeded_or_first_failed([single(1), unknown([all_completed([single(2), unknown([single(3)])])])])
+        => unknown([single(1), all_completed([single(2), unknown([single(3)])])]));
 
     test_try_future_resolve!(all_succeeded_or_first_failed_none_ready:
-        state([]), all_succeeded_or_first_failed!(1, 2, 3)
-        => Unchanged(all_succeeded_or_first_failed!(1, 2, 3)));
+        state([]), all_succeeded_or_first_failed([single(1), single(2), single(3)])
+        => Unresolved(all_succeeded_or_first_failed([single(1), single(2), single(3)])));
     test_try_future_resolve!(all_succeeded_or_first_failed_all_succeeded:
-        state([success(1), success(2)]), all_succeeded_or_first_failed!(1, 2)
-        => Completed);
+        state([success(1), success(2)]), all_succeeded_or_first_failed([single(1), single(2)])
+        => Resolved);
     test_try_future_resolve!(all_succeeded_or_first_failed_one_failed:
-        state([failure(2)]), all_succeeded_or_first_failed!(1, 2, 3)
-        => Completed);
+        state([failure(2)]), all_succeeded_or_first_failed([single(1), single(2), single(3)])
+        => Resolved);
     // swap_remove changes order
     test_try_future_resolve!(all_succeeded_or_first_failed_some_succeeded_some_pending:
-        state([success(1)]), all_succeeded_or_first_failed!(1, 2, 3)
-        => Unchanged(all_succeeded_or_first_failed!(3, 2)));
+        state([success(1)]), all_succeeded_or_first_failed([single(1), single(2), single(3)])
+        => Unresolved(all_succeeded_or_first_failed([single(3), single(2)])));
     // Inner failure propagates up
     test_try_future_resolve!(promise_all_short_circuits_on_nested_failure:
         state([failure(2)]),
-        all_succeeded_or_first_failed!(all_succeeded_or_first_failed!(1, 2), 3)
-        => Completed);
+        all_succeeded_or_first_failed([all_succeeded_or_first_failed([single(1), single(2)]), single(3)])
+        => Resolved);
 
     // asff(1, unknown(2)) → unknown(1, 2). Failure of 2 wakes.
     test_try_future_resolve!(normalization_asff_extracts_unknown:
         state([failure(2)]),
-        all_succeeded_or_first_failed!(1, unknown!(2))
-        => Completed);
+        all_succeeded_or_first_failed([single(1), unknown([single(2)])])
+        => Resolved);
     // asff(1, unknown(2, fsaf(3, 4))) → unknown(1, 2, fsaf(3, 4))
     test_try_future_resolve!(asff_unknown_fsaf_resolves_on_leaf:
         state([success(1)]),
-        all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Completed);
+        all_succeeded_or_first_failed([single(1), unknown([single(2), first_succeeded_or_all_failed([single(3), single(4)])])])
+        => Resolved);
     test_try_future_resolve!(asff_unknown_fsaf_resolves_on_inner_fsaf_success:
         state([success(3)]),
-        all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Completed);
+        all_succeeded_or_first_failed([single(1), unknown([single(2), first_succeeded_or_all_failed([single(3), single(4)])])])
+        => Resolved);
     // 3 fails but 4 pending → fsaf pending → nothing completed
     test_try_future_resolve!(asff_unknown_fsaf_failure_doesnt_resolve:
         state([failure(3)]),
-        all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Unchanged(unknown!(1, 2, first_succeeded_or_all_failed!(4))));
+        all_succeeded_or_first_failed([single(1), unknown([single(2), first_succeeded_or_all_failed([single(3), single(4)])])])
+        => Unresolved(unknown([single(1), single(2), first_succeeded_or_all_failed([single(4)])])));
     // Both 3 and 4 fail → fsaf completed → unknown wakes
     test_try_future_resolve!(asff_unknown_fsaf_all_inner_fail:
         state([failure(3), failure(4)]),
-        all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Completed);
+        all_succeeded_or_first_failed([single(1), unknown([single(2), first_succeeded_or_all_failed([single(3), single(4)])])])
+        => Resolved);
     test_try_future_resolve!(asff_unknown_fsaf_pending:
         state([]),
-        all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Unchanged(unknown!(1, 2, first_succeeded_or_all_failed!(3, 4))));
+        all_succeeded_or_first_failed([single(1), unknown([single(2), first_succeeded_or_all_failed([single(3), single(4)])])])
+        => Unresolved(unknown([single(1), single(2), first_succeeded_or_all_failed([single(3), single(4)])])));
     // asff(1, unknown(all_completed(2, unknown(3)))) → unknown(1, all_completed(2, unknown(3)))
     test_try_future_resolve!(asff_unknown_all_completed_with_unknown_resolves_on_leaf:
         state([success(1)]),
-        all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => Completed);
+        all_succeeded_or_first_failed([single(1), unknown([all_completed([single(2), unknown([single(3)])])])])
+        => Resolved);
     test_try_future_resolve!(asff_unknown_all_completed_with_unknown_partial:
         state([success(2)]),
-        all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => Unchanged(unknown!(1, all_completed!(unknown!(3)))));
+        all_succeeded_or_first_failed([single(1), unknown([all_completed([single(2), unknown([single(3)])])])])
+        => Unresolved(unknown([single(1), all_completed([unknown([single(3)])])])));
     test_try_future_resolve!(asff_unknown_all_completed_with_unknown_all_done:
         state([success(2), success(3)]),
-        all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => Completed);
+        all_succeeded_or_first_failed([single(1), unknown([all_completed([single(2), unknown([single(3)])])])])
+        => Resolved);
 
     // ==================== Unknown ====================
 
     test_normalization!(single_is_noop:
-        1 => 1.into());
+        single(1) => single(1));
     test_normalization!(unknown_at_root_is_noop:
-        unknown!(1, 2) => unknown!(1, 2));
+        unknown([single(1), single(2)]) => unknown([single(1), single(2)]));
     // Deep: unknown inside asff inside unknown inside all_completed
     test_normalization!(deep_nested_asff_with_unknown:
-        all_completed!(unknown!(all_succeeded_or_first_failed!(1, unknown!(2))))
-        => unknown!(unknown!(1), 2));
+        all_completed([
+            unknown([
+                all_succeeded_or_first_failed([single(1), unknown([single(2)])])
+            ])
+        ])
+        => unknown([unknown([single(1)]), single(2)]));
 
     test_try_future_resolve!(unknown_none_ready:
-        state([]), unknown!(1, 2)
-        => Unchanged(unknown!(1, 2)));
+        state([]), unknown([single(1), single(2)])
+        => Unresolved(unknown([single(1), single(2)])));
     test_try_future_resolve!(unknown_one_ready:
-        state([success(2)]), unknown!(1, 2)
-        => Completed);
+        state([success(2)]), unknown([single(1), single(2)])
+        => Resolved);
 
     // ==================== Nested combinators ====================
 
     test_try_future_resolve!(nested_all_inside_first_completed:
-        state([success(3)]), first_completed!(all_completed!(1, 2), 3)
-        => Completed);
+        state([success(3)]), first_completed([all_completed([single(1), single(2)]), single(3)])
+        => Resolved);
     test_try_future_resolve!(nested_first_completed_inside_all_partial:
         state([success(1)]),
-        all_completed!(first_completed!(1, 2), first_completed!(3, 4))
-        => Reduced);
+        all_completed([first_completed([single(1), single(2)]), first_completed([single(3), single(4)])])
+        => Unresolved(all_completed([first_completed([single(3), single(4)])])));
     test_try_future_resolve!(nested_first_completed_inside_all_complete:
         state([success(1), success(4)]),
-        all_completed!(first_completed!(1, 2), first_completed!(3, 4))
-        => Completed);
+        all_completed([first_completed([single(1), single(2)]), first_completed([single(3), single(4)])])
+        => Resolved);
 
     // ==================== Duplicated leaves and subtrees ====================
 
     test_try_future_resolve!(duplicated_leaf_in_all_completed:
-        state([success(1)]), all_completed!(1, 1)
-        => Completed);
+        state([success(1)]), all_completed([single(1), single(1)])
+        => Resolved);
     test_try_future_resolve!(duplicated_leaf_in_first_completed:
-        state([success(1)]), first_completed!(1, 1, 2)
-        => Completed);
+        state([success(1)]), first_completed([single(1), single(1), single(2)])
+        => Resolved);
     test_try_future_resolve!(duplicated_leaf_failure_in_promise_all:
-        state([failure(1)]), all_succeeded_or_first_failed!(1, 1, 2)
-        => Completed);
+        state([failure(1)]), all_succeeded_or_first_failed([single(1), single(1), single(2)])
+        => Resolved);
     test_try_future_resolve!(duplicated_leaf_success_in_promise_any:
-        state([success(1)]), first_succeeded_or_all_failed!(1, 1)
-        => Completed);
+        state([success(1)]), first_succeeded_or_all_failed([single(1), single(1)])
+        => Resolved);
     test_try_future_resolve!(duplicated_leaf_across_nested_combinators:
         state([success(1)]),
-        all_completed!(first_completed!(1, 2), first_completed!(1, 3))
-        => Completed);
+        all_completed([first_completed([single(1), single(2)]), first_completed([single(1), single(3)])])
+        => Resolved);
     test_try_future_resolve!(duplicated_subtree_all_succeeded:
         state([success(1), success(2)]),
-        all_completed!(all_succeeded_or_first_failed!(1, 2), all_succeeded_or_first_failed!(1, 2))
-        => Completed);
+        all_completed([
+            all_succeeded_or_first_failed([single(1), single(2)]),
+            all_succeeded_or_first_failed([single(1), single(2)])
+        ])
+        => Resolved);
     test_try_future_resolve!(duplicated_subtree_with_failure:
         state([failure(1)]),
-        all_completed!(all_succeeded_or_first_failed!(1, 2), all_succeeded_or_first_failed!(1, 2))
-        => Completed);
+        all_completed([
+            all_succeeded_or_first_failed([single(1), single(2)]),
+            all_succeeded_or_first_failed([single(1), single(2)])
+        ])
+        => Resolved);
     test_try_future_resolve!(duplicated_leaf_with_unknown_in_all_completed:
         state([success(1)]),
-        all_completed!(1, unknown!(1, 2))
-        => Completed);
+        all_completed([single(1), unknown([single(1), single(2)])])
+        => Resolved);
     test_try_future_resolve!(duplicated_leaf_partial_resolution:
-        state([success(1)]), all_completed!(1, 2, 1)
-        => Unchanged(all_completed!(2)));
+        state([success(1)]), all_completed([single(1), single(2), single(1)])
+        => Unresolved(all_completed([single(2)])));
 
     // ==================== Conversions to protocol future type ====================
 
     test_convert_unresolved_future!(single_completion:
         handles([(1, NotificationId::CompletionId(1))]),
-        1
+        single(1)
         => pat!(Future {
             waiting_completions: eq(&[1]),
             waiting_signals: empty(),
@@ -977,7 +1002,7 @@ mod tests {
 
     test_convert_unresolved_future!(single_signal:
         handles([(1, NotificationId::SignalId(17))]),
-        1
+        single(1)
         => pat!(Future {
             waiting_completions: empty(),
             waiting_signals: eq(&[17]),
@@ -989,7 +1014,7 @@ mod tests {
 
     test_convert_unresolved_future!(single_named_signal:
         handles([(1, NotificationId::SignalName("foo".to_string()))]),
-        1
+        single(1)
         => pat!(Future {
             waiting_completions: empty(),
             waiting_signals: empty(),
@@ -1002,7 +1027,7 @@ mod tests {
     // first_completed(1, 2) — both are completions, flattened into waiting_completions
     test_convert_unresolved_future!(first_completed_flat:
         handles([(1, NotificationId::CompletionId(1)), (2, NotificationId::CompletionId(2))]),
-        first_completed!(1, 2)
+        first_completed([single(1), single(2)])
         => pat!(Future {
             waiting_completions: unordered_elements_are![eq(1), eq(2)],
             waiting_signals: empty(),
@@ -1015,7 +1040,7 @@ mod tests {
     // first_completed(completion, signal) — mixed types flattened
     test_convert_unresolved_future!(first_completed_mixed:
         handles([(1, NotificationId::CompletionId(1)), (2, NotificationId::SignalId(5))]),
-        first_completed!(1, 2)
+        first_completed([single(1), single(2)])
         => pat!(Future {
             waiting_completions: eq(&[1]),
             waiting_signals: eq(&[5]),
@@ -1028,7 +1053,7 @@ mod tests {
     // all_completed(1, 2)
     test_convert_unresolved_future!(all_completed_flat:
         handles([(1, NotificationId::CompletionId(1)), (2, NotificationId::CompletionId(2))]),
-        all_completed!(1, 2)
+        all_completed([single(1), single(2)])
         => pat!(Future {
             waiting_completions: unordered_elements_are![eq(1), eq(2)],
             waiting_signals: empty(),
@@ -1040,7 +1065,7 @@ mod tests {
     // fsaf(1, 2)
     test_convert_unresolved_future!(fsaf_flat:
         handles([(1, NotificationId::CompletionId(1)), (2, NotificationId::CompletionId(2))]),
-        first_succeeded_or_all_failed!(1, 2)
+        first_succeeded_or_all_failed([single(1), single(2)])
         => pat!(Future {
             waiting_completions: unordered_elements_are![eq(1), eq(2)],
             waiting_signals: empty(),
@@ -1052,7 +1077,7 @@ mod tests {
     // asff(1, 2)
     test_convert_unresolved_future!(asff_flat:
         handles([(1, NotificationId::CompletionId(1)), (2, NotificationId::CompletionId(2))]),
-        all_succeeded_or_first_failed!(1, 2)
+        all_succeeded_or_first_failed([single(1), single(2)])
         => pat!(Future {
             waiting_completions: unordered_elements_are![eq(1), eq(2)],
             waiting_signals: empty(),
@@ -1064,7 +1089,7 @@ mod tests {
     // unknown(1, 2) — Unknown has no combinator_type, children flattened
     test_convert_unresolved_future!(unknown_flat:
         handles([(1, NotificationId::CompletionId(1)), (2, NotificationId::SignalId(5))]),
-        unknown!(1, 2)
+        unknown([single(1), single(2)])
         => pat!(Future {
             waiting_completions: eq(&[1]),
             waiting_signals: eq(&[5]),
@@ -1080,7 +1105,7 @@ mod tests {
             (2, NotificationId::CompletionId(2)),
             (3, NotificationId::CompletionId(3))
         ]),
-        first_completed!(1, all_completed!(2, 3))
+        first_completed([single(1), all_completed([single(2), single(3)])])
         => pat!(Future {
             waiting_completions: eq(&[1]),
             waiting_signals: empty(),
@@ -1100,7 +1125,7 @@ mod tests {
             (2, NotificationId::CompletionId(2)),
             (3, NotificationId::CompletionId(3))
         ]),
-        first_completed!(unknown!(1, 2), 3)
+        first_completed([unknown([single(1), single(2)]), single(3)])
         => pat!(Future {
             waiting_completions: eq(&[3]),
             waiting_signals: empty(),
@@ -1120,7 +1145,7 @@ mod tests {
             (2, NotificationId::CompletionId(2)),
             (3, NotificationId::CompletionId(3))
         ]),
-        first_completed!(unknown!(all_completed!(1, 2)), 3)
+        first_completed([unknown([all_completed([single(1), single(2)])]), single(3)])
         => pat!(Future {
             waiting_completions: eq(&[3]),
             waiting_signals: empty(),
@@ -1143,7 +1168,7 @@ mod tests {
             (2, NotificationId::CompletionId(2)),
             (3, NotificationId::SignalId(5))
         ]),
-        unknown!(first_succeeded_or_all_failed!(1, 2), 3)
+        unknown([first_succeeded_or_all_failed([single(1), single(2)]), single(3)])
         => pat!(Future {
             waiting_completions: empty(),
             waiting_signals: eq(&[5]),
@@ -1161,7 +1186,7 @@ mod tests {
             (1, NotificationId::CompletionId(1)),
             (2, NotificationId::SignalId(17))
         ]),
-        all_completed!(1, unknown!(2))
+        all_completed([single(1), unknown([single(2)])])
         => pat!(Future {
             waiting_completions: eq(&[1]),
             waiting_signals: empty(),

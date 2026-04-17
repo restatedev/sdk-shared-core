@@ -21,6 +21,43 @@ use bytes::Bytes;
 use googletest::prelude::*;
 use test_log::test;
 
+#[macro_export]
+macro_rules! first_completed {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::FirstCompleted(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+#[macro_export]
+macro_rules! all_completed {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::AllCompleted(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+#[macro_export]
+macro_rules! first_succeeded_or_all_failed {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::FirstSucceededOrAllFailed(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+#[macro_export]
+macro_rules! all_succeeded_or_first_failed {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::AllSucceededOrFirstFailed(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+#[macro_export]
+macro_rules! unknown {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::Unknown(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+
+impl From<u32> for UnresolvedFuture {
+    fn from(value: u32) -> Self {
+        NotificationHandle::from(value).into()
+    }
+}
+
 // --- Test infra
 
 impl CoreVM {
@@ -228,6 +265,13 @@ pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputCommandMessage {
 pub fn cancel_signal_notification() -> SignalNotificationMessage {
     SignalNotificationMessage {
         signal_id: Some(signal_notification_message::SignalId::Idx(1)),
+        result: Some(signal_notification_message::Result::Void(Default::default())),
+    }
+}
+
+pub fn empty_signal_notification(id: u32) -> SignalNotificationMessage {
+    SignalNotificationMessage {
+        signal_id: Some(signal_notification_message::SignalId::Idx(id)),
         result: Some(signal_notification_message::Result::Void(Default::default())),
     }
 }

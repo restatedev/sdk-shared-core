@@ -36,11 +36,11 @@ fn call_then_get_invocation_id_then_cancel_invocation() {
                 .unwrap();
 
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(
+                vm.do_await(UnresolvedFuture::Single(
                     call_handle.invocation_id_notification_handle
                 ))
                 .unwrap(),
-                DoProgressResponse::AnyCompleted
+                AwaitResponse::AnyCompleted
             );
             assert2::assert!(
                 let Some(Value::InvocationId(invocation_id)) = vm
@@ -107,11 +107,11 @@ fn send_then_get_invocation_id_then_cancel_invocation() {
                 .unwrap();
 
             assert_eq!(
-                vm.do_progress(UnresolvedFuture::Single(
+                vm.do_await(UnresolvedFuture::Single(
                     send_handle.invocation_id_notification_handle
                 ))
                 .unwrap(),
-                DoProgressResponse::AnyCompleted
+                AwaitResponse::AnyCompleted
             );
             assert2::assert!(
                 let Some(Value::InvocationId(invocation_id)) = vm

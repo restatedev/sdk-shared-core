@@ -25,7 +25,7 @@ fn trigger_suspension_with_get_state() {
             // Let's notify_input_closed now
             vm.notify_input_closed();
             assert_that!(
-                vm.do_progress(UnresolvedFuture::Single(handle)),
+                vm.do_await(UnresolvedFuture::Single(handle)),
                 err(is_suspended())
             );
         });
@@ -63,7 +63,7 @@ fn trigger_suspension_with_correct_awakeable() {
             // Let's notify_input_closed now
             vm.notify_input_closed();
             assert_that!(
-                vm.do_progress(UnresolvedFuture::Single(h2)),
+                vm.do_await(UnresolvedFuture::Single(h2)),
                 err(is_suspended())
             );
         });
@@ -100,7 +100,7 @@ fn await_many_notifications() {
             // Let's notify_input_closed now
             vm.notify_input_closed();
             assert_that!(
-                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
                     UnresolvedFuture::Single(h1),
                     UnresolvedFuture::Single(h2),
                     UnresolvedFuture::Single(h3)
@@ -154,11 +154,11 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
 
             // Do progress will ask for more input
             assert_that!(
-                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
                     UnresolvedFuture::Single(h1),
                     UnresolvedFuture::Single(h2)
                 ])),
-                ok(eq(DoProgressResponse::WaitingExternalProgress {
+                ok(eq(AwaitResponse::WaitingExternalProgress {
                     waiting_input: true,
                     waiting_run_proposal: false
                 }))
@@ -175,11 +175,11 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             // This should not suspend
             vm.notify_input_closed();
             assert_that!(
-                vm.do_progress(UnresolvedFuture::FirstCompleted(vec![
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
                     UnresolvedFuture::Single(h1),
                     UnresolvedFuture::Single(h2)
                 ])),
-                ok(eq(DoProgressResponse::AnyCompleted))
+                ok(eq(AwaitResponse::AnyCompleted))
             );
 
             // H2 should be completed and we can take it
