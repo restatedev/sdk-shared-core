@@ -1,7 +1,7 @@
 use crate::error::{CommandMetadata, NotificationMetadata};
 use crate::service_protocol::messages::AwaitingOnMessage;
 use crate::service_protocol::{MessageType, NotificationId, CANCEL_SIGNAL_ID};
-use crate::vm::async_results_state::ReduceFutureResult;
+use crate::vm::async_results_state::ResolveFutureResult;
 use crate::vm::context::Context;
 use crate::vm::errors::UncompletedDoProgressDuringReplay;
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
@@ -29,8 +29,8 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 ref run_state,
                 ..
             } => {
-                let ReduceFutureResult::Unchanged(unresolved_future) =
-                    async_results.try_reduce_future(unresolved_future)
+                let ResolveFutureResult::WaitExternalInput(unresolved_future) =
+                    async_results.try_resolve_future(unresolved_future)
                 else {
                     // We're good, let's give back control to user code
                     return Ok((self, Ok(AwaitResponse::AnyCompleted)));
@@ -107,8 +107,8 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 ref mut run_state,
                 ..
             } => {
-                let ReduceFutureResult::Unchanged(unresolved_future) =
-                    async_results.try_reduce_future(unresolved_future)
+                let ResolveFutureResult::WaitExternalInput(unresolved_future) =
+                    async_results.try_resolve_future(unresolved_future)
                 else {
                     // We're good, let's give back control to user code
                     return Ok((self, Ok(AwaitResponse::AnyCompleted)));

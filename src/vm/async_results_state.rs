@@ -31,10 +31,11 @@ impl Default for AsyncResultsState {
 
 #[derive(Debug)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
-pub(crate) enum ReduceFutureResult {
-    Completed,
-    Reduced,
-    Unchanged(UnresolvedFuture),
+pub(crate) enum ResolveFutureResult {
+    // The shared core has enough information to unblock the SDK, allowing it to take notifications.
+    AnyCompleted,
+    // The shared core needs some external input to make progress on this future.
+    WaitExternalInput(UnresolvedFuture),
 }
 
 impl AsyncResultsState {
@@ -72,13 +73,11 @@ impl AsyncResultsState {
         assigned_handle
     }
 
-    // If returns Ok, future is Completed.
-    // Otherwise, returns the future still to resolve.
     #[instrument(level = "trace", skip(self), ret)]
-    pub(crate) fn try_reduce_future(
+    pub(crate) fn try_resolve_future(
         &mut self,
         mut unresolved_future: UnresolvedFuture,
-    ) -> ReduceFutureResult {
+    ) -> ResolveFutureResult {
         // A bit of theory on future resolution.
         //
         // ## What is a future?
@@ -146,20 +145,37 @@ impl AsyncResultsState {
         // If the SDK can fully resolve the future with the local information, it will unblock the user code and move on
         // If the SDK cannot resolve the future, it will shave off the tree the Completed nodes, and propagate back the remaining part of the tree.
         //      Propagation will happen depending on the situation, via AwaitingOnMessage or SuspensionMessage.
+        //
+        // # About this function
+        // try_resolve_future first normalizes the future, then loops:
+        // * If the future can be resolved against the current `ready` state, return AnyCompleted
+        //   and let the SDK consume the completed notifications.
+        // * Otherwise, pop the next notification from `to_process` and retry.
+        //   If the queue is empty, the only way to resolve the future is either read more input, or execute a pending ctx.run.
+        //
+        // The loop shortcircuits when some of the intermediate combinator nodes complete (see _try_resolve_future).
+        // The shared core resolves the tree by reading from `ready` non-destructively, so a single
+        // notification can satisfy multiple subtrees (e.g. a shared handle across two races). But the
+        // SDK consumes notifications destructively via take_notification: once a handle is taken, it
+        // is no longer visible. That means the SDK — not the shared core — ultimately decides which
+        // notification value resolves each combinator, and the order in which the SDK observes completed
+        // subtrees is part of the user-visible semantics!
+        //
+        // Wanna understand this better? In _try_resolve_future change all the Err to Ok, then run the unit tests below.
 
         unresolved_future.normalize();
         loop {
-            let reduce_future_res = self._try_reduce_future(&mut unresolved_future);
+            let reduce_future_res = self._try_resolve_future(&mut unresolved_future);
 
             match reduce_future_res {
-                Ok(handle_state) | Err(handle_state) if handle_state.is_completed() => {
+                Ok(handle_state) if handle_state.is_completed() => {
                     // Future is completed!
-                    return ReduceFutureResult::Completed;
+                    return ResolveFutureResult::AnyCompleted;
                 }
                 Err(_) => {
-                    // HandleState is not completed, but the future was partially reduced
-                    // and we need to give chance to the SDK to consume the new notifications.
-                    return ReduceFutureResult::Reduced;
+                    // Some of the nested combinator made progress, and shortcircuited the rest of the resolution.
+                    // We need to give chance to the SDK to consume the new notifications.
+                    return ResolveFutureResult::AnyCompleted;
                 }
                 Ok(_) => {
                     // HandleState is not completed
@@ -167,7 +183,7 @@ impl AsyncResultsState {
                     // If we pop some element from the notification queue, we can try to resolve the future again.
                     // Otherwise, the only possible way to make progress now is either reading from input stream, or running a ctx.run if any.
                     if !self.pop_notification_queue() {
-                        return ReduceFutureResult::Unchanged(unresolved_future);
+                        return ResolveFutureResult::WaitExternalInput(unresolved_future);
                     }
                 }
             }
@@ -175,7 +191,7 @@ impl AsyncResultsState {
     }
 
     // Err() is used to resolve a future, but also "shortcircuit" the reduction process when "one at the time semantics" are required.
-    fn _try_reduce_future(
+    fn _try_resolve_future(
         &self,
         unresolved_future: &mut UnresolvedFuture,
     ) -> Result<HandleState, HandleState> {
@@ -184,7 +200,7 @@ impl AsyncResultsState {
             UnresolvedFuture::FirstCompleted(futures) | UnresolvedFuture::Unknown(futures) => {
                 let mut any_completed = false;
                 for fut in futures.iter_mut() {
-                    if self._try_reduce_future(fut)?.is_completed() {
+                    if self._try_resolve_future(fut)?.is_completed() {
                         any_completed = true;
                         break;
                     }
@@ -203,7 +219,7 @@ impl AsyncResultsState {
                 // Wait for every child to complete
                 let mut i = 0;
                 while i < futures.len() {
-                    if self._try_reduce_future(&mut futures[i])?.is_completed() {
+                    if self._try_resolve_future(&mut futures[i])?.is_completed() {
                         futures.swap_remove(i);
                     } else {
                         i += 1;
@@ -219,7 +235,7 @@ impl AsyncResultsState {
                 // First success wins; fail only if all fail
                 let mut i = 0;
                 while i < futures.len() {
-                    let state = self._try_reduce_future(&mut futures[i])?;
+                    let state = self._try_resolve_future(&mut futures[i])?;
                     if state == HandleState::Succeeded {
                         futures.clear();
                         return Err(HandleState::Succeeded);
@@ -239,7 +255,7 @@ impl AsyncResultsState {
                 // All must succeed; first failure short-circuits
                 let mut i = 0;
                 while i < futures.len() {
-                    let state = self._try_reduce_future(&mut futures[i])?;
+                    let state = self._try_resolve_future(&mut futures[i])?;
                     if state == HandleState::Failed {
                         futures.clear();
                         return Err(HandleState::Failed);
@@ -558,9 +574,9 @@ impl UnresolvedFuture {
 
 #[cfg(test)]
 mod tests {
-    use super::ReduceFutureResult::*;
     use super::*;
 
+    use super::ResolveFutureResult::*;
     use crate::service_protocol::messages::{Failure, Void};
     use crate::service_protocol::{Notification, NotificationId, NotificationResult};
     use crate::{
@@ -631,7 +647,7 @@ mod tests {
                 fn [<try_resolve_ $test_name>] () {
                     let mut state = $state;
                     let fut: UnresolvedFuture = ($input).into();
-                    assert_eq!(state.try_reduce_future(fut), $expected);
+                    assert_eq!(state.try_resolve_future(fut), $expected);
                 }
             }
         };
@@ -653,11 +669,11 @@ mod tests {
     // ==================== Single ====================
 
     test_try_future_resolve!(single_succeeded:
-        state([success(1)]), 1 => Completed);
+        state([success(1)]), 1 => AnyCompleted);
     test_try_future_resolve!(single_failed:
-        state([failure(1)]), 1 => Completed);
+        state([failure(1)]), 1 => AnyCompleted);
     test_try_future_resolve!(single_pending:
-        state([]), 1 => Unchanged(1.into()));
+        state([]), 1 => WaitExternalInput(1.into()));
 
     // ==================== FirstCompleted ====================
 
@@ -679,42 +695,42 @@ mod tests {
 
     test_try_future_resolve!(first_completed_none_ready:
         state([]), first_completed!(1, 2, 3)
-        => Unchanged(first_completed!(1, 2, 3)));
+        => WaitExternalInput(first_completed!(1, 2, 3)));
     test_try_future_resolve!(first_completed_one_succeeded:
         state([success(2)]), first_completed!(1, 2, 3)
-        => Completed);
+        => AnyCompleted);
     // Resolves on any completion, even failure
     test_try_future_resolve!(first_completed_one_failed:
         state([failure(1)]), first_completed!(1, 2, 3)
-        => Completed);
+        => AnyCompleted);
     // first_completed(1, unknown(2)) — unknown(2) completes
     test_try_future_resolve!(first_completed_with_unknown_resolves:
         state([success(2)]), first_completed!(1, unknown!(2))
-        => Completed);
+        => AnyCompleted);
     // first_completed(unknown(all_completed(1, 2)), 3) — completing 3 resolves
     test_try_future_resolve!(first_completed_unknown_wrapping_combinator_resolves_on_leaf:
         state([success(3)]),
         first_completed!(unknown!(all_completed!(1, 2)), 3)
-        => Completed);
+        => AnyCompleted);
     // Completing 1 alone doesn't resolve: unknown(all_completed(1,2)) needs both
     test_try_future_resolve!(first_completed_unknown_wrapping_combinator_partial_inner:
         state([success(1)]),
         first_completed!(unknown!(all_completed!(1, 2)), 3)
-        => Unchanged(first_completed!(unknown!(all_completed!(2)), 3)));
+        => WaitExternalInput(first_completed!(unknown!(all_completed!(2)), 3)));
     // Completing 1 and 2 resolves
     test_try_future_resolve!(first_completed_unknown_wrapping_combinator_inner_done:
         state([success(1), success(2)]),
         first_completed!(unknown!(all_completed!(1, 2)), 3)
-        => Completed);
+        => AnyCompleted);
     // Completing just 1 is NOT enough
     test_try_future_resolve!(deep_unknown_not_prematurely_resolved:
         state([success(1)]),
         first_completed!(unknown!(all_completed!(1, unknown!(2))))
-        => Unchanged(unknown!(all_completed!(unknown!(2)))));
+        => WaitExternalInput(unknown!(all_completed!(unknown!(2)))));
     test_try_future_resolve!(deep_unknown_resolves_when_all_done:
         state([success(1), success(2)]),
         first_completed!(unknown!(all_completed!(1, unknown!(2))))
-        => Completed);
+        => AnyCompleted);
 
     // ==================== AllCompleted ====================
 
@@ -733,20 +749,20 @@ mod tests {
 
     test_try_future_resolve!(all_completed_none_ready:
         state([]), all_completed!(1, 2, 3)
-        => Unchanged(all_completed!(1, 2, 3)));
+        => WaitExternalInput(all_completed!(1, 2, 3)));
     test_try_future_resolve!(all_completed_partial:
         state([success(1), failure(3)]), all_completed!(1, 2, 3)
-        => Unchanged(all_completed!(2)));
+        => WaitExternalInput(all_completed!(2)));
     test_try_future_resolve!(all_completed_all_done:
         state([success(1), failure(2)]), all_completed!(1, 2)
-        => Completed);
+        => AnyCompleted);
     // Handle 1 completes but unknown(2) still pending
     test_try_future_resolve!(all_completed_with_unknown_partial:
         state([success(1)]), all_completed!(1, unknown!(2))
-        => Unchanged(all_completed!(unknown!(2))));
+        => WaitExternalInput(all_completed!(unknown!(2))));
     test_try_future_resolve!(all_completed_with_unknown_all_done:
         state([success(1), success(2)]), all_completed!(1, unknown!(2))
-        => Completed);
+        => AnyCompleted);
 
     // ==================== FirstSucceededOrAllFailed ====================
 
@@ -771,54 +787,54 @@ mod tests {
 
     test_try_future_resolve!(first_succeeded_or_all_failed_none_ready:
         state([]), first_succeeded_or_all_failed!(1, 2, 3)
-        => Unchanged(first_succeeded_or_all_failed!(1, 2, 3)));
+        => WaitExternalInput(first_succeeded_or_all_failed!(1, 2, 3)));
     test_try_future_resolve!(first_succeeded_or_all_failed_one_succeeded:
         state([success(2)]), first_succeeded_or_all_failed!(1, 2, 3)
-        => Completed);
+        => AnyCompleted);
     // swap_remove changes order
     test_try_future_resolve!(first_succeeded_or_all_failed_some_failed_some_pending:
         state([failure(1)]), first_succeeded_or_all_failed!(1, 2, 3)
-        => Unchanged(first_succeeded_or_all_failed!(3, 2)));
+        => WaitExternalInput(first_succeeded_or_all_failed!(3, 2)));
     test_try_future_resolve!(first_succeeded_or_all_failed_all_failed:
         state([failure(1), failure(2)]), first_succeeded_or_all_failed!(1, 2)
-        => Completed);
+        => AnyCompleted);
 
     // fsaf(1, asff(2, unknown(3))) → unknown(fsaf(1, 2), 3)
     test_try_future_resolve!(normalization_fsaf_asff_unknown_success:
         state([success(3)]),
         first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(normalization_fsaf_asff_unknown_failure:
         state([failure(3)]),
         first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => Completed);
+        => AnyCompleted);
     // 1 fails → fsaf prunes it, fsaf(2) still pending. 3 still pending.
     test_try_future_resolve!(normalization_nested_fsaf_asff_partial:
         state([failure(1)]),
         first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => Unchanged(unknown!(first_succeeded_or_all_failed!(2), 3)));
+        => WaitExternalInput(unknown!(first_succeeded_or_all_failed!(2), 3)));
     // fsaf(1, all_completed(2, unknown(3))) — deep extraction
     test_try_future_resolve!(normalization_fsaf_with_nested_unknown_in_all_completed:
         state([success(3)]),
         first_succeeded_or_all_failed!(1, all_completed!(2, unknown!(3)))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(normalization_fsaf_with_nested_unknown_in_all_completed_pending:
         state([]),
         first_succeeded_or_all_failed!(1, all_completed!(2, unknown!(3)))
-        => Unchanged(unknown!(first_succeeded_or_all_failed!(1, 2), 3)));
+        => WaitExternalInput(unknown!(first_succeeded_or_all_failed!(1, 2), 3)));
     // fsaf(1, unknown(asff(2, 3))) → unknown(1, asff(2, 3))
     test_try_future_resolve!(fsaf_unknown_asff_resolves_when_inner_done:
         state([success(2), success(3)]),
         first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(fsaf_unknown_asff_inner_failure_resolves:
         state([failure(2)]),
         first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(fsaf_unknown_asff_inner_partial:
         state([success(2)]),
         first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => Unchanged(unknown!(1, all_succeeded_or_first_failed!(3))));
+        => WaitExternalInput(unknown!(1, all_succeeded_or_first_failed!(3))));
 
     // ==================== AllSucceededOrFirstFailed ====================
 
@@ -836,64 +852,64 @@ mod tests {
 
     test_try_future_resolve!(all_succeeded_or_first_failed_none_ready:
         state([]), all_succeeded_or_first_failed!(1, 2, 3)
-        => Unchanged(all_succeeded_or_first_failed!(1, 2, 3)));
+        => WaitExternalInput(all_succeeded_or_first_failed!(1, 2, 3)));
     test_try_future_resolve!(all_succeeded_or_first_failed_all_succeeded:
         state([success(1), success(2)]), all_succeeded_or_first_failed!(1, 2)
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(all_succeeded_or_first_failed_one_failed:
         state([failure(2)]), all_succeeded_or_first_failed!(1, 2, 3)
-        => Completed);
+        => AnyCompleted);
     // swap_remove changes order
     test_try_future_resolve!(all_succeeded_or_first_failed_some_succeeded_some_pending:
         state([success(1)]), all_succeeded_or_first_failed!(1, 2, 3)
-        => Unchanged(all_succeeded_or_first_failed!(3, 2)));
+        => WaitExternalInput(all_succeeded_or_first_failed!(3, 2)));
     // Inner failure propagates up
     test_try_future_resolve!(promise_all_short_circuits_on_nested_failure:
         state([failure(2)]),
         all_succeeded_or_first_failed!(all_succeeded_or_first_failed!(1, 2), 3)
-        => Completed);
+        => AnyCompleted);
 
     // asff(1, unknown(2)) → unknown(1, 2). Failure of 2 wakes.
     test_try_future_resolve!(normalization_asff_extracts_unknown:
         state([failure(2)]),
         all_succeeded_or_first_failed!(1, unknown!(2))
-        => Completed);
+        => AnyCompleted);
     // asff(1, unknown(2, fsaf(3, 4))) → unknown(1, 2, fsaf(3, 4))
     test_try_future_resolve!(asff_unknown_fsaf_resolves_on_leaf:
         state([success(1)]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(asff_unknown_fsaf_resolves_on_inner_fsaf_success:
         state([success(3)]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Completed);
-    // 3 fails but 4 pending → fsaf pending → nothing completed
+        => AnyCompleted);
+    // 3 fails but 4 pending → fsaf pending → nothing AnyCompleted
     test_try_future_resolve!(asff_unknown_fsaf_failure_doesnt_resolve:
         state([failure(3)]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Unchanged(unknown!(1, 2, first_succeeded_or_all_failed!(4))));
-    // Both 3 and 4 fail → fsaf completed → unknown wakes
+        => WaitExternalInput(unknown!(1, 2, first_succeeded_or_all_failed!(4))));
+    // Both 3 and 4 fail → fsaf AnyCompleted → unknown wakes
     test_try_future_resolve!(asff_unknown_fsaf_all_inner_fail:
         state([failure(3), failure(4)]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(asff_unknown_fsaf_pending:
         state([]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => Unchanged(unknown!(1, 2, first_succeeded_or_all_failed!(3, 4))));
+        => WaitExternalInput(unknown!(1, 2, first_succeeded_or_all_failed!(3, 4))));
     // asff(1, unknown(all_completed(2, unknown(3)))) → unknown(1, all_completed(2, unknown(3)))
     test_try_future_resolve!(asff_unknown_all_completed_with_unknown_resolves_on_leaf:
         state([success(1)]),
         all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(asff_unknown_all_completed_with_unknown_partial:
         state([success(2)]),
         all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => Unchanged(unknown!(1, all_completed!(unknown!(3)))));
+        => WaitExternalInput(unknown!(1, all_completed!(unknown!(3)))));
     test_try_future_resolve!(asff_unknown_all_completed_with_unknown_all_done:
         state([success(2), success(3)]),
         all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => Completed);
+        => AnyCompleted);
 
     // ==================== Unknown ====================
 
@@ -908,58 +924,66 @@ mod tests {
 
     test_try_future_resolve!(unknown_none_ready:
         state([]), unknown!(1, 2)
-        => Unchanged(unknown!(1, 2)));
+        => WaitExternalInput(unknown!(1, 2)));
     test_try_future_resolve!(unknown_one_ready:
         state([success(2)]), unknown!(1, 2)
-        => Completed);
+        => AnyCompleted);
 
     // ==================== Nested combinators ====================
 
     test_try_future_resolve!(nested_all_inside_first_completed:
         state([success(3)]), first_completed!(all_completed!(1, 2), 3)
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(nested_first_completed_inside_all_partial:
         state([success(1)]),
         all_completed!(first_completed!(1, 2), first_completed!(3, 4))
-        => Reduced);
+        => AnyCompleted);
     test_try_future_resolve!(nested_first_completed_inside_all_complete:
         state([success(1), success(4)]),
         all_completed!(first_completed!(1, 2), first_completed!(3, 4))
-        => Completed);
+        => AnyCompleted);
+    test_try_future_resolve!(nested_asff_inside_all_partial:
+        state([failure(1)]),
+        all_completed!(all_succeeded_or_first_failed!(1, 2), first_completed!(3, 4))
+        => AnyCompleted);
+    test_try_future_resolve!(nested_fsaf_inside_all_partial:
+        state([success(1)]),
+        all_completed!(first_succeeded_or_all_failed!(1, 2), first_completed!(3, 4))
+        => AnyCompleted);
 
     // ==================== Duplicated leaves and subtrees ====================
 
     test_try_future_resolve!(duplicated_leaf_in_all_completed:
         state([success(1)]), all_completed!(1, 1)
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(duplicated_leaf_in_first_completed:
         state([success(1)]), first_completed!(1, 1, 2)
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(duplicated_leaf_failure_in_promise_all:
         state([failure(1)]), all_succeeded_or_first_failed!(1, 1, 2)
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(duplicated_leaf_success_in_promise_any:
         state([success(1)]), first_succeeded_or_all_failed!(1, 1)
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(duplicated_leaf_across_nested_combinators:
         state([success(1)]),
         all_completed!(first_completed!(1, 2), first_completed!(1, 3))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(duplicated_subtree_all_succeeded:
         state([success(1), success(2)]),
         all_completed!(all_succeeded_or_first_failed!(1, 2), all_succeeded_or_first_failed!(1, 2))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(duplicated_subtree_with_failure:
         state([failure(1)]),
         all_completed!(all_succeeded_or_first_failed!(1, 2), all_succeeded_or_first_failed!(1, 2))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(duplicated_leaf_with_unknown_in_all_completed:
         state([success(1)]),
         all_completed!(1, unknown!(1, 2))
-        => Completed);
+        => AnyCompleted);
     test_try_future_resolve!(duplicated_leaf_partial_resolution:
         state([success(1)]), all_completed!(1, 2, 1)
-        => Unchanged(all_completed!(2)));
+        => WaitExternalInput(all_completed!(2)));
 
     // ==================== Conversions to protocol future type ====================
 
