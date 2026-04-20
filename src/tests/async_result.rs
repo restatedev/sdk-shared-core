@@ -247,8 +247,8 @@ mod do_await {
             await_on: UnresolvedFuture,
             reduced: UnresolvedFuture,
         ) {
-            let await_on = self.resolve_fut(await_on);
-            let reduced = self.resolve_fut(reduced);
+            let await_on = self.translate_to_handles(await_on);
+            let reduced = self.translate_to_handles(reduced);
             let expected_suspension_msg = SuspensionMessage {
                 awaiting_on: Some(self.vm.resolve_unresolved_future(reduced)),
             };
@@ -279,8 +279,8 @@ mod do_await {
             await_on: UnresolvedFuture,
             reduced: UnresolvedFuture,
         ) -> &mut Self {
-            let await_on = self.resolve_fut(await_on);
-            let reduced = self.resolve_fut(reduced);
+            let await_on = self.translate_to_handles(await_on);
+            let reduced = self.translate_to_handles(reduced);
             let expected_awaiting_on_msg = AwaitingOnMessage {
                 awaiting_on: Some(self.vm.resolve_unresolved_future(reduced)),
                 executing_side_effects: false,
@@ -316,7 +316,7 @@ mod do_await {
         /// Await a future, assert `AnyCompleted` and expect the `completed_indices` are completed. This simulates what `tryComplete()` would do in the SDK.
         /// Future uses 0-based indices that get translated to real handles.
         fn when_await_then_completed(&mut self, fut: UnresolvedFuture) -> &mut Self {
-            let fut = self.resolve_fut(fut);
+            let fut = self.translate_to_handles(fut);
             assert_eq!(self.vm.do_await(fut).unwrap(), AwaitResponse::AnyCompleted,);
             self
         }
@@ -348,30 +348,40 @@ mod do_await {
         }
 
         /// Translate a future tree built with raw 0-based indices into real handles.
-        fn resolve_fut(&self, fut: UnresolvedFuture) -> UnresolvedFuture {
+        fn translate_to_handles(&self, fut: UnresolvedFuture) -> UnresolvedFuture {
             match fut {
                 UnresolvedFuture::Single(h) => {
                     UnresolvedFuture::Single(self.handles[u32::from(h) as usize])
                 }
                 UnresolvedFuture::FirstCompleted(c) => UnresolvedFuture::FirstCompleted(
-                    c.into_iter().map(|f| self.resolve_fut(f)).collect(),
+                    c.into_iter()
+                        .map(|f| self.translate_to_handles(f))
+                        .collect(),
                 ),
                 UnresolvedFuture::AllCompleted(c) => UnresolvedFuture::AllCompleted(
-                    c.into_iter().map(|f| self.resolve_fut(f)).collect(),
+                    c.into_iter()
+                        .map(|f| self.translate_to_handles(f))
+                        .collect(),
                 ),
                 UnresolvedFuture::FirstSucceededOrAllFailed(c) => {
                     UnresolvedFuture::FirstSucceededOrAllFailed(
-                        c.into_iter().map(|f| self.resolve_fut(f)).collect(),
+                        c.into_iter()
+                            .map(|f| self.translate_to_handles(f))
+                            .collect(),
                     )
                 }
                 UnresolvedFuture::AllSucceededOrFirstFailed(c) => {
                     UnresolvedFuture::AllSucceededOrFirstFailed(
-                        c.into_iter().map(|f| self.resolve_fut(f)).collect(),
+                        c.into_iter()
+                            .map(|f| self.translate_to_handles(f))
+                            .collect(),
                     )
                 }
-                UnresolvedFuture::Unknown(c) => {
-                    UnresolvedFuture::Unknown(c.into_iter().map(|f| self.resolve_fut(f)).collect())
-                }
+                UnresolvedFuture::Unknown(c) => UnresolvedFuture::Unknown(
+                    c.into_iter()
+                        .map(|f| self.translate_to_handles(f))
+                        .collect(),
+                ),
             }
         }
     }
@@ -513,6 +523,35 @@ mod do_await {
             .given_notify([1])
             .given_input_closed()
             .when_await_then_suspended(all_completed!(0, 1), all_completed!(0));
+    }
+
+    // all_completed!(unknown!(0, 1), first_completed!(2, 1)) with replay [1, 0]
+    #[test]
+    fn t10() {
+        AwaitTest::given_n_futures(3)
+            .when_await_then_awaiting_on(
+                all_completed!(unknown!(0, 1), first_completed!(2, 1)),
+                all_completed!(unknown!(0, 1), first_completed!(2, 1)),
+            )
+            .given_notify([1, 0])
+            .when_await_then_completed(all_completed!(unknown!(0, 1), first_completed!(2, 1)))
+            .expect_completed([1]);
+    }
+
+    // first_succeeded_or_all_failed!(unknown!(0, 1), first_completed!(2, 1)) with replay [1, 0]
+    #[test]
+    fn t11() {
+        AwaitTest::given_n_futures(3)
+            .when_await_then_awaiting_on(
+                first_succeeded_or_all_failed!(unknown!(0, 1), first_completed!(2, 1)),
+                unknown!(0, 1, first_completed!(2, 1)),
+            )
+            .given_notify([1, 0])
+            .when_await_then_completed(first_succeeded_or_all_failed!(
+                unknown!(0, 1),
+                first_completed!(2, 1)
+            ))
+            .expect_completed([1]);
     }
 }
 
