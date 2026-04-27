@@ -168,6 +168,13 @@ mod tests {
     use serde::Serialize;
     use std::time::SystemTime;
 
+    fn install_crypto_provider() {
+        #[cfg(feature = "rust_crypto")]
+        let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
+        #[cfg(all(feature = "aws_lc_rs", not(feature = "rust_crypto")))]
+        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
+    }
+
     #[derive(Serialize)]
     pub(crate) struct Claims<'aud> {
         aud: &'aud str,
@@ -178,6 +185,7 @@ mod tests {
 
     #[test]
     fn verify() {
+        install_crypto_provider();
         let (jwt, identity_key) = mock_token_and_key();
 
         let verifier = IdentityVerifier::new(&[&identity_key]).unwrap();
@@ -197,6 +205,7 @@ mod tests {
 
     #[test]
     fn bad_key() {
+        install_crypto_provider();
         let verifier =
             IdentityVerifier::new(&["publickeyv1_ChjENKeMvCtRnqG2mrBK1HmPKufgFUc98K8B3ononQvp"])
                 .unwrap();
