@@ -237,6 +237,21 @@ mod do_await {
             self
         }
 
+        /// Send void notifications for the given 0-based handle indices.
+        fn given_notify_failure(&mut self, indices: impl IntoIterator<Item = usize>) -> &mut Self {
+            for i in indices {
+                let signal_id = 17 + i as u32;
+                self.vm
+                    .notify_input(self.encoder.encode(&SignalNotificationMessage {
+                        signal_id: Some(signal_notification_message::SignalId::Idx(signal_id)),
+                        result: Some(signal_notification_message::Result::Failure(
+                            Default::default(),
+                        )),
+                    }));
+            }
+            self
+        }
+
         fn given_input_closed(&mut self) -> &mut Self {
             self.vm.notify_input_closed();
             self
@@ -415,9 +430,15 @@ mod do_await {
                 all_completed!(0, 1, 2)
             ))
             .expect_completed([1])
-            .when_await_then_awaiting_on(all_completed!(all_completed!(0, 2)), all_completed!(0, 2))
+            .when_await_then_awaiting_on(
+                all_completed!(all_completed!(0, 2)),
+                all_completed!(all_completed!(0, 2)),
+            )
             .given_notify([0])
-            .when_await_then_awaiting_on(all_completed!(all_completed!(0, 2)), all_completed!(2))
+            .when_await_then_awaiting_on(
+                all_completed!(all_completed!(0, 2)),
+                all_completed!(all_completed!(2)),
+            )
             .expect_completed([0])
             .given_notify([2])
             .when_await_then_completed(all_completed!(all_completed!(2)))
@@ -502,7 +523,7 @@ mod do_await {
             .when_await_then_awaiting_on(all_completed!(0, 1), all_completed!(0))
             .expect_completed([1])
             .given_input_closed()
-            .when_await_then_suspended(all_completed!(0), first_completed!(0));
+            .when_await_then_suspended(all_completed!(0), all_completed!(0));
     }
 
     // all_completed!(0, 1) with replay [1]
@@ -513,7 +534,7 @@ mod do_await {
             .when_await_then_awaiting_on(all_completed!(0, 1), all_completed!(0))
             .expect_completed([1])
             .given_input_closed()
-            .when_await_then_suspended(all_completed!(0), first_completed!(0));
+            .when_await_then_suspended(all_completed!(0), all_completed!(0));
     }
 
     // all_completed!(0, 1) with replay [1] and input closed before await
@@ -544,7 +565,7 @@ mod do_await {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 first_succeeded_or_all_failed!(unknown!(0, 1), first_completed!(2, 1)),
-                unknown!(0, 1, first_completed!(2, 1)),
+                first_succeeded_or_all_failed!(unknown!(0, 1), first_completed!(2, 1)),
             )
             .given_notify([1, 0])
             .when_await_then_completed(first_succeeded_or_all_failed!(
@@ -553,86 +574,126 @@ mod do_await {
             ))
             .expect_completed([1]);
     }
-}
 
-/// AwaitingOnMessage should reflect the normalized future.
-/// asff(h1, unknown(h2)) normalizes to unknown(h1, h2).
-#[test]
-fn awaiting_on_reflects_normalized_future() {
-    let mut output = VMTestCase::new()
-        .input(StartMessage {
-            id: Bytes::from_static(b"123"),
-            debug_id: "123".to_string(),
-            known_entries: 1,
-            ..Default::default()
-        })
-        .input(input_entry_message(b"my-data"))
-        .run_without_closing_input(|vm, _| {
-            vm.sys_input().unwrap();
+    // all_succeeded_or_first_failed!(first_completed!(0, 1), first_completed!(2, 3)) with replay [failed 1]
+    #[test]
+    fn t12() {
+        AwaitTest::given_n_futures(4)
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(first_completed!(0, 1), first_completed!(2, 3)),
+                all_succeeded_or_first_failed!(first_completed!(0, 1), first_completed!(2, 3)),
+            )
+            .given_notify_failure([1, 0, 2, 3])
+            .when_await_then_completed(all_succeeded_or_first_failed!(
+                first_completed!(0, 1),
+                first_completed!(2, 3)
+            ))
+            .expect_completed([1]);
+    }
 
-            let (_, h1) = vm.sys_awakeable().unwrap(); // signal 17
-            let (_, h2) = vm.sys_awakeable().unwrap(); // signal 18
+    // all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)) with replay [failed 1, failed 0]
+    #[test]
+    fn t13() {
+        AwaitTest::given_n_futures(4)
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)),
+                all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)),
+            )
+            .given_notify_failure([1, 0])
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)),
+                all_succeeded_or_first_failed!(all_completed!(2, 3)),
+            )
+            .expect_completed([1, 0]);
+    }
 
-            // do_progress with asff(h1, unknown(h2))
-            // Normalization: asff extracts unknown → unknown(h1, h2)
-            assert_eq!(
-                vm.do_await(all_succeeded_or_first_failed!(h1, unknown!(h2)))
-                    .unwrap(),
-                AwaitResponse::WaitingExternalProgress {
-                    waiting_input: true,
-                    waiting_run_proposal: false
-                }
-            );
+    // all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)) with replay [failed 1]
+    #[test]
+    fn t14() {
+        AwaitTest::given_n_futures(4)
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)),
+                all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)),
+            )
+            .given_notify_failure([1])
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)),
+                all_succeeded_or_first_failed!(all_completed!(0), all_completed!(2, 3)),
+            )
+            .expect_completed([1]);
+    }
 
-            vm.notify_input_closed();
-            assert_that!(
-                vm.do_await(all_succeeded_or_first_failed!(h1, unknown!(h2))),
-                err(is_suspended())
-            );
-        });
+    // all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)) with replay [2, 1]
+    #[test]
+    fn t15() {
+        AwaitTest::given_n_futures(3)
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)),
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)),
+            )
+            .given_notify([2, 1])
+            .when_await_then_completed(all_succeeded_or_first_failed!(
+                unknown!(0, 1),
+                all_completed!(2, 1)
+            ))
+            .expect_completed([2, 1]);
+    }
 
-    // Cancel wraps BEFORE normalization: FirstCompleted([asff(h1, unknown(h2)), cancel])
-    // Then normalization extracts unknown from asff (inside FirstCompleted context inherited from cancel wrapper):
-    // Wait — the cancel wrapper is FirstCompleted, not fsaf/asff. So extract=false for the wrapper.
-    // But asff IS fsaf/asff, so it sets extract=true for its own children.
-    // asff(h1, unknown(h2)): extract unknown(h2) → unknown_nodes=[h2], asff collapses to h1.
-    // Root normalize: unknown_nodes=[h2] → wrap: Unknown([FirstCompleted([h1, cancel]), h2])
-    // Serialized: root=CombinatorUnknown, h2 inlined, nested FirstCompleted with h1+cancel
-    // AwaitingOn: root=Unknown, h2 inlined, nested FirstCompleted(h1, cancel)
-    assert_that!(
-        output.next_decoded::<AwaitingOnMessage>().unwrap(),
-        pat!(AwaitingOnMessage {
-            awaiting_on: some(pat!(Future {
-                waiting_signals: eq(vec![18]),
-                waiting_completions: empty(),
-                waiting_named_signals: empty(),
-                nested_futures: elements_are![pat!(Future {
-                    waiting_signals: unordered_elements_are![eq(17), eq(1)],
-                    waiting_completions: empty(),
-                    nested_futures: empty(),
-                    combinator_type: eq(CombinatorType::FirstCompleted as i32)
-                })],
-                combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
-            })),
-            executing_side_effects: eq(false)
-        })
-    );
-    // Suspension has the same normalized form
-    assert_that!(
-        output.next_decoded::<SuspensionMessage>().unwrap(),
-        pat!(SuspensionMessage {
-            awaiting_on: some(pat!(Future {
-                waiting_signals: eq(vec![18]),
-                waiting_completions: empty(),
-                nested_futures: elements_are![pat!(Future {
-                    waiting_signals: unordered_elements_are![eq(17), eq(1)],
-                    combinator_type: eq(CombinatorType::FirstCompleted as i32)
-                })],
-                combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
-            }))
-        })
-    );
-    assert_eq!(output.next(), None);
+    // all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)) with replay [2] then [0]
+    #[test]
+    fn t16() {
+        AwaitTest::given_n_futures(3)
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)),
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)),
+            )
+            .given_notify([2])
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)),
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(1)),
+            )
+            .expect_completed([2])
+            .given_notify([0])
+            .when_await_then_completed(all_succeeded_or_first_failed!(
+                unknown!(0, 1),
+                all_completed!(1)
+            ));
+    }
+
+    // all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)) with replay [2, 3, 1]
+    #[test]
+    fn t17() {
+        AwaitTest::given_n_futures(4)
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)),
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)),
+            )
+            .given_notify([2, 3, 1])
+            .when_await_then_completed(all_succeeded_or_first_failed!(
+                unknown!(0, 1),
+                all_completed!(2, 3)
+            ))
+            .expect_completed([2, 3, 1]);
+    }
+
+    // all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)) with replay [2, 3] then [1]
+    #[test]
+    fn t18() {
+        AwaitTest::given_n_futures(4)
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)),
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)),
+            )
+            .given_notify([2, 3])
+            .when_await_then_awaiting_on(
+                all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)),
+                all_succeeded_or_first_failed!(unknown!(0, 1)),
+            )
+            .expect_completed([2, 3])
+            .given_notify([1])
+            .when_await_then_completed(all_succeeded_or_first_failed!(unknown!(0, 1)))
+            .expect_completed([1]);
+    }
 }
 
 /// Multiple do_progress calls with progressively shrinking future.

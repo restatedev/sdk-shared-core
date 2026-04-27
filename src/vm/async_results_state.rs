@@ -96,58 +96,25 @@ impl AsyncResultsState {
         // In the data model we have several types of combinators:
         // * SINGLE -> Resolve as soon as the operation is completed
         // * FIRST_COMPLETED -> Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
-        // * ALL_COMPLETED -> Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
+        // * ALL_COMPLETED -> Wait for every child to complete, regardless of success or failure. Completes always with success (same as JS Promise.allSettled).
         // * FIRST_SUCCEEDED_OR_ALL_FAILED -> Resolve on the first success; fail only if all children fail (same as JS Promise.any).
         // * ALL_SUCCEEDED_OR_FIRST_FAILED -> Resolve when all children succeed; short-circuit on the first failure (same as JS Promise.all).
-        // * UNKNOWN -> Unknown combinator made of 1 or more children futures.
+        // * UNKNOWN -> Unknown combinator made of 1 or more children futures. Only the SDK can determine its state (success/failure/pending).
         //              The SDK uses this for futures that are not representable in any of the above types.
-        //              A notable example if RestatePromise.map in Javascript or Java SDK
+        //              A notable example if RestatePromise.map in Javascript or Java SDK.
         //
         // Implementation note: for performance reasons, the nested combinators use Vec to store children nodes, but they're conceptually sets.
-        // Duplicates should not influence the normalization, nor the wake-up algorithm.
-        //
-        // ## Normalization algorithm
-        // Invariant: No UNKNOWN future appears as a child of FIRST_SUCCEEDED_OR_ALL_FAILED or ALL_SUCCEEDED_OR_FIRST_FAILED.
-        //   UNKNOWN is fine inside FIRST_COMPLETED, ALL_COMPLETED, and other UNKNOWN nodes,
-        //   because those only need completed/pending status, not success/failure.
-        // Algorithm:
-        // * Recurse into nodes, and for each node:
-        //     If the node is a FIRST_SUCCEEDED_OR_ALL_FAILED or ALL_SUCCEEDED_OR_FIRST_FAILED,
-        //     and it has an Unknown node nested in its subtree:
-        //       1. Extract the Unknown's children and save them in extracted_children
-        //       2. Remove the Unknown node from the parent
-        //       3. For each extracted child, recurse the algorithm. If the child is also UNKNOWN, flatten it recursively
-        //       4. Add the remaining extracted_children to unknown_nodes
-        // * At the end of the algorithm:
-        //     If there are unknown_nodes:
-        //       Substitute the root of the tree with an UNKNOWN node containing the current root of the tree + the unknown_nodes
-        //
-        // # Wake up algorithm
-        // Theorem: Given as input the normalized tree and the list of notifications, and whether they are succeeded/failed,
-        //          it is possible to establish whether the invocation can resume or not.
-        // Proof by induction:
-        //   Given a SINGLE future, the invocation can resume once the future is completed.
-        //   Given a UNKNOWN future, the invocation can resume once any of the children are completed.
-        //   Given a FIRST_COMPLETED future, the invocation can resume once any of the children are completed.
-        //      UNKNOWN children are fine here: completed/pending can always be determined.
-        //   Given an ALL_COMPLETED future, the invocation can resume when all the children are completed.
-        //      UNKNOWN children are fine here: completed/pending can always be determined.
-        //   Given a FIRST_SUCCEEDED_OR_ALL_FAILED future, the invocation can resume when either any of the children succeeded, or all the children failed.
-        //      Because no children can be UNKNOWN (normalization invariant), success/failure is always determinable.
-        //   Given an ALL_SUCCEEDED_OR_FIRST_FAILED future, the invocation can resume when either all the children succeeded, or any of the children failed.
-        //      Because no children can be UNKNOWN (normalization invariant), success/failure is always determinable.
-        //   Recursion
-        //   QED
+        // Duplicates should not influence the wake-up algorithm.
         //
         // # SDK and restate-server expectations
-        // The SDK will try to normalize and resolve the nodes of the tree it can resolve.
+        // The SDK will try to resolve the nodes of the tree it can resolve.
         //
         // If the SDK can fully resolve the future with the local information, it will unblock the user code and move on
-        // If the SDK cannot resolve the future, it will shave off the tree the Completed nodes, and propagate back the remaining part of the tree.
+        // If the SDK cannot resolve the future, it will shave off the tree the Completed nodes, and propagate back the remaining part of the future tree.
         //      Propagation will happen depending on the situation, via AwaitingOnMessage or SuspensionMessage.
         //
         // # About this function
-        // try_resolve_future first normalizes the future, then loops:
+        // try_resolve_future loops:
         // * If the future can be resolved against the current `ready` state, return AnyCompleted
         //   and let the SDK consume the completed notifications.
         // * Otherwise, pop the next notification from `to_process` and retry.
@@ -163,7 +130,6 @@ impl AsyncResultsState {
         //
         // Wanna understand this better? In _try_resolve_future change all the Err to Ok, then run the unit tests below.
 
-        unresolved_future.normalize();
         loop {
             let reduce_future_res = self._try_resolve_future(&mut unresolved_future);
 
@@ -438,122 +404,6 @@ impl HandleState {
 }
 
 impl UnresolvedFuture {
-    fn normalize(&mut self) {
-        let mut unknown_nodes = vec![];
-        Self::normalize_inner(self, false, &mut unknown_nodes);
-
-        if !unknown_nodes.is_empty() {
-            let current_root = std::mem::replace(self, UnresolvedFuture::Unknown(vec![]));
-            // Only include the root if it's not an empty sentinel
-            if !current_root.is_empty() {
-                unknown_nodes.insert(0, current_root);
-            }
-            *self = UnresolvedFuture::Unknown(unknown_nodes);
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        matches!(self, UnresolvedFuture::Unknown(c) if c.is_empty())
-    }
-
-    /// Recurse into a node, extracting Unknowns when inside a fsaf/asff context.
-    /// `extract` is true when we're inside a fsaf/asff subtree and must pull out any Unknown.
-    fn normalize_inner(
-        fut: &mut UnresolvedFuture,
-        extract: bool,
-        unknown_nodes: &mut Vec<UnresolvedFuture>,
-    ) {
-        match fut {
-            UnresolvedFuture::Single(_) => return,
-            UnresolvedFuture::Unknown(_) => {
-                // If we're in extract mode, the caller handles extraction.
-                // Otherwise, recurse into Unknown's children (they may contain fsaf/asff).
-                if !extract {
-                    if let UnresolvedFuture::Unknown(children) = fut {
-                        for child in children.iter_mut() {
-                            Self::normalize_inner(child, false, unknown_nodes);
-                        }
-                    }
-                }
-                return;
-            }
-            _ => {}
-        }
-
-        // Determine if THIS node triggers extraction for its children
-        let needs_extraction = matches!(
-            fut,
-            UnresolvedFuture::FirstSucceededOrAllFailed(_)
-                | UnresolvedFuture::AllSucceededOrFirstFailed(_)
-        );
-        // Children inherit extract mode from parent, or enter it if this node is fsaf/asff
-        let child_extract = extract || needs_extraction;
-
-        let children = match fut {
-            UnresolvedFuture::FirstCompleted(c)
-            | UnresolvedFuture::AllCompleted(c)
-            | UnresolvedFuture::FirstSucceededOrAllFailed(c)
-            | UnresolvedFuture::AllSucceededOrFirstFailed(c) => c,
-            _ => unreachable!(),
-        };
-
-        // Recurse into non-Unknown children
-        for child in children.iter_mut() {
-            Self::normalize_inner(child, child_extract, unknown_nodes);
-        }
-
-        // Extract Unknown children if we're in extract mode
-        if child_extract {
-            let mut i = 0;
-            while i < children.len() {
-                if matches!(children[i], UnresolvedFuture::Unknown(_)) {
-                    let unknown = children.swap_remove(i);
-                    if let UnresolvedFuture::Unknown(extracted) = unknown {
-                        for gc in extracted {
-                            Self::collect_from_unknown_child(gc, unknown_nodes);
-                        }
-                    }
-                } else {
-                    i += 1;
-                }
-            }
-        }
-
-        // Simplify degenerate combinators
-        let children = match fut {
-            UnresolvedFuture::FirstCompleted(c)
-            | UnresolvedFuture::AllCompleted(c)
-            | UnresolvedFuture::FirstSucceededOrAllFailed(c)
-            | UnresolvedFuture::AllSucceededOrFirstFailed(c) => c,
-            _ => return,
-        };
-        if children.len() <= 1 {
-            *fut = children.pop().unwrap_or(UnresolvedFuture::Unknown(vec![]));
-        }
-    }
-
-    /// Process a child extracted from an Unknown node.
-    /// If the child is itself Unknown, flatten recursively.
-    /// Otherwise, normalize it and add to unknown_nodes.
-    fn collect_from_unknown_child(
-        fut: UnresolvedFuture,
-        unknown_nodes: &mut Vec<UnresolvedFuture>,
-    ) {
-        match fut {
-            UnresolvedFuture::Unknown(children) => {
-                for child in children {
-                    Self::collect_from_unknown_child(child, unknown_nodes);
-                }
-            }
-            mut other => {
-                Self::normalize_inner(&mut other, false, unknown_nodes);
-                if !other.is_empty() {
-                    unknown_nodes.push(other);
-                }
-            }
-        }
-    }
-
     pub(crate) fn handles(&self) -> Vec<NotificationHandle> {
         let mut handles = vec![];
         match self {
@@ -627,19 +477,6 @@ mod tests {
         state
     }
 
-    macro_rules! test_normalization {
-        ($test_name:ident: $input:expr => $expected:expr) => {
-            paste! {
-                #[test]
-                fn [<normalize_ $test_name>] () {
-                    let mut fut: UnresolvedFuture = ($input).into();
-                    fut.normalize();
-                    assert_eq!(fut, $expected);
-                }
-            }
-        };
-    }
-
     macro_rules! test_try_future_resolve {
         ($test_name:ident: $state:expr, $input:expr => $expected:expr) => {
             paste! {
@@ -677,22 +514,6 @@ mod tests {
 
     // ==================== FirstCompleted ====================
 
-    test_normalization!(nested_combinators_no_unknowns_is_noop:
-        first_completed!(1, all_completed!(2, 3))
-        => first_completed!(1, all_completed!(2, 3)));
-    // Unknown inside first_completed is fine — no extraction needed
-    test_normalization!(first_completed_with_unknown_is_noop:
-        first_completed!(1, unknown!(2))
-        => first_completed!(1, unknown!(2)));
-    // Unknown wrapping a combinator inside first_completed — no extraction
-    test_normalization!(first_completed_with_unknown_wrapping_combinator:
-        first_completed!(unknown!(all_completed!(1, 2)), 3)
-        => first_completed!(unknown!(all_completed!(1, 2)), 3));
-    // first_completed with one Unknown child — collapses (1 child)
-    test_normalization!(first_completed_unknown_with_nested_unknown_collapses:
-        first_completed!(unknown!(all_completed!(1, unknown!(2))))
-        => unknown!(all_completed!(1, unknown!(2))));
-
     test_try_future_resolve!(first_completed_none_ready:
         state([]), first_completed!(1, 2, 3)
         => WaitExternalInput(first_completed!(1, 2, 3)));
@@ -726,26 +547,13 @@ mod tests {
     test_try_future_resolve!(deep_unknown_not_prematurely_resolved:
         state([success(1)]),
         first_completed!(unknown!(all_completed!(1, unknown!(2))))
-        => WaitExternalInput(unknown!(all_completed!(unknown!(2)))));
+        => WaitExternalInput(first_completed!(unknown!(all_completed!(unknown!(2))))));
     test_try_future_resolve!(deep_unknown_resolves_when_all_done:
         state([success(1), success(2)]),
         first_completed!(unknown!(all_completed!(1, unknown!(2))))
         => AnyCompleted);
 
     // ==================== AllCompleted ====================
-
-    test_normalization!(no_unknowns_is_noop:
-        all_completed!(1, 2) => all_completed!(1, 2));
-    // Unknown inside all_completed is fine — no extraction
-    test_normalization!(all_completed_with_unknown_is_noop:
-        all_completed!(1, unknown!(2))
-        => all_completed!(1, unknown!(2)));
-    test_normalization!(all_completed_multiple_unknowns_is_noop:
-        all_completed!(unknown!(1), unknown!(2))
-        => all_completed!(unknown!(1), unknown!(2)));
-    test_normalization!(all_completed_nested_unknown_is_noop:
-        all_completed!(1, unknown!(unknown!(2)))
-        => all_completed!(1, unknown!(unknown!(2))));
 
     test_try_future_resolve!(all_completed_none_ready:
         state([]), all_completed!(1, 2, 3)
@@ -766,25 +574,6 @@ mod tests {
 
     // ==================== FirstSucceededOrAllFailed ====================
 
-    // fsaf extracts unknowns
-    test_normalization!(fsaf_extracts_unknown:
-        first_succeeded_or_all_failed!(1, unknown!(2))
-        => unknown!(1, 2));
-    test_normalization!(nested_unknown_inside_fsaf_asff:
-        first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => unknown!(first_succeeded_or_all_failed!(1, 2), 3));
-    // Unknown deep inside fsaf subtree gets extracted
-    test_normalization!(fsaf_with_all_completed_containing_unknown:
-        first_succeeded_or_all_failed!(1, all_completed!(2, unknown!(3)))
-        => unknown!(first_succeeded_or_all_failed!(1, 2), 3));
-    test_normalization!(fsaf_with_unknown_containing_asff:
-        first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => unknown!(1, all_succeeded_or_first_failed!(2, 3)));
-    // Cascading extraction
-    test_normalization!(fsaf_with_unknown_containing_asff_with_unknown:
-        first_succeeded_or_all_failed!(1, unknown!(2, all_succeeded_or_first_failed!(3, unknown!(4))))
-        => unknown!(1, 2, 4, 3));
-
     test_try_future_resolve!(first_succeeded_or_all_failed_none_ready:
         state([]), first_succeeded_or_all_failed!(1, 2, 3)
         => WaitExternalInput(first_succeeded_or_all_failed!(1, 2, 3)));
@@ -799,29 +588,24 @@ mod tests {
         state([failure(1), failure(2)]), first_succeeded_or_all_failed!(1, 2)
         => AnyCompleted);
 
-    // fsaf(1, asff(2, unknown(3))) → unknown(fsaf(1, 2), 3)
-    test_try_future_resolve!(normalization_fsaf_asff_unknown_success:
+    test_try_future_resolve!(fsaf_asff_unknown_success:
         state([success(3)]),
         first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
         => AnyCompleted);
-    test_try_future_resolve!(normalization_fsaf_asff_unknown_failure:
+    test_try_future_resolve!(fsaf_asff_unknown_failure:
         state([failure(3)]),
         first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
         => AnyCompleted);
     // 1 fails → fsaf prunes it, fsaf(2) still pending. 3 still pending.
-    test_try_future_resolve!(normalization_nested_fsaf_asff_partial:
+    test_try_future_resolve!(nested_fsaf_asff_partial:
         state([failure(1)]),
         first_succeeded_or_all_failed!(1, all_succeeded_or_first_failed!(2, unknown!(3)))
-        => WaitExternalInput(unknown!(first_succeeded_or_all_failed!(2), 3)));
+        => WaitExternalInput(first_succeeded_or_all_failed!(all_succeeded_or_first_failed!(2, unknown!(3)))));
     // fsaf(1, all_completed(2, unknown(3))) — deep extraction
-    test_try_future_resolve!(normalization_fsaf_with_nested_unknown_in_all_completed:
+    test_try_future_resolve!(fsaf_with_nested_unknown_in_all_completed:
         state([success(3)]),
         first_succeeded_or_all_failed!(1, all_completed!(2, unknown!(3)))
         => AnyCompleted);
-    test_try_future_resolve!(normalization_fsaf_with_nested_unknown_in_all_completed_pending:
-        state([]),
-        first_succeeded_or_all_failed!(1, all_completed!(2, unknown!(3)))
-        => WaitExternalInput(unknown!(first_succeeded_or_all_failed!(1, 2), 3)));
     // fsaf(1, unknown(asff(2, 3))) → unknown(1, asff(2, 3))
     test_try_future_resolve!(fsaf_unknown_asff_resolves_when_inner_done:
         state([success(2), success(3)]),
@@ -834,21 +618,9 @@ mod tests {
     test_try_future_resolve!(fsaf_unknown_asff_inner_partial:
         state([success(2)]),
         first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(2, 3)))
-        => WaitExternalInput(unknown!(1, all_succeeded_or_first_failed!(3))));
+        => WaitExternalInput(first_succeeded_or_all_failed!(1, unknown!(all_succeeded_or_first_failed!(3)))));
 
     // ==================== AllSucceededOrFirstFailed ====================
-
-    // asff extracts unknowns
-    test_normalization!(asff_extracts_unknown:
-        all_succeeded_or_first_failed!(1, unknown!(2))
-        => unknown!(1, 2));
-    test_normalization!(asff_with_unknown_containing_fsaf:
-        all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => unknown!(1, 2, first_succeeded_or_all_failed!(3, 4)));
-    // all_completed inside extracted unknown is kept as-is
-    test_normalization!(asff_with_unknown_containing_all_completed_with_unknown:
-        all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => unknown!(1, all_completed!(2, unknown!(3))));
 
     test_try_future_resolve!(all_succeeded_or_first_failed_none_ready:
         state([]), all_succeeded_or_first_failed!(1, 2, 3)
@@ -870,15 +642,14 @@ mod tests {
         => AnyCompleted);
 
     // asff(1, unknown(2)) → unknown(1, 2). Failure of 2 wakes.
-    test_try_future_resolve!(normalization_asff_extracts_unknown:
+    test_try_future_resolve!(asff_with_unknown_shortcircuits:
         state([failure(2)]),
         all_succeeded_or_first_failed!(1, unknown!(2))
         => AnyCompleted);
-    // asff(1, unknown(2, fsaf(3, 4))) → unknown(1, 2, fsaf(3, 4))
     test_try_future_resolve!(asff_unknown_fsaf_resolves_on_leaf:
         state([success(1)]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => AnyCompleted);
+        => WaitExternalInput(all_succeeded_or_first_failed!(unknown!(2, first_succeeded_or_all_failed!(3, 4)))));
     test_try_future_resolve!(asff_unknown_fsaf_resolves_on_inner_fsaf_success:
         state([success(3)]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
@@ -887,7 +658,7 @@ mod tests {
     test_try_future_resolve!(asff_unknown_fsaf_failure_doesnt_resolve:
         state([failure(3)]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => WaitExternalInput(unknown!(1, 2, first_succeeded_or_all_failed!(4))));
+        => WaitExternalInput(all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(4)))));
     // Both 3 and 4 fail → fsaf AnyCompleted → unknown wakes
     test_try_future_resolve!(asff_unknown_fsaf_all_inner_fail:
         state([failure(3), failure(4)]),
@@ -896,31 +667,40 @@ mod tests {
     test_try_future_resolve!(asff_unknown_fsaf_pending:
         state([]),
         all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))
-        => WaitExternalInput(unknown!(1, 2, first_succeeded_or_all_failed!(3, 4))));
-    // asff(1, unknown(all_completed(2, unknown(3)))) → unknown(1, all_completed(2, unknown(3)))
-    test_try_future_resolve!(asff_unknown_all_completed_with_unknown_resolves_on_leaf:
+        => WaitExternalInput(all_succeeded_or_first_failed!(1, unknown!(2, first_succeeded_or_all_failed!(3, 4)))));
+
+    test_try_future_resolve!(asff_unknown_all_completed_with_unknown_partial_1:
         state([success(1)]),
         all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => AnyCompleted);
-    test_try_future_resolve!(asff_unknown_all_completed_with_unknown_partial:
+        => WaitExternalInput(all_succeeded_or_first_failed!(unknown!(all_completed!(2, unknown!(3))))));
+    test_try_future_resolve!(asff_unknown_all_completed_with_unknown_partial_2:
         state([success(2)]),
         all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
-        => WaitExternalInput(unknown!(1, all_completed!(unknown!(3)))));
+        => WaitExternalInput(all_succeeded_or_first_failed!(1, unknown!(all_completed!(unknown!(3))))));
+    test_try_future_resolve!(asff_unknown_all_completed_with_unknown_shortcircuits_failure:
+        state([failure(1)]),
+        all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
+        => AnyCompleted);
     test_try_future_resolve!(asff_unknown_all_completed_with_unknown_all_done:
         state([success(2), success(3)]),
         all_succeeded_or_first_failed!(1, unknown!(all_completed!(2, unknown!(3))))
         => AnyCompleted);
 
-    // ==================== Unknown ====================
+    test_try_future_resolve!(asff_with_nested_first_completed:
+        state([failure(2)]),
+        all_succeeded_or_first_failed!(first_completed!(1, 2), first_completed!(3, 4))
+        => AnyCompleted);
 
-    test_normalization!(single_is_noop:
-        1 => 1.into());
-    test_normalization!(unknown_at_root_is_noop:
-        unknown!(1, 2) => unknown!(1, 2));
-    // Deep: unknown inside asff inside unknown inside all_completed
-    test_normalization!(deep_nested_asff_with_unknown:
-        all_completed!(unknown!(all_succeeded_or_first_failed!(1, unknown!(2))))
-        => unknown!(unknown!(1), 2));
+    test_try_future_resolve!(asff_with_nested_all_completed:
+        state([failure(1), failure(2)]),
+        all_succeeded_or_first_failed!(all_completed!(1, 2), all_completed!(3, 4))
+         => WaitExternalInput(all_succeeded_or_first_failed!(all_completed!(3, 4))));
+    test_try_future_resolve!(asff_with_nested_all_completed_only_one_resolved:
+        state([failure(1)]),
+        all_succeeded_or_first_failed!(all_completed!(1, 2), all_completed!(3, 4))
+         => WaitExternalInput(all_succeeded_or_first_failed!(all_completed!(2), all_completed!(3, 4))));
+
+    // ==================== Unknown ====================
 
     test_try_future_resolve!(unknown_none_ready:
         state([]), unknown!(1, 2)
