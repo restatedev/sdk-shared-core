@@ -404,10 +404,11 @@ mod do_await {
     // I'm a bit sick of giving names to tests,
     // and naming tests in rust is so hard because it lacks a test display name feature,
     // so whatev just read the test it's pretty explicative what it does.
+    // -- Names are slop anyway --
 
     // first_completed!(0, 1) with replay [1, 0]
     #[test]
-    fn t1() {
+    fn first_completed_returns_first_resolved() {
         AwaitTest::given_n_futures(2)
             .when_await_then_awaiting_on(first_completed!(0, 1), first_completed!(0, 1))
             .given_notify([1, 0])
@@ -418,7 +419,7 @@ mod do_await {
 
     // all_completed!(first_completed!(0, 1), all_completed!(0, 1, 2)) with replay [1] then [0] then [2]
     #[test]
-    fn t2() {
+    fn nested_all_of_first_and_all_progressive() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 all_completed!(first_completed!(0, 1), all_completed!(0, 1, 2)),
@@ -447,7 +448,7 @@ mod do_await {
 
     // all_completed!(first_completed!(0, 1), all_completed!(0, 1, 2)) with replay [1, 0, 2]
     #[test]
-    fn t3() {
+    fn nested_all_of_first_and_all_batch() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 all_completed!(first_completed!(0, 1), all_completed!(0, 1, 2)),
@@ -465,7 +466,7 @@ mod do_await {
 
     // all_completed!(first_completed!(0, 1), first_completed!(1, 2)) with replay [2, 1]
     #[test]
-    fn t4() {
+    fn all_of_two_first_completed_disjoint() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 all_completed!(first_completed!(0, 1), first_completed!(1, 2)),
@@ -483,7 +484,7 @@ mod do_await {
 
     // all_completed!(first_completed!(0, 1), first_completed!(2, 1)) with replay [2, 1]
     #[test]
-    fn t5() {
+    fn all_of_two_first_completed_shared_handle_outer_resolves_first() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 all_completed!(first_completed!(0, 1), first_completed!(2, 1)),
@@ -501,7 +502,7 @@ mod do_await {
 
     // all_completed!(first_completed!(0, 1), first_completed!(2, 1)) with replay [1, 0]
     #[test]
-    fn t6() {
+    fn all_of_two_first_completed_shared_handle_resolves_both() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 all_completed!(first_completed!(0, 1), first_completed!(2, 1)),
@@ -517,7 +518,7 @@ mod do_await {
 
     // all_completed!(0, 1) with replay [1]
     #[test]
-    fn t7() {
+    fn all_completed_partial_resolution_then_suspends() {
         AwaitTest::given_n_futures(2)
             .given_notify([1])
             .when_await_then_awaiting_on(all_completed!(0, 1), all_completed!(0))
@@ -528,7 +529,7 @@ mod do_await {
 
     // all_completed!(0, 1) with replay [1]
     #[test]
-    fn t8() {
+    fn all_completed_partial_resolution_then_suspends_again() {
         AwaitTest::given_n_futures(2)
             .given_notify([1])
             .when_await_then_awaiting_on(all_completed!(0, 1), all_completed!(0))
@@ -539,7 +540,7 @@ mod do_await {
 
     // all_completed!(0, 1) with replay [1] and input closed before await
     #[test]
-    fn t9() {
+    fn all_completed_input_closed_before_await() {
         AwaitTest::given_n_futures(2)
             .given_notify([1])
             .given_input_closed()
@@ -548,7 +549,7 @@ mod do_await {
 
     // all_completed!(unknown!(0, 1), first_completed!(2, 1)) with replay [1, 0]
     #[test]
-    fn t10() {
+    fn all_completed_with_unknown_inner() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 all_completed!(unknown!(0, 1), first_completed!(2, 1)),
@@ -561,7 +562,7 @@ mod do_await {
 
     // first_succeeded_or_all_failed!(unknown!(0, 1), first_completed!(2, 1)) with replay [1, 0]
     #[test]
-    fn t11() {
+    fn first_succeeded_or_all_failed_with_unknown_inner() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 first_succeeded_or_all_failed!(unknown!(0, 1), first_completed!(2, 1)),
@@ -577,7 +578,7 @@ mod do_await {
 
     // all_succeeded_or_first_failed!(first_completed!(0, 1), first_completed!(2, 3)) with replay [failed 1]
     #[test]
-    fn t12() {
+    fn all_succeeded_or_first_failed_short_circuits_on_failure() {
         AwaitTest::given_n_futures(4)
             .when_await_then_awaiting_on(
                 all_succeeded_or_first_failed!(first_completed!(0, 1), first_completed!(2, 3)),
@@ -593,7 +594,7 @@ mod do_await {
 
     // all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)) with replay [failed 1, failed 0]
     #[test]
-    fn t13() {
+    fn all_succeeded_or_first_failed_inner_all_completed_fully_fails() {
         AwaitTest::given_n_futures(4)
             .when_await_then_awaiting_on(
                 all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)),
@@ -609,7 +610,7 @@ mod do_await {
 
     // all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)) with replay [failed 1]
     #[test]
-    fn t14() {
+    fn all_succeeded_or_first_failed_inner_all_completed_partial_failure() {
         AwaitTest::given_n_futures(4)
             .when_await_then_awaiting_on(
                 all_succeeded_or_first_failed!(all_completed!(0, 1), all_completed!(2, 3)),
@@ -625,7 +626,7 @@ mod do_await {
 
     // all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)) with replay [2, 1]
     #[test]
-    fn t15() {
+    fn all_succeeded_or_first_failed_unknown_shared_handle_batch() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)),
@@ -641,7 +642,7 @@ mod do_await {
 
     // all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)) with replay [2] then [0]
     #[test]
-    fn t16() {
+    fn all_succeeded_or_first_failed_unknown_shared_handle_progressive() {
         AwaitTest::given_n_futures(3)
             .when_await_then_awaiting_on(
                 all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 1)),
@@ -662,7 +663,7 @@ mod do_await {
 
     // all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)) with replay [2, 3, 1]
     #[test]
-    fn t17() {
+    fn all_succeeded_or_first_failed_unknown_disjoint_handles_batch() {
         AwaitTest::given_n_futures(4)
             .when_await_then_awaiting_on(
                 all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)),
@@ -678,7 +679,7 @@ mod do_await {
 
     // all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)) with replay [2, 3] then [1]
     #[test]
-    fn t18() {
+    fn all_succeeded_or_first_failed_unknown_disjoint_handles_progressive() {
         AwaitTest::given_n_futures(4)
             .when_await_then_awaiting_on(
                 all_succeeded_or_first_failed!(unknown!(0, 1), all_completed!(2, 3)),
