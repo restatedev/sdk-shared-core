@@ -14,6 +14,7 @@ sha2_random_seed = ["dep:sha2"]
 # request_identity (or call jsonwebtoken's CryptoProvider::install_default yourself).
 rust_crypto = ["jsonwebtoken?/rust_crypto"]
 aws_lc_rs = ["jsonwebtoken?/aws_lc_rs"]
+tracing_pretty = ["dep:tracing-subscriber"]
 
 [dependencies]
 thiserror = "2.0"
@@ -21,6 +22,7 @@ prost = "0.14"
 bytes = "1.10"
 bytes-utils = "0.1"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
 pastey = "0.2"
 strum = { version = "0.27", features = ["derive"] }
 base64 = "0.22"
