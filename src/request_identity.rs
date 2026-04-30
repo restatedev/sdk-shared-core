@@ -164,7 +164,7 @@ mod tests {
 
     use ed25519_dalek::pkcs8::EncodePrivateKey;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
     use serde::Serialize;
     use std::time::SystemTime;
 
