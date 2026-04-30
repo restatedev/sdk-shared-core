@@ -14,18 +14,20 @@ use crate::vm::errors::{
     ClosedError, UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion,
     EMPTY_IDEMPOTENCY_KEY, SUSPENDED,
 };
+use crate::vm::run_state::RunState;
 use crate::vm::transitions::*;
 use crate::{
-    AttachInvocationTarget, CallHandle, CommandRelationship, DoProgressResponse, Error, Header,
+    AttachInvocationTarget, AwaitResponse, CallHandle, CommandRelationship, Error, Header,
     ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
     NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, SendHandle,
-    TakeOutputResult, Target, TerminalFailure, VMOptions, VMResult, Value,
+    TakeOutputResult, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult, Value,
     CANCEL_NOTIFICATION_HANDLE,
 };
+use async_results_state::AsyncResultsState;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use context::{AsyncResultsState, Context, Output, RunState};
+use context::{Context, Output};
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
@@ -34,8 +36,10 @@ use std::{fmt, mem};
 use strum::IntoStaticStr;
 use tracing::{debug, enabled, instrument, Level};
 
+mod async_results_state;
 mod context;
 pub(crate) mod errors;
+mod run_state;
 mod transitions;
 
 const CONTENT_TYPE: &str = "content-type";
@@ -155,9 +159,9 @@ impl CoreVM {
 
     fn _do_progress(
         &mut self,
-        any_handle: Vec<NotificationHandle>,
-    ) -> Result<DoProgressResponse, Error> {
-        match self.do_transition(DoProgress(any_handle)) {
+        unresolved_future: UnresolvedFuture,
+    ) -> Result<AwaitResponse, Error> {
+        match self.do_transition(DoProgress(unresolved_future)) {
             Ok(Ok(do_progress_response)) => Ok(do_progress_response),
             Ok(Err(_)) => Err(SUSPENDED),
             Err(e) => Err(e),
@@ -241,6 +245,7 @@ impl super::VM for CoreVM {
             options.non_determinism_checks,
             NonDeterministicChecksOption::PayloadChecksDisabled
         );
+        let awaiting_on_policy = options.awaiting_on_policy;
 
         Ok(Self {
             options,
@@ -253,6 +258,7 @@ impl super::VM for CoreVM {
                 eager_state: Default::default(),
                 non_deterministic_checks_ignore_payload_equality,
                 negotiated_protocol_version: version,
+                awaiting_on_policy,
             },
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],
@@ -429,16 +435,16 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn do_progress(
-        &mut self,
-        mut any_handle: Vec<NotificationHandle>,
-    ) -> VMResult<DoProgressResponse> {
+    fn do_await(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<AwaitResponse> {
         if self.is_implicit_cancellation_enabled() {
             // We want the runtime to wake us up in case cancel notification comes in.
-            any_handle.insert(0, CANCEL_NOTIFICATION_HANDLE);
+            let unresolved_future_with_cancellation = UnresolvedFuture::FirstCompleted(vec![
+                unresolved_future,
+                UnresolvedFuture::Single(CANCEL_NOTIFICATION_HANDLE),
+            ]);
 
-            match self._do_progress(any_handle) {
-                Ok(DoProgressResponse::AnyCompleted) => {
+            match self._do_progress(unresolved_future_with_cancellation) {
+                Ok(AwaitResponse::AnyCompleted) => {
                     // If it's cancel signal, then let's go on with the cancellation logic
                     if self._is_completed(CANCEL_NOTIFICATION_HANDLE) {
                         // Loop once over the tracked invocation ids to resolve the unresolved ones
@@ -450,8 +456,8 @@ impl super::VM for CoreVM {
                             let handle = self.tracked_invocation_ids[i].handle;
 
                             // Try to resolve it
-                            match self._do_progress(vec![handle]) {
-                                Ok(DoProgressResponse::AnyCompleted) => {
+                            match self._do_progress(UnresolvedFuture::Single(handle)) {
+                                Ok(AwaitResponse::AnyCompleted) => {
                                     let invocation_id = match self.do_transition(CopyNotification(handle)) {
                                         Ok(Ok(Some(Value::InvocationId(invocation_id)))) => Ok(invocation_id),
                                         Ok(Err(_)) => Err(SUSPENDED),
@@ -479,15 +485,15 @@ impl super::VM for CoreVM {
                         let _ = self.take_notification(CANCEL_NOTIFICATION_HANDLE);
 
                         // Done
-                        Ok(DoProgressResponse::CancelSignalReceived)
+                        Ok(AwaitResponse::CancelSignalReceived)
                     } else {
-                        Ok(DoProgressResponse::AnyCompleted)
+                        Ok(AwaitResponse::AnyCompleted)
                     }
                 }
                 res => res,
             }
         } else {
-            self._do_progress(any_handle)
+            self._do_progress(unresolved_future)
         }
     }
 
@@ -1359,4 +1365,26 @@ pub(super) fn awakeable_id_str(id: &[u8], completion_index: u32) -> String {
     input_buf.put_slice(id);
     input_buf.put_u32(completion_index);
     format!("{AWAKEABLE_PREFIX}{}", URL_SAFE.encode(input_buf.freeze()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::service_protocol::messages::Future;
+
+    impl CoreVM {
+        pub(crate) fn resolve_unresolved_future(
+            &self,
+            unresolved_future: UnresolvedFuture,
+        ) -> Future {
+            match &self.last_transition {
+                Ok(
+                    State::Replaying { async_results, .. }
+                    | State::Processing { async_results, .. },
+                ) => async_results.resolve_unresolved_future(unresolved_future),
+                _ => panic!("Could not resolve unresolved future"),
+            }
+        }
+    }
 }

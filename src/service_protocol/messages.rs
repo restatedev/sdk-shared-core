@@ -1,15 +1,16 @@
 use crate::service_protocol::{MessageHeader, MessageType, NotificationResult};
-use bytes::Bytes;
+use crate::Version;
+use bytes::{BufMut, Bytes, BytesMut};
 use pastey::paste;
 use std::borrow::Cow;
 use std::fmt;
 
 pub trait RestateMessage: prost::Message + Default {
     fn ty() -> MessageType;
+}
 
-    fn generate_header(&self) -> MessageHeader {
-        MessageHeader::new(Self::ty(), self.encoded_len() as u32)
-    }
+pub trait RestateEncodableMessage {
+    fn encode(&self, service_protocol_version: Version) -> Bytes;
 }
 
 pub trait NamedCommandMessage {
@@ -31,16 +32,20 @@ include!("./generated/dev.restate.service.protocol.rs");
 macro_rules! impl_message_traits {
     ($name:ident: core) => {
         impl_message_traits!($name: message);
+        impl_message_traits!($name: encodable);
     };
     ($name:ident: notification) => {
         impl_message_traits!($name: message);
+        impl_message_traits!($name: encodable); // Only for testing
     };
     ($name:ident: command) => {
         impl_message_traits!($name: message);
+        impl_message_traits!($name: encodable);
         impl_message_traits!($name: named_command);
     };
     ($name:ident: command eq) => {
         impl_message_traits!($name: message);
+        impl_message_traits!($name: encodable);
         impl_message_traits!($name: named_command);
         impl_message_traits!($name: command_header_eq);
     };
@@ -48,6 +53,16 @@ macro_rules! impl_message_traits {
          impl RestateMessage for paste! { [<$name Message>] } {
             fn ty() -> MessageType {
                 MessageType::$name
+            }
+        }
+    };
+    ($name:ident: encodable) => {
+         impl RestateEncodableMessage for paste! { [<$name Message>] } {
+            fn encode(
+                &self,
+                _: Version,
+            ) -> Bytes {
+                encode_message(self)
             }
         }
     };
@@ -69,10 +84,62 @@ macro_rules! impl_message_traits {
 
 // --- Core messages
 impl_message_traits!(Start: core);
-impl_message_traits!(Suspension: core);
 impl_message_traits!(Error: core);
 impl_message_traits!(End: core);
 impl_message_traits!(ProposeRunCompletion: core);
+impl_message_traits!(AwaitingOn: core);
+
+// We implement suspension message manually to transcode for protocol differences
+impl RestateMessage for SuspensionMessage {
+    fn ty() -> MessageType {
+        MessageType::Suspension
+    }
+}
+impl RestateEncodableMessage for SuspensionMessage {
+    fn encode(&self, service_protocol_version: Version) -> Bytes {
+        if service_protocol_version >= Version::V7 {
+            encode_message(self)
+        } else {
+            encode_message(&SuspensionMessageV6::new(self))
+        }
+    }
+}
+
+impl RestateMessage for SuspensionMessageV6 {
+    fn ty() -> MessageType {
+        MessageType::Suspension
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct SuspensionMessageV6 {
+    #[prost(uint32, repeated, tag = "1")]
+    waiting_completions: Vec<u32>,
+    #[prost(uint32, repeated, tag = "2")]
+    waiting_signals: Vec<u32>,
+    #[prost(string, repeated, tag = "3")]
+    waiting_named_signals: Vec<String>,
+}
+impl SuspensionMessageV6 {
+    fn new(suspension_message: &SuspensionMessage) -> Self {
+        let mut old_msg = Self::default();
+        if let Some(fut) = suspension_message.awaiting_on.as_ref() {
+            old_msg.fill_waiting_notifications_recursive(fut);
+        }
+        old_msg
+    }
+
+    fn fill_waiting_notifications_recursive(&mut self, future: &Future) {
+        self.waiting_completions
+            .extend_from_slice(&future.waiting_completions);
+        self.waiting_signals
+            .extend_from_slice(&future.waiting_signals);
+        self.waiting_named_signals
+            .extend_from_slice(&future.waiting_named_signals);
+        for nested_future in &future.nested_futures {
+            self.fill_waiting_notifications_recursive(nested_future);
+        }
+    }
+}
 
 // -- Entries
 impl_message_traits!(InputCommand: command);
@@ -214,6 +281,7 @@ impl CommandMessageHeaderEq for OneWayCallCommandMessage {
 }
 
 impl_message_traits!(SendSignalCommand: message);
+impl_message_traits!(SendSignalCommand: encodable);
 impl NamedCommandMessage for SendSignalCommandMessage {
     fn name(&self) -> String {
         self.entry_name.clone()
@@ -914,4 +982,29 @@ impl From<NotificationResult> for crate::Value {
             ),
         }
     }
+}
+
+#[inline]
+fn encode_message<T: RestateMessage>(msg: &T) -> Bytes {
+    let msg_encoded_len = msg.encoded_len();
+    // Header is 8 bytes
+    let buf_len = 8 + msg_encoded_len;
+    let mut buf = BytesMut::with_capacity(buf_len);
+
+    // Write header out
+    let header = MessageHeader::new(T::ty(), msg_encoded_len as u32);
+    buf.put_u64(header.into());
+
+    // Write payload out
+    // Note:
+    // prost::EncodeError can be triggered only by a buffer smaller than required,
+    // but because we create the buffer a couple of lines above using the size computed by prost,
+    // this can happen only if there is a very bad bug in prost.
+    msg.encode(&mut buf).expect(
+        "Encoding messages should be infallible, \
+                    this error indicates a bug in the invoker code. \
+                    Please contact the Restate developers.",
+    );
+
+    buf.freeze()
 }

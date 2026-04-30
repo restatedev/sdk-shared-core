@@ -168,7 +168,7 @@ mod journal_mismatch {
     }
 
     fn expect_mismatch_on_replay<
-        M: RestateMessage + CommandMessageHeaderDiff + Clone,
+        M: RestateMessage + RestateEncodableMessage + CommandMessageHeaderDiff + Clone,
         T: fmt::Debug,
     >(
         expected: M,
@@ -636,7 +636,7 @@ mod journal_mismatch {
 
                 // On await, this is the expected error
                 assert_that!(
-                    vm.do_progress(vec![run_handle]),
+                    vm.do_await(UnresolvedFuture::Single(run_handle)),
                     err(eq(expected_error.clone()))
                 );
             });
@@ -700,7 +700,7 @@ mod journal_mismatch {
 
                 // On await, this is the expected error
                 assert_that!(
-                    vm.do_progress(vec![sleep_handle]),
+                    vm.do_await(UnresolvedFuture::Single(sleep_handle)),
                     err(eq(expected_error.clone()))
                 );
             });
@@ -767,7 +767,7 @@ mod journal_mismatch {
 
                 // On await, this is the expected error
                 assert_that!(
-                    vm.do_progress(vec![awakeable_handle]),
+                    vm.do_await(UnresolvedFuture::Single(awakeable_handle)),
                     err(eq(expected_error.clone()))
                 );
             });

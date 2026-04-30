@@ -1,8 +1,8 @@
 use super::*;
 
 use crate::service_protocol::messages::{
-    signal_notification_message, EndMessage, GetLazyStateCommandMessage, SignalNotificationMessage,
-    SuspensionMessage,
+    signal_notification_message, AwaitingOnMessage, EndMessage, GetLazyStateCommandMessage,
+    SignalNotificationMessage, SuspensionMessage,
 };
 use crate::Value;
 use test_log::test;
@@ -24,7 +24,10 @@ fn trigger_suspension_with_get_state() {
 
             // Let's notify_input_closed now
             vm.notify_input_closed();
-            assert_that!(vm.do_progress(vec![handle]), err(is_suspended()));
+            assert_that!(
+                vm.do_await(UnresolvedFuture::Single(handle)),
+                err(is_suspended())
+            );
         });
 
     // Assert output
@@ -59,13 +62,22 @@ fn trigger_suspension_with_correct_awakeable() {
 
             // Let's notify_input_closed now
             vm.notify_input_closed();
-            assert_that!(vm.do_progress(vec![h2]), err(is_suspended()));
+            assert_that!(
+                vm.do_await(UnresolvedFuture::Single(h2)),
+                err(is_suspended())
+            );
         });
 
     assert_that!(
         output.next_decoded::<SuspensionMessage>().unwrap(),
         pat!(SuspensionMessage {
-            waiting_signals: all!(contains(eq(18)), contains(eq(1)))
+            awaiting_on: some(pat!(messages::Future {
+                waiting_completions: empty(),
+                waiting_signals: unordered_elements_are![eq(1), eq(18)],
+                nested_futures: empty(),
+                waiting_named_signals: empty(),
+                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+            }))
         })
     );
     assert_eq!(output.next(), None);
@@ -87,7 +99,14 @@ fn await_many_notifications() {
 
             // Let's notify_input_closed now
             vm.notify_input_closed();
-            assert_that!(vm.do_progress(vec![h1, h2, h3]), err(is_suspended()));
+            assert_that!(
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
+                    UnresolvedFuture::Single(h1),
+                    UnresolvedFuture::Single(h2),
+                    UnresolvedFuture::Single(h3)
+                ])),
+                err(is_suspended())
+            );
         });
 
     assert_eq!(
@@ -98,12 +117,23 @@ fn await_many_notifications() {
             ..Default::default()
         }
     );
+    // Cancel signal wraps the original future: FirstCompleted([original, cancel])
     assert_that!(
         output.next_decoded::<SuspensionMessage>().unwrap(),
         pat!(SuspensionMessage {
-            waiting_completions: eq(&[1]),
-            waiting_signals: all!(contains(eq(17)), contains(eq(1))),
-            waiting_named_signals: eq(&["abc".to_owned()])
+            awaiting_on: some(pat!(messages::Future {
+                waiting_completions: empty(),
+                waiting_signals: eq(&[1]),
+                waiting_named_signals: empty(),
+                nested_futures: elements_are![pat!(messages::Future {
+                    waiting_completions: eq(&[1]),
+                    waiting_signals: eq(&[17]),
+                    waiting_named_signals: eq(&["abc".to_owned()]),
+                    nested_futures: empty(),
+                    combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+                })],
+                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+            }))
         })
     );
     assert_eq!(output.next(), None);
@@ -124,8 +154,14 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
 
             // Do progress will ask for more input
             assert_that!(
-                vm.do_progress(vec![h1, h2]),
-                ok(eq(DoProgressResponse::ReadFromInput))
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
+                    UnresolvedFuture::Single(h1),
+                    UnresolvedFuture::Single(h2)
+                ])),
+                ok(eq(AwaitResponse::WaitingExternalProgress {
+                    waiting_input: true,
+                    waiting_run_proposal: false
+                }))
             );
 
             // Let's send Completion for h2
@@ -139,8 +175,11 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             // This should not suspend
             vm.notify_input_closed();
             assert_that!(
-                vm.do_progress(vec![h1, h2]),
-                ok(eq(DoProgressResponse::AnyCompleted))
+                vm.do_await(UnresolvedFuture::FirstCompleted(vec![
+                    UnresolvedFuture::Single(h1),
+                    UnresolvedFuture::Single(h2)
+                ])),
+                ok(eq(AwaitResponse::AnyCompleted))
             );
 
             // H2 should be completed and we can take it
@@ -158,6 +197,22 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             vm.sys_end().unwrap();
         });
 
+    // First do_progress returned WaitingExternalProgress, emits AwaitingOnMessage
+    // Future is FirstCompleted([FirstCompleted([Single(signal_17), Single(signal_18)]), Single(cancel)])
+    assert_that!(
+        output.next_decoded::<AwaitingOnMessage>().unwrap(),
+        pat!(AwaitingOnMessage {
+            awaiting_on: some(pat!(messages::Future {
+                waiting_signals: eq(vec![1]),
+                nested_futures: elements_are![pat!(messages::Future {
+                    waiting_signals: unordered_elements_are![eq(17), eq(18)],
+                    combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+                })],
+                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+            })),
+            executing_side_effects: eq(false)
+        })
+    );
     assert_that!(
         output.next_decoded::<OutputCommandMessage>().unwrap(),
         is_output_with_success(completion)

@@ -227,6 +227,14 @@ pub enum TakeOutputResult {
 
 pub type VMResult<T> = Result<T, Error>;
 
+#[derive(Debug, Copy, Clone, Default)]
+pub enum AwaitingOnPolicy {
+    SendAlways,
+    #[default]
+    DontSendWhenExecutingRun,
+    DontSend,
+}
+
 #[derive(Debug)]
 pub enum ImplicitCancellationOption {
     Disabled,
@@ -249,6 +257,7 @@ pub enum NonDeterministicChecksOption {
 pub struct VMOptions {
     pub implicit_cancellation: ImplicitCancellationOption,
     pub non_determinism_checks: NonDeterministicChecksOption,
+    pub awaiting_on_policy: AwaitingOnPolicy,
 }
 
 impl Default for VMOptions {
@@ -259,20 +268,87 @@ impl Default for VMOptions {
                 cancel_children_one_way_calls: false,
             },
             non_determinism_checks: NonDeterministicChecksOption::Enabled,
+            awaiting_on_policy: AwaitingOnPolicy::DontSendWhenExecutingRun,
+        }
+    }
+}
+
+#[derive(Clone)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
+pub enum UnresolvedFuture {
+    /// Waiting only this handle.
+    Single(NotificationHandle),
+    /// Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
+    FirstCompleted(Vec<UnresolvedFuture>),
+    /// Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
+    AllCompleted(Vec<UnresolvedFuture>),
+    /// Resolve on the first success; fail only if all children fail (same as JS Promise.any).
+    FirstSucceededOrAllFailed(Vec<UnresolvedFuture>),
+    /// Resolve when all children succeed; short-circuit on the first failure (same as JS Promise.all).
+    AllSucceededOrFirstFailed(Vec<UnresolvedFuture>),
+    /// Unknown combinator. This should be used when the future type is not known by the SDK,
+    /// or not representable by the other future types.
+    Unknown(Vec<UnresolvedFuture>),
+}
+
+impl From<NotificationHandle> for UnresolvedFuture {
+    fn from(value: NotificationHandle) -> Self {
+        Self::Single(value)
+    }
+}
+
+impl std::fmt::Debug for UnresolvedFuture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn fmt_combinator(
+            f: &mut std::fmt::Formatter<'_>,
+            name: &str,
+            children: &[UnresolvedFuture],
+        ) -> std::fmt::Result {
+            write!(f, "{name}(")?;
+            for (i, child) in children.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{child:?}")?;
+            }
+            write!(f, ")")
+        }
+
+        match self {
+            UnresolvedFuture::Unknown(children) => fmt_combinator(f, "unknown", children),
+            UnresolvedFuture::Single(h) => write!(f, "{}", u32::from(*h)),
+            UnresolvedFuture::FirstCompleted(children) => {
+                fmt_combinator(f, "first_completed", children)
+            }
+            UnresolvedFuture::AllCompleted(children) => {
+                fmt_combinator(f, "all_completed", children)
+            }
+            UnresolvedFuture::FirstSucceededOrAllFailed(children) => {
+                fmt_combinator(f, "first_succeeded_or_all_failed", children)
+            }
+            UnresolvedFuture::AllSucceededOrFirstFailed(children) => {
+                fmt_combinator(f, "all_succeeded_or_first_failed", children)
+            }
         }
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum DoProgressResponse {
-    /// Any of the given AsyncResultHandle completed
+pub enum AwaitResponse {
+    /// Any of the futures in the tree completed.
+    ///
+    /// This doesn't mean the future is fully completed! Instead, it means a subtree of the future tree is ready to be completed using take_notification.
     AnyCompleted,
-    /// The SDK should read from input at this point
-    ReadFromInput,
+    /// There isn't enough information to make progress.
+    /// The SDK should call do_progress again after any of notify_input/notify_input_closed/propose_run_completion are called.
+    WaitingExternalProgress {
+        // The VM expects any of notify_input/notify_input_closed to be called.
+        waiting_input: bool,
+        // The VM expects propose_run_completion to be called.
+        waiting_run_proposal: bool,
+    },
     /// The SDK should execute a pending run
     ExecuteRun(NotificationHandle),
-    /// Any of the run given before with ExecuteRun is waiting for completion
-    WaitingPendingRun,
     /// Returned only when [ImplicitCancellationOption::Enabled].
     CancelSignalReceived,
 }
@@ -304,7 +380,7 @@ pub trait VM: Sized {
 
     fn is_completed(&self, handle: NotificationHandle) -> bool;
 
-    fn do_progress(&mut self, any_handle: Vec<NotificationHandle>) -> VMResult<DoProgressResponse>;
+    fn do_await(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<AwaitResponse>;
 
     fn take_notification(&mut self, handle: NotificationHandle) -> VMResult<Option<Value>>;
 

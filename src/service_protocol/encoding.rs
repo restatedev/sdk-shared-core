@@ -9,13 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use super::header::UnknownMessageType;
-use super::messages::RestateMessage;
+use super::messages::{RestateEncodableMessage, RestateMessage};
 use super::*;
 
 use std::mem;
 
 use crate::vm::errors::CommandTypeMismatchError;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use bytes_utils::SegmentedBuf;
 use prost::Message;
 
@@ -36,7 +36,9 @@ pub enum DecodingError {
 
 // --- Input protocol.message encoder
 
-pub struct Encoder {}
+pub struct Encoder {
+    service_protocol_version: Version,
+}
 
 impl Encoder {
     pub fn new(service_protocol_version: Version) -> Self {
@@ -46,37 +48,14 @@ impl Encoder {
             Version::minimum_supported_version(),
             Version::maximum_supported_version()
         );
-        Self {}
+        Self {
+            service_protocol_version,
+        }
     }
 
     /// Encodes a protocol message to bytes
-    pub fn encode<M: RestateMessage>(&self, msg: &M) -> Bytes {
-        let mut buf = BytesMut::with_capacity(self.encoded_len(msg));
-        self.encode_to_buf_mut(&mut buf, msg).expect(
-            "Encoding messages should be infallible, \
-            this error indicates a bug in the invoker code. \
-            Please contact the Restate developers.",
-        );
-        buf.freeze()
-    }
-
-    /// Includes header len
-    pub fn encoded_len<M: RestateMessage>(&self, msg: &M) -> usize {
-        8 + msg.encoded_len()
-    }
-
-    pub fn encode_to_buf_mut<M: RestateMessage>(
-        &self,
-        mut buf: impl BufMut,
-        msg: &M,
-    ) -> Result<(), prost::EncodeError> {
-        let header = msg.generate_header();
-        buf.put_u64(header.into());
-        // Note:
-        // prost::EncodeError can be triggered only by a buffer smaller than required,
-        // but because we create the buffer a couple of lines above using the size computed by prost,
-        // this can happen only if there is a very bad bug in prost.
-        msg.encode(&mut buf)
+    pub fn encode<M: RestateEncodableMessage>(&self, msg: &M) -> Bytes {
+        msg.encode(self.service_protocol_version)
     }
 }
 

@@ -1,10 +1,8 @@
 use crate::service_protocol::messages::{EndMessage, SuspensionMessage};
-use crate::service_protocol::NotificationId;
 use crate::vm::context::Context;
 use crate::vm::transitions::Transition;
 use crate::vm::State;
-use crate::{fmt, Error};
-use std::collections::HashSet;
+use crate::{fmt, Error, UnresolvedFuture};
 
 pub(crate) struct HitError(pub(crate) Error);
 
@@ -15,7 +13,7 @@ impl Transition<Context, HitError> for State {
     }
 }
 
-pub(crate) struct HitSuspensionPoint(pub(crate) HashSet<NotificationId>);
+pub(crate) struct HitSuspensionPoint(pub(crate) UnresolvedFuture);
 
 impl Transition<Context, HitSuspensionPoint> for State {
     fn transition(
@@ -27,24 +25,16 @@ impl Transition<Context, HitSuspensionPoint> for State {
             // Nothing to do
             return Ok(self);
         }
+        let async_results = match self {
+            State::Processing { async_results, .. } => async_results,
+            s => return Err(s.as_unexpected_state("HitSuspensionPoint")),
+        };
         tracing::debug!("Suspending");
 
-        let mut suspension_message = SuspensionMessage {
-            waiting_completions: vec![],
-            waiting_signals: vec![],
-            waiting_named_signals: vec![],
+        let future = async_results.resolve_unresolved_future(awaiting_on);
+        let suspension_message = SuspensionMessage {
+            awaiting_on: Some(future),
         };
-        for notification_id in awaiting_on {
-            match notification_id {
-                NotificationId::CompletionId(cid) => {
-                    suspension_message.waiting_completions.push(cid)
-                }
-                NotificationId::SignalId(sid) => suspension_message.waiting_signals.push(sid),
-                NotificationId::SignalName(name) => {
-                    suspension_message.waiting_named_signals.push(name)
-                }
-            }
-        }
 
         context.output.send(&suspension_message);
         context.output.send_eof();

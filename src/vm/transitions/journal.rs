@@ -4,18 +4,20 @@ use crate::service_protocol::messages::{
     get_eager_state_command_message, propose_run_completion_message, CommandMessageHeaderDiff,
     CommandMessageHeaderEq, GetEagerStateCommandMessage, GetEagerStateKeysCommandMessage,
     GetLazyStateCommandMessage, GetLazyStateKeysCommandMessage, InputCommandMessage,
-    NamedCommandMessage, ProposeRunCompletionMessage, RestateMessage, RunCommandMessage, StateKeys,
-    Void,
+    NamedCommandMessage, ProposeRunCompletionMessage, RestateEncodableMessage, RestateMessage,
+    RunCommandMessage, StateKeys, Void,
 };
 use crate::service_protocol::{
     messages, CompletionId, MessageType, Notification, NotificationId, NotificationResult,
     RawMessage,
 };
-use crate::vm::context::{AsyncResultsState, Context, EagerGetState, EagerGetStateKeys, RunState};
+use crate::vm::async_results_state::AsyncResultsState;
+use crate::vm::context::{Context, EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::{
     CommandMismatchError, CommandTypeMismatchError, EmptyGetEagerState, EmptyGetEagerStateKeys,
     UnavailableEntryError,
 };
+use crate::vm::run_state::RunState;
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{
@@ -97,6 +99,7 @@ pub(crate) struct SysNonCompletableEntry<M>(pub(crate) M, pub(crate) PayloadOpti
 
 impl<
         M: RestateMessage
+            + RestateEncodableMessage
             + CommandMessageHeaderEq
             + CommandMessageHeaderDiff
             + NamedCommandMessage
@@ -127,6 +130,7 @@ pub(crate) struct SysNonCompletableEntryWithCompletion<M>(
 
 impl<
         M: RestateMessage
+            + RestateEncodableMessage
             + CommandMessageHeaderEq
             + CommandMessageHeaderDiff
             + NamedCommandMessage
@@ -179,6 +183,7 @@ pub(crate) struct SysSimpleCompletableEntry<M>(
 
 impl<
         M: RestateMessage
+            + RestateEncodableMessage
             + CommandMessageHeaderEq
             + CommandMessageHeaderDiff
             + NamedCommandMessage
@@ -210,6 +215,7 @@ pub(crate) struct SysCompletableEntryWithMultipleCompletions<M>(
 
 impl<
         M: RestateMessage
+            + RestateEncodableMessage
             + CommandMessageHeaderEq
             + CommandMessageHeaderDiff
             + NamedCommandMessage
@@ -860,8 +866,13 @@ impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clo
 /// Used for pop-or-write operations.
 struct PopOrWriteJournalEntry<M>(M, PayloadOptions);
 
-impl<M: RestateMessage + CommandMessageHeaderEq + CommandMessageHeaderDiff + Clone>
-    TransitionAndReturn<Context, PopOrWriteJournalEntry<M>> for State
+impl<
+        M: RestateMessage
+            + RestateEncodableMessage
+            + CommandMessageHeaderEq
+            + CommandMessageHeaderDiff
+            + Clone,
+    > TransitionAndReturn<Context, PopOrWriteJournalEntry<M>> for State
 {
     type Output = M;
 

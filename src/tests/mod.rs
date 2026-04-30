@@ -13,13 +13,50 @@ use super::*;
 
 use crate::service_protocol::messages::{
     output_command_message, signal_notification_message, ErrorMessage, InputCommandMessage,
-    OutputCommandMessage, RestateMessage, SignalNotificationMessage, StartMessage,
-    SuspensionMessage,
+    OutputCommandMessage, RestateEncodableMessage, RestateMessage, SignalNotificationMessage,
+    StartMessage, SuspensionMessage,
 };
 use crate::service_protocol::{messages, CompletionId, Decoder, Encoder, RawMessage, Version};
 use bytes::Bytes;
 use googletest::prelude::*;
 use test_log::test;
+
+#[macro_export]
+macro_rules! first_completed {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::FirstCompleted(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+#[macro_export]
+macro_rules! all_completed {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::AllCompleted(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+#[macro_export]
+macro_rules! first_succeeded_or_all_failed {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::FirstSucceededOrAllFailed(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+#[macro_export]
+macro_rules! all_succeeded_or_first_failed {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::AllSucceededOrFirstFailed(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+#[macro_export]
+macro_rules! unknown {
+    ($($child:expr),+ $(,)?) => {
+        UnresolvedFuture::Unknown(vec![$(Into::<UnresolvedFuture>::into($child)),+])
+    };
+}
+
+impl From<u32> for UnresolvedFuture {
+    fn from(value: u32) -> Self {
+        NotificationHandle::from(value).into()
+    }
+}
 
 // --- Test infra
 
@@ -67,7 +104,7 @@ impl VMTestCase {
         }
     }
 
-    fn input<M: RestateMessage>(mut self, m: M) -> Self {
+    fn input<M: RestateEncodableMessage>(mut self, m: M) -> Self {
         self.vm.notify_input(self.encoder.encode(&m));
         self
     }
@@ -146,14 +183,25 @@ pub fn suspended_waiting_completion(
     completion_id: CompletionId,
 ) -> impl Matcher<ActualT = SuspensionMessage> {
     pat!(SuspensionMessage {
-        waiting_completions: eq(vec![completion_id]),
-        waiting_signals: eq(vec![1])
+        awaiting_on: some(pat!(messages::Future {
+            waiting_completions: eq(vec![completion_id]),
+            waiting_signals: eq(vec![1]),
+            nested_futures: empty(),
+            waiting_named_signals: empty(),
+            combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+        }))
     })
 }
 
 pub fn suspended_waiting_signal(signal_idx: u32) -> impl Matcher<ActualT = SuspensionMessage> {
     pat!(SuspensionMessage {
-        waiting_signals: all!(contains(eq(signal_idx)), contains(eq(1)))
+        awaiting_on: some(pat!(messages::Future {
+            waiting_completions: empty(),
+            waiting_signals: all!(contains(eq(signal_idx)), contains(eq(1))),
+            nested_futures: empty(),
+            waiting_named_signals: empty(),
+            combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+        }))
     })
 }
 
@@ -217,6 +265,13 @@ pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputCommandMessage {
 pub fn cancel_signal_notification() -> SignalNotificationMessage {
     SignalNotificationMessage {
         signal_id: Some(signal_notification_message::SignalId::Idx(1)),
+        result: Some(signal_notification_message::Result::Void(Default::default())),
+    }
+}
+
+pub fn empty_signal_notification(id: u32) -> SignalNotificationMessage {
+    SignalNotificationMessage {
+        signal_id: Some(signal_notification_message::SignalId::Idx(id)),
         result: Some(signal_notification_message::Result::Void(Default::default())),
     }
 }
