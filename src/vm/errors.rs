@@ -116,6 +116,16 @@ pub const EMPTY_IDEMPOTENCY_KEY: Error = Error::new_const(
     "Trying to execute an idempotent request with an empty idempotency key. The idempotency key must be non-empty.",
 );
 
+pub const EMPTY_LIMIT_KEY: Error = Error::new_const(
+    codes::INTERNAL,
+    "Trying to execute a request with an empty limit key. The limit key must be non-empty.",
+);
+
+pub const EMPTY_SCOPE: Error = Error::new_const(
+    codes::INTERNAL,
+    "Trying to execute a request with an empty scope. The scope must be non-empty.",
+);
+
 pub const SUSPENDED: Error = Error::new_const(codes::SUSPENDED, "Suspended invocation");
 
 // Other errors

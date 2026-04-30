@@ -12,6 +12,8 @@ fn greeter_target() -> Target {
         handler: "greeter".to_string(),
         key: None,
         idempotency_key: None,
+        scope: None,
+        limit_key: None,
         headers: Vec::new(),
     }
 }

@@ -156,6 +156,8 @@ mod journal_mismatch {
                         handler: "greet".to_owned(),
                         key: Some("my-key".to_owned()),
                         idempotency_key: None,
+                        scope: None,
+                        limit_key: None,
                         headers: Vec::new(),
                     },
                     Bytes::from_static(b"456"),
@@ -267,6 +269,8 @@ mod journal_mismatch {
                     handler: "greet".to_owned(),
                     key: Some("my-key".to_owned()),
                     idempotency_key: None,
+                    scope: None,
+                    limit_key: None,
                     headers: Vec::new(),
                 },
                 // NOTE: this is different payload!
@@ -283,6 +287,8 @@ mod journal_mismatch {
                     handler: "greet".to_owned(),
                     key: Some("my-key".to_owned()),
                     idempotency_key: None,
+                    scope: None,
+                    limit_key: None,
                     headers: Vec::new(),
                 },
                 // NOTE: this is different payload!
@@ -339,6 +345,8 @@ mod journal_mismatch {
                         handler: "greet".to_owned(),
                         key: Some("my-key".to_owned()),
                         idempotency_key: None,
+                        scope: None,
+                        limit_key: None,
                         headers: Vec::new(),
                     },
                     // Different bytes than recorded, but current side is flagged.
@@ -383,6 +391,8 @@ mod journal_mismatch {
                         handler: "greet".to_owned(),
                         key: Some("my-key".to_owned()),
                         idempotency_key: None,
+                        scope: None,
+                        limit_key: None,
                         headers: Vec::new(),
                     },
                     // Different bytes than recorded, but marked as unstable.

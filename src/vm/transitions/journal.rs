@@ -70,6 +70,9 @@ impl TransitionAndReturn<Context, SysInput> for State {
                 key: start_info.key.clone(),
                 headers: msg.headers.into_iter().map(Header::from).collect(),
                 input: msg.value.map(|v| v.content).unwrap_or_default(),
+                scope: start_info.scope.clone(),
+                limit_key: start_info.limit_key.clone(),
+                idempotency_key: start_info.idempotency_key.clone(),
             },
         ))
     }

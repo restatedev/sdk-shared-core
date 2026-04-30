@@ -873,7 +873,7 @@ mod tests {
             waiting_completions: eq(&[1]),
             waiting_signals: eq(&[5]),
             nested_futures: empty(),
-            combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
+            combinator_type: eq(CombinatorType::Unknown as i32)
         })
     );
 
@@ -910,7 +910,7 @@ mod tests {
             waiting_signals: empty(),
             nested_futures: elements_are![pat!(Future {
                 waiting_completions: unordered_elements_are![eq(1), eq(2)],
-                combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
+                combinator_type: eq(CombinatorType::Unknown as i32)
             })],
             combinator_type: eq(CombinatorType::FirstCompleted as i32)
         })
@@ -934,7 +934,7 @@ mod tests {
                     waiting_completions: unordered_elements_are![eq(1), eq(2)],
                     combinator_type: eq(CombinatorType::AllCompleted as i32)
                 })],
-                combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
+                combinator_type: eq(CombinatorType::Unknown as i32)
             })],
             combinator_type: eq(CombinatorType::FirstCompleted as i32)
         })
@@ -955,7 +955,7 @@ mod tests {
                 waiting_completions: unordered_elements_are![eq(1), eq(2)],
                 combinator_type: eq(CombinatorType::FirstSucceededOrAllFailed as i32)
             })],
-            combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
+            combinator_type: eq(CombinatorType::Unknown as i32)
         })
     );
 
@@ -971,7 +971,7 @@ mod tests {
             waiting_signals: empty(),
             nested_futures: elements_are![pat!(Future {
                 waiting_signals: eq(&[17]),
-                combinator_type: eq(CombinatorType::CombinatorUnknown as i32)
+                combinator_type: eq(CombinatorType::Unknown as i32)
             })],
             combinator_type: eq(CombinatorType::AllCompleted as i32)
         })

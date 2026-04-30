@@ -200,6 +200,9 @@ mod tests {
             retry_count_since_last_stored_entry: 0,
             duration_since_last_stored_entry: 0,
             random_seed: 0,
+            scope: None,
+            limit_key: None,
+            idempotency_key: None,
         };
 
         let expected_msg_1 = messages::InputCommandMessage {

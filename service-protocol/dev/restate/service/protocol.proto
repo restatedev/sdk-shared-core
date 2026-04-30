@@ -39,6 +39,11 @@ enum ServiceProtocolVersion {
   V6 = 6;
   // Added:
   // * Future & AwaitingOnMessage + Changed the SuspensionMessage
+  // * CallCommandMessage.scope and CallCommandMessage.limit_key
+  // * OneWayCallCommandMessage.scope and OneWayCallCommandMessage.limit_key
+  // * WorkflowTarget.scope
+  // * IdempotentRequestTarget.scope
+  // * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
   V7 = 7;
 }
 
@@ -85,12 +90,24 @@ message StartMessage {
   // Random seed to use to seed the deterministic RNG exposed in the context API.
   // This will be stable across restarts.
   uint64 random_seed = 9;
+
+  // If this invocation was called within a scope, returns the scope
+  // Since V7
+  optional string scope = 10;
+
+  // If this invocation was called with a limit key, returns the limit key
+  // Since V7
+  optional string limit_key = 11;
+
+  // If this invocation was called with an idempotency key, returns the idempotency key
+  // Since V7
+  optional string idempotency_key = 12;
 }
 
 // Defines how a set of child futures are combined.
 enum CombinatorType {
   // Should be treated as FIRST_COMPLETED.
-  COMBINATOR_UNKNOWN = 0;
+  COMBINATOR_TYPE_UNKNOWN = 0;
   // Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
   FIRST_COMPLETED = 1;
   // Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
@@ -470,6 +487,18 @@ message CallCommandMessage {
   // If present, it must be non empty.
   optional string idempotency_key = 6;
 
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 7;
+
+  // Limit key for the invocation. Empty string means no limit key.
+  // A limit key is only valid if scope is set.
+  // TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
+  // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
+  // Protobuf message would be faster to serialize/deserialize.
+  // Since V7.
+  optional string limit_key = 8;
+
   uint32 invocation_id_notification_idx = 10;
   uint32 result_completion_id = 11;
   string name = 12;
@@ -521,6 +550,18 @@ message OneWayCallCommandMessage {
 
   // If present, it must be non empty.
   optional string idempotency_key = 7;
+
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 8;
+
+  // Limit key for the invocation. Empty string means no limit key.
+  // A limit key is only valid if scope is set.
+  // TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
+  // "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
+  // Protobuf message would be faster to serialize/deserialize.
+  // Since V7.
+  optional string limit_key = 9;
 
   uint32 invocation_id_notification_idx = 10;
   string name = 12;
@@ -703,6 +744,9 @@ message Header {
 message WorkflowTarget {
   string workflow_name = 1;
   string workflow_key = 2;
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 7;
 }
 
 message IdempotentRequestTarget {
@@ -710,6 +754,9 @@ message IdempotentRequestTarget {
   optional string service_key = 2;
   string handler_name = 3;
   string idempotency_key = 4;
+  // Scope for the invocation target. Empty string means no scope (unscoped invocation).
+  // Since V7.
+  optional string scope = 7;
 }
 
 message Void {

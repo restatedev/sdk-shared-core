@@ -251,6 +251,9 @@ pub fn start_message(known_entries: u32) -> StartMessage {
         retry_count_since_last_stored_entry: 0,
         duration_since_last_stored_entry: 0,
         random_seed: 0,
+        scope: None,
+        limit_key: None,
+        idempotency_key: None,
     }
 }
 
