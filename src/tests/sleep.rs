@@ -32,7 +32,7 @@ fn sleep_handler(vm: &mut CoreVM) {
 #[test]
 fn sleep_suspends() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"abc"),
             debug_id: "abc".to_owned(),
             known_entries: 1,
@@ -58,7 +58,7 @@ fn sleep_suspends() {
 #[test]
 fn sleep_completed() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"abc"),
             debug_id: "abc".to_owned(),
             known_entries: 3,
@@ -91,7 +91,7 @@ fn sleep_completed() {
 #[test]
 fn sleep_still_sleeping() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"abc"),
             debug_id: "abc".to_owned(),
             known_entries: 2,

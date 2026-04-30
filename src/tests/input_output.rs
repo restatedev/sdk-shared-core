@@ -16,7 +16,7 @@ fn echo_handler(vm: &mut CoreVM) {
 #[test]
 fn echo() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 1,
@@ -39,7 +39,7 @@ fn echo() {
 #[test]
 fn headers() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 1,
@@ -86,7 +86,7 @@ fn headers() {
 #[test]
 fn replay_output_too() {
     let mut output = VMTestCase::new()
-        .input(StartMessage {
+        .input_start(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
             known_entries: 2,

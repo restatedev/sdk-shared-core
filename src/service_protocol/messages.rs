@@ -73,6 +73,8 @@ impl_message_traits!(Suspension: core);
 impl_message_traits!(Error: core);
 impl_message_traits!(End: core);
 impl_message_traits!(ProposeRunCompletion: core);
+impl_message_traits!(EagerStateEntry: core);
+impl_message_traits!(EagerStateComplete: core);
 
 // -- Entries
 impl_message_traits!(InputCommand: command);

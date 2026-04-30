@@ -10,7 +10,7 @@ use test_log::test;
 #[test]
 fn trigger_suspension_with_get_state() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run_without_closing_input(|vm, _| {
             let _ = vm.sys_input().unwrap();
@@ -46,7 +46,7 @@ fn trigger_suspension_with_get_state() {
 #[test]
 fn trigger_suspension_with_correct_awakeable() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
@@ -74,7 +74,7 @@ fn trigger_suspension_with_correct_awakeable() {
 #[test]
 fn await_many_notifications() {
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
@@ -114,7 +114,7 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
     let completion = Bytes::from_static(b"completion");
 
     let mut output = VMTestCase::new()
-        .input(start_message(1))
+        .input_start(start_message(1))
         .input(input_entry_message(b"my-data"))
         .run_without_closing_input(|vm, encoder| {
             vm.sys_input().unwrap();
