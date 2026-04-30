@@ -34,6 +34,7 @@ impl Transition<Context, NewStartMessage> for State {
         context: &mut Context,
         NewStartMessage(msg): NewStartMessage,
     ) -> Result<Self, Error> {
+        let is_v7 = context.negotiated_protocol_version >= Version::V7;
         context.start_info = Some(StartInfo {
             id: msg.id,
             debug_id: msg.debug_id,
@@ -46,6 +47,9 @@ impl Transition<Context, NewStartMessage> for State {
             } else {
                 None
             },
+            scope: if is_v7 { msg.scope } else { None },
+            limit_key: if is_v7 { msg.limit_key } else { None },
+            idempotency_key: if is_v7 { msg.idempotency_key } else { None },
         });
         context.eager_state = EagerState::new(
             msg.partial_state,
