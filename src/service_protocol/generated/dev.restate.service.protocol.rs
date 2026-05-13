@@ -586,9 +586,6 @@ pub struct CallCommandMessage {
     pub scope: ::core::option::Option<::prost::alloc::string::String>,
     /// Limit key for the invocation. Empty string means no limit key.
     /// A limit key is only valid if scope is set.
-    /// TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
-    /// "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
-    /// Protobuf message would be faster to serialize/deserialize.
     /// Since V7.
     #[prost(string, optional, tag = "8")]
     pub limit_key: ::core::option::Option<::prost::alloc::string::String>,
@@ -663,9 +660,6 @@ pub struct OneWayCallCommandMessage {
     pub scope: ::core::option::Option<::prost::alloc::string::String>,
     /// Limit key for the invocation. Empty string means no limit key.
     /// A limit key is only valid if scope is set.
-    /// TODO(tillrohrmann): Revisit string serialization of limit_key. Currently serialized as
-    /// "level1" or "level1/level2" which requires parsing on read. Check whether a dedicated
-    /// Protobuf message would be faster to serialize/deserialize.
     /// Since V7.
     #[prost(string, optional, tag = "9")]
     pub limit_key: ::core::option::Option<::prost::alloc::string::String>,
