@@ -68,6 +68,12 @@ pub struct Input {
     pub key: String,
     pub headers: Vec<Header>,
     pub input: Bytes,
+    /// Scope for this invocation, if it was called within a scope. Since V7.
+    pub scope: Option<String>,
+    /// Limit key for this invocation, if one was provided. Since V7.
+    pub limit_key: Option<String>,
+    /// Idempotency key for this invocation, if one was provided. Since V7.
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -120,6 +126,10 @@ pub struct Target {
     pub handler: String,
     pub key: Option<String>,
     pub idempotency_key: Option<String>,
+    /// Scope for the invocation target. `None` means unscoped. Since V7.
+    pub scope: Option<String>,
+    /// Limit key for the invocation. Only valid if `scope` is set. If present, must be non-empty. Since V7.
+    pub limit_key: Option<String>,
     pub headers: Vec<Header>,
 }
 
@@ -210,12 +220,16 @@ pub enum AttachInvocationTarget {
     WorkflowId {
         name: String,
         key: String,
+        /// Scope for the invocation target. `None` means unscoped. Since V7.
+        scope: Option<String>,
     },
     IdempotencyId {
         service_name: String,
         service_key: Option<String>,
         handler_name: String,
         idempotency_key: String,
+        /// Scope for the invocation target. `None` means unscoped. Since V7.
+        scope: Option<String>,
     },
 }
 

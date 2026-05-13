@@ -37,6 +37,18 @@ pub struct StartMessage {
     /// This will be stable across restarts.
     #[prost(uint64, tag = "9")]
     pub random_seed: u64,
+    /// If this invocation was called within a scope, returns the scope
+    /// Since V7
+    #[prost(string, optional, tag = "10")]
+    pub scope: ::core::option::Option<::prost::alloc::string::String>,
+    /// If this invocation was called with a limit key, returns the limit key
+    /// Since V7
+    #[prost(string, optional, tag = "11")]
+    pub limit_key: ::core::option::Option<::prost::alloc::string::String>,
+    /// If this invocation was called with an idempotency key, returns the idempotency key
+    /// Since V7
+    #[prost(string, optional, tag = "12")]
+    pub idempotency_key: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Nested message and enum types in `StartMessage`.
 pub mod start_message {
@@ -568,6 +580,15 @@ pub struct CallCommandMessage {
     /// If present, it must be non empty.
     #[prost(string, optional, tag = "6")]
     pub idempotency_key: ::core::option::Option<::prost::alloc::string::String>,
+    /// Scope for the invocation target. Empty string means no scope (unscoped invocation).
+    /// Since V7.
+    #[prost(string, optional, tag = "7")]
+    pub scope: ::core::option::Option<::prost::alloc::string::String>,
+    /// Limit key for the invocation. Empty string means no limit key.
+    /// A limit key is only valid if scope is set.
+    /// Since V7.
+    #[prost(string, optional, tag = "8")]
+    pub limit_key: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint32, tag = "10")]
     pub invocation_id_notification_idx: u32,
     #[prost(uint32, tag = "11")]
@@ -633,6 +654,15 @@ pub struct OneWayCallCommandMessage {
     /// If present, it must be non empty.
     #[prost(string, optional, tag = "7")]
     pub idempotency_key: ::core::option::Option<::prost::alloc::string::String>,
+    /// Scope for the invocation target. Empty string means no scope (unscoped invocation).
+    /// Since V7.
+    #[prost(string, optional, tag = "8")]
+    pub scope: ::core::option::Option<::prost::alloc::string::String>,
+    /// Limit key for the invocation. Empty string means no limit key.
+    /// A limit key is only valid if scope is set.
+    /// Since V7.
+    #[prost(string, optional, tag = "9")]
+    pub limit_key: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint32, tag = "10")]
     pub invocation_id_notification_idx: u32,
     #[prost(string, tag = "12")]
@@ -938,6 +968,10 @@ pub struct WorkflowTarget {
     pub workflow_name: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub workflow_key: ::prost::alloc::string::String,
+    /// Scope for the invocation target. Empty string means no scope (unscoped invocation).
+    /// Since V7.
+    #[prost(string, optional, tag = "7")]
+    pub scope: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(dead_code)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -950,6 +984,10 @@ pub struct IdempotentRequestTarget {
     pub handler_name: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub idempotency_key: ::prost::alloc::string::String,
+    /// Scope for the invocation target. Empty string means no scope (unscoped invocation).
+    /// Since V7.
+    #[prost(string, optional, tag = "7")]
+    pub scope: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -983,6 +1021,11 @@ pub enum ServiceProtocolVersion {
     V6 = 6,
     /// Added:
     /// * Future & AwaitingOnMessage + Changed the SuspensionMessage
+    /// * CallCommandMessage.scope and CallCommandMessage.limit_key
+    /// * OneWayCallCommandMessage.scope and OneWayCallCommandMessage.limit_key
+    /// * WorkflowTarget.scope
+    /// * IdempotentRequestTarget.scope
+    /// * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
     V7 = 7,
 }
 impl ServiceProtocolVersion {
@@ -1024,7 +1067,7 @@ impl ServiceProtocolVersion {
 #[repr(i32)]
 pub enum CombinatorType {
     /// Should be treated as FIRST_COMPLETED.
-    CombinatorUnknown = 0,
+    Unknown = 0,
     /// Resolve as soon as any one child future completes with success, or with failure (same as JS Promise.race).
     FirstCompleted = 1,
     /// Wait for every child to complete, regardless of success or failure (same as JS Promise.allSettled).
@@ -1041,7 +1084,7 @@ impl CombinatorType {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::CombinatorUnknown => "COMBINATOR_UNKNOWN",
+            Self::Unknown => "COMBINATOR_TYPE_UNKNOWN",
             Self::FirstCompleted => "FIRST_COMPLETED",
             Self::AllCompleted => "ALL_COMPLETED",
             Self::FirstSucceededOrAllFailed => "FIRST_SUCCEEDED_OR_ALL_FAILED",
@@ -1051,7 +1094,7 @@ impl CombinatorType {
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "COMBINATOR_UNKNOWN" => Some(Self::CombinatorUnknown),
+            "COMBINATOR_TYPE_UNKNOWN" => Some(Self::Unknown),
             "FIRST_COMPLETED" => Some(Self::FirstCompleted),
             "ALL_COMPLETED" => Some(Self::AllCompleted),
             "FIRST_SUCCEEDED_OR_ALL_FAILED" => Some(Self::FirstSucceededOrAllFailed),

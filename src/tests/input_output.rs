@@ -84,6 +84,69 @@ fn headers() {
 }
 
 #[test]
+fn start_message_v7_fields_surface_on_input() {
+    let mut output = VMTestCase::new()
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 1,
+            scope: Some("tenant-a".to_string()),
+            limit_key: Some("user-42".to_string()),
+            idempotency_key: Some("idem-7".to_string()),
+            ..Default::default()
+        })
+        .input(input_entry_message(b"my-data"))
+        .run(|vm| {
+            let input = vm.sys_input().unwrap();
+            assert_eq!(input.scope, Some("tenant-a".to_string()));
+            assert_eq!(input.limit_key, Some("user-42".to_string()));
+            assert_eq!(input.idempotency_key, Some("idem-7".to_string()));
+
+            vm.sys_write_output(
+                NonEmptyValue::Success(Bytes::default()),
+                PayloadOptions::default(),
+            )
+            .unwrap();
+            vm.sys_end().unwrap();
+        });
+
+    assert_that!(
+        output.next_decoded::<OutputCommandMessage>().unwrap(),
+        is_output_with_success("")
+    );
+    assert_eq!(
+        output.next_decoded::<EndMessage>().unwrap(),
+        EndMessage::default()
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn start_message_v7_fields_dropped_on_v6() {
+    let mut vm = CoreVM::mock_init(Version::V6);
+    let encoder = Encoder::new(Version::V6);
+
+    // V6 StartMessage proto doesn't have these fields, but the Rust struct does — set them and
+    // confirm that the input transition's V7 guard discards them when negotiated version is V6.
+    vm.notify_input(encoder.encode(&StartMessage {
+        id: Bytes::from_static(b"123"),
+        debug_id: "123".to_string(),
+        known_entries: 1,
+        scope: Some("tenant-a".to_string()),
+        limit_key: Some("user-42".to_string()),
+        idempotency_key: Some("idem-7".to_string()),
+        ..Default::default()
+    }));
+    vm.notify_input(encoder.encode(&input_entry_message(b"my-data")));
+    vm.notify_input_closed();
+
+    let input = vm.sys_input().unwrap();
+    assert_eq!(input.scope, None);
+    assert_eq!(input.limit_key, None);
+    assert_eq!(input.idempotency_key, None);
+}
+
+#[test]
 fn replay_output_too() {
     let mut output = VMTestCase::new()
         .input(StartMessage {

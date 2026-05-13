@@ -18,6 +18,9 @@ pub(crate) struct StartInfo {
     pub(crate) retry_count_since_last_stored_entry: u32,
     pub(crate) duration_since_last_stored_entry: u64,
     pub(crate) random_seed: Option<u64>,
+    pub(crate) scope: Option<String>,
+    pub(crate) limit_key: Option<String>,
+    pub(crate) idempotency_key: Option<String>,
 }
 
 pub(crate) struct Journal {

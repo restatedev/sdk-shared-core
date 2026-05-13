@@ -12,7 +12,7 @@ use crate::service_protocol::messages::{
 use crate::service_protocol::{Decoder, NotificationId, RawMessage, Version, CANCEL_SIGNAL_ID};
 use crate::vm::errors::{
     ClosedError, UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion,
-    EMPTY_IDEMPOTENCY_KEY, SUSPENDED,
+    EMPTY_IDEMPOTENCY_KEY, EMPTY_LIMIT_KEY, EMPTY_SCOPE, SUSPENDED,
 };
 use crate::vm::run_state::RunState;
 use crate::vm::transitions::*;
@@ -744,6 +744,24 @@ impl super::VM for CoreVM {
                 unreachable!();
             }
         }
+        if let Some(scope) = &target.scope {
+            if scope.is_empty() {
+                self.do_transition(HitError(EMPTY_SCOPE))?;
+                unreachable!();
+            }
+        }
+        if let Some(limit_key) = &target.limit_key {
+            if limit_key.is_empty() {
+                self.do_transition(HitError(EMPTY_LIMIT_KEY))?;
+                unreachable!();
+            }
+        }
+        if target.scope.is_some() {
+            self.verify_feature_support("scope", Version::V7)?;
+        }
+        if target.limit_key.is_some() {
+            self.verify_feature_support("limit key", Version::V7)?;
+        }
 
         let call_invocation_id_completion_id =
             self.context.journal.next_completion_notification_id();
@@ -755,6 +773,8 @@ impl super::VM for CoreVM {
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
                 idempotency_key: target.idempotency_key,
+                scope: target.scope,
+                limit_key: target.limit_key,
                 headers: target
                     .headers
                     .into_iter()
@@ -819,6 +839,24 @@ impl super::VM for CoreVM {
                 unreachable!();
             }
         }
+        if let Some(scope) = &target.scope {
+            if scope.is_empty() {
+                self.do_transition(HitError(EMPTY_SCOPE))?;
+                unreachable!();
+            }
+        }
+        if let Some(limit_key) = &target.limit_key {
+            if limit_key.is_empty() {
+                self.do_transition(HitError(EMPTY_LIMIT_KEY))?;
+                unreachable!();
+            }
+        }
+        if target.scope.is_some() {
+            self.verify_feature_support("scope", Version::V7)?;
+        }
+        if target.limit_key.is_some() {
+            self.verify_feature_support("limit key", Version::V7)?;
+        }
         let call_invocation_id_completion_id =
             self.context.journal.next_completion_notification_id();
         let invocation_id_notification_handle = self.do_transition(SysSimpleCompletableEntry(
@@ -827,6 +865,8 @@ impl super::VM for CoreVM {
                 handler_name: target.handler,
                 key: target.key.unwrap_or_default(),
                 idempotency_key: target.idempotency_key,
+                scope: target.scope,
+                limit_key: target.limit_key,
                 headers: target
                     .headers
                     .into_iter()
@@ -1195,6 +1235,22 @@ impl super::VM for CoreVM {
     ) -> VMResult<NotificationHandle> {
         invocation_debug_logs!(self, "Executing 'Attach invocation'");
 
+        match &target {
+            AttachInvocationTarget::WorkflowId {
+                scope: Some(scope), ..
+            }
+            | AttachInvocationTarget::IdempotencyId {
+                scope: Some(scope), ..
+            } => {
+                if scope.is_empty() {
+                    self.do_transition(HitError(EMPTY_SCOPE))?;
+                    unreachable!();
+                }
+                self.verify_feature_support("scope", Version::V7)?;
+            }
+            _ => {}
+        };
+
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
             AttachInvocationCommandMessage {
@@ -1202,10 +1258,11 @@ impl super::VM for CoreVM {
                     AttachInvocationTarget::InvocationId(id) => {
                         attach_invocation_command_message::Target::InvocationId(id)
                     }
-                    AttachInvocationTarget::WorkflowId { name, key } => {
+                    AttachInvocationTarget::WorkflowId { name, key, scope } => {
                         attach_invocation_command_message::Target::WorkflowTarget(WorkflowTarget {
                             workflow_name: name,
                             workflow_key: key,
+                            scope,
                         })
                     }
                     AttachInvocationTarget::IdempotencyId {
@@ -1213,12 +1270,14 @@ impl super::VM for CoreVM {
                         service_key,
                         handler_name,
                         idempotency_key,
+                        scope,
                     } => attach_invocation_command_message::Target::IdempotentRequestTarget(
                         IdempotentRequestTarget {
                             service_name,
                             service_key,
                             handler_name,
                             idempotency_key,
+                            scope,
                         },
                     ),
                 }),
@@ -1247,6 +1306,22 @@ impl super::VM for CoreVM {
     ) -> VMResult<NotificationHandle> {
         invocation_debug_logs!(self, "Executing 'Get invocation output'");
 
+        match &target {
+            AttachInvocationTarget::WorkflowId {
+                scope: Some(scope), ..
+            }
+            | AttachInvocationTarget::IdempotencyId {
+                scope: Some(scope), ..
+            } => {
+                if scope.is_empty() {
+                    self.do_transition(HitError(EMPTY_SCOPE))?;
+                    unreachable!();
+                }
+                self.verify_feature_support("scope", Version::V7)?;
+            }
+            _ => {}
+        };
+
         let result_completion_id = self.context.journal.next_completion_notification_id();
         self.do_transition(SysSimpleCompletableEntry(
             GetInvocationOutputCommandMessage {
@@ -1254,11 +1329,12 @@ impl super::VM for CoreVM {
                     AttachInvocationTarget::InvocationId(id) => {
                         get_invocation_output_command_message::Target::InvocationId(id)
                     }
-                    AttachInvocationTarget::WorkflowId { name, key } => {
+                    AttachInvocationTarget::WorkflowId { name, key, scope } => {
                         get_invocation_output_command_message::Target::WorkflowTarget(
                             WorkflowTarget {
                                 workflow_name: name,
                                 workflow_key: key,
+                                scope,
                             },
                         )
                     }
@@ -1267,12 +1343,14 @@ impl super::VM for CoreVM {
                         service_key,
                         handler_name,
                         idempotency_key,
+                        scope,
                     } => get_invocation_output_command_message::Target::IdempotentRequestTarget(
                         IdempotentRequestTarget {
                             service_name,
                             service_key,
                             handler_name,
                             idempotency_key,
+                            scope,
                         },
                     ),
                 }),

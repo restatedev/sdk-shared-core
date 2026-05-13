@@ -258,6 +258,8 @@ impl CommandMessageHeaderEq for CallCommandMessage {
             && self.headers == other.headers
             && self.key == other.key
             && self.idempotency_key == other.idempotency_key
+            && self.scope == other.scope
+            && self.limit_key == other.limit_key
             && self.invocation_id_notification_idx == other.invocation_id_notification_idx
             && self.result_completion_id == other.result_completion_id
             && self.name == other.name
@@ -275,6 +277,8 @@ impl CommandMessageHeaderEq for OneWayCallCommandMessage {
             && self.headers == other.headers
             && self.key == other.key
             && self.idempotency_key == other.idempotency_key
+            && self.scope == other.scope
+            && self.limit_key == other.limit_key
             && self.invocation_id_notification_idx == other.invocation_id_notification_idx
             && self.name == other.name
     }
@@ -607,6 +611,22 @@ impl CommandMessageHeaderDiff for CallCommandMessage {
             )?;
         }
 
+        if self.scope != expected.scope {
+            f.write_diff(
+                "scope",
+                DisplayOptionalString(&self.scope),
+                DisplayOptionalString(&expected.scope),
+            )?;
+        }
+
+        if self.limit_key != expected.limit_key {
+            f.write_diff(
+                "limit_key",
+                DisplayOptionalString(&self.limit_key),
+                DisplayOptionalString(&expected.limit_key),
+            )?;
+        }
+
         if self.invocation_id_notification_idx != expected.invocation_id_notification_idx {
             f.write_diff(
                 "invocation_id_notification_idx",
@@ -672,6 +692,22 @@ impl CommandMessageHeaderDiff for OneWayCallCommandMessage {
                 "idempotency_key",
                 DisplayOptionalString(&self.idempotency_key),
                 DisplayOptionalString(&expected.idempotency_key),
+            )?;
+        }
+
+        if self.scope != expected.scope {
+            f.write_diff(
+                "scope",
+                DisplayOptionalString(&self.scope),
+                DisplayOptionalString(&expected.scope),
+            )?;
+        }
+
+        if self.limit_key != expected.limit_key {
+            f.write_diff(
+                "limit_key",
+                DisplayOptionalString(&self.limit_key),
+                DisplayOptionalString(&expected.limit_key),
             )?;
         }
 
