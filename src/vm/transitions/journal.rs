@@ -14,15 +14,15 @@ use crate::service_protocol::{
 use crate::vm::async_results_state::AsyncResultsState;
 use crate::vm::context::{Context, EagerGetState, EagerGetStateKeys};
 use crate::vm::errors::{
-    CommandMismatchError, CommandTypeMismatchError, EmptyGetEagerState, EmptyGetEagerStateKeys,
-    UnavailableEntryError,
+    CommandMismatchError, CommandTypeMismatchError, UnavailableEntryError, EMPTY_GET_EAGER_STATE,
+    EMPTY_GET_EAGER_STATE_KEYS,
 };
 use crate::vm::run_state::RunState;
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{
     CommandRelationship, CommandType, EntryRetryInfo, Error, Header, Input, NotificationHandle,
-    PayloadOptions, RetryPolicy, RunExitResult,
+    PayloadOptions, RetryPolicy, RunExitResult, Version,
 };
 use bytes::Bytes;
 use std::collections::VecDeque;
@@ -434,7 +434,7 @@ fn process_get_entry_during_replay(
 
             let notification_result = match get_eager_state_command
                 .result
-                .ok_or(EmptyGetEagerState)?
+                .ok_or(EMPTY_GET_EAGER_STATE)?
             {
                 get_eager_state_command_message::Result::Void(v) => NotificationResult::Void(v),
                 get_eager_state_command_message::Result::Value(v) => NotificationResult::Value(v),
@@ -616,7 +616,7 @@ fn process_get_entry_keys_during_replay(
             let notification_result = NotificationResult::StateKeys(
                 get_eager_state_command
                     .value
-                    .ok_or(EmptyGetEagerStateKeys)?,
+                    .ok_or(EMPTY_GET_EAGER_STATE_KEYS)?,
             );
 
             async_results.insert_ready(Notification {
@@ -792,6 +792,21 @@ impl Transition<Context, ProposeRunCompletion> for State {
                         panic!("NotificationId for run should be a completion id, but was {nid:?}")
                     }
                 };
+
+                if context.negotiated_protocol_version >= Version::V7 {
+                    async_results.cache_run_completion(
+                        result_completion_id,
+                        match value.clone() {
+                            propose_run_completion_message::Result::Value(v) => {
+                                NotificationResult::Value(v.into())
+                            }
+                            propose_run_completion_message::Result::Failure(f) => {
+                                NotificationResult::Failure(f)
+                            }
+                        },
+                    )
+                }
+
                 let expected = ProposeRunCompletionMessage {
                     result_completion_id,
                     result: Some(value),

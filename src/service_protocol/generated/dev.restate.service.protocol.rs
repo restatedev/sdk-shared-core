@@ -184,6 +184,18 @@ pub struct AwaitingOnMessage {
     #[prost(bool, tag = "2")]
     pub executing_side_effects: bool,
 }
+/// Type: 0x0000 + 7
+///
+/// This is a message sent as response to ProposeRunCompletionMessage to acknowledge the proposal was correctly stored and replicated.
+/// Its ordering is considered to be "relative" to the ordering of notifications.
+///
+/// This message will only ever be sent as response to ProposeRunCompletionMessage, and will be sent only in the PROCESSING phase of the protocol, never during REPLAY.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProposeRunCompletionAckMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
+}
 /// A notification message follows the following duck-type:
 ///
 #[allow(dead_code)]
@@ -970,7 +982,7 @@ pub struct WorkflowTarget {
     pub workflow_key: ::prost::alloc::string::String,
     /// Scope for the invocation target. Empty string means no scope (unscoped invocation).
     /// Since V7.
-    #[prost(string, optional, tag = "7")]
+    #[prost(string, optional, tag = "3")]
     pub scope: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(dead_code)]
@@ -986,7 +998,7 @@ pub struct IdempotentRequestTarget {
     pub idempotency_key: ::prost::alloc::string::String,
     /// Scope for the invocation target. Empty string means no scope (unscoped invocation).
     /// Since V7.
-    #[prost(string, optional, tag = "7")]
+    #[prost(string, optional, tag = "5")]
     pub scope: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(dead_code)]
@@ -1026,6 +1038,7 @@ pub enum ServiceProtocolVersion {
     /// * WorkflowTarget.scope
     /// * IdempotentRequestTarget.scope
     /// * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
+    /// * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
     V7 = 7,
 }
 impl ServiceProtocolVersion {

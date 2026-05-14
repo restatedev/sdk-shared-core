@@ -1,7 +1,9 @@
 use crate::error::NotificationMetadata;
 use crate::fmt::{display_closed_error, format_do_progress, DiffFormatter};
 use crate::service_protocol::messages::{CommandMessageHeaderDiff, RestateMessage};
-use crate::service_protocol::{ContentTypeError, DecodingError, MessageType, NotificationId};
+use crate::service_protocol::{
+    CompletionId, ContentTypeError, DecodingError, MessageType, NotificationId,
+};
 use crate::{Error, Version};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -333,13 +335,15 @@ impl std::error::Error for UncompletedDoProgressDuringReplay {}
 #[error("Cannot convert a eager state key into UTF-8 String: {0:?}")]
 pub struct BadEagerStateKeyError(#[from] pub(crate) std::string::FromUtf8Error);
 
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Unexpected empty value variant for get eager state")]
-pub struct EmptyGetEagerState;
+pub const EMPTY_GET_EAGER_STATE: Error = Error::new_const(
+    codes::PROTOCOL_VIOLATION,
+    "Unexpected empty value variant for get eager state.",
+);
 
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Unexpected empty value variant for state keys")]
-pub struct EmptyGetEagerStateKeys;
+pub const EMPTY_GET_EAGER_STATE_KEYS: Error = Error::new_const(
+    codes::PROTOCOL_VIOLATION,
+    "Unexpected empty value variant for state keys.",
+);
 
 #[derive(Debug, thiserror::Error)]
 #[error("Feature '{feature}' is not supported by the negotiated protocol version '{current_version}', the minimum required version is '{minimum_required_version}'")]
@@ -360,6 +364,18 @@ impl UnsupportedFeatureForNegotiatedVersion {
             current_version,
             minimum_required_version,
         }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Received a run completion ack for completion id {completion_id}, but the related run was not proposed during this attempt.")]
+pub struct BadProposeRunCompletionAck {
+    completion_id: CompletionId,
+}
+
+impl BadProposeRunCompletionAck {
+    pub fn new(completion_id: CompletionId) -> Self {
+        Self { completion_id }
     }
 }
 
@@ -407,6 +423,5 @@ impl<M: RestateMessage + CommandMessageHeaderDiff> WithInvocationErrorCode
     }
 }
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
-impl_error_code!(EmptyGetEagerState, PROTOCOL_VIOLATION);
-impl_error_code!(EmptyGetEagerStateKeys, PROTOCOL_VIOLATION);
 impl_error_code!(UnsupportedFeatureForNegotiatedVersion, UNSUPPORTED_FEATURE);
+impl_error_code!(BadProposeRunCompletionAck, PROTOCOL_VIOLATION);

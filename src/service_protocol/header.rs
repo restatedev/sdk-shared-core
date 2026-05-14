@@ -74,6 +74,7 @@ gen_message_type_enum!(
     End = 0x0003,
     ProposeRunCompletion = 0x0005,
     AwaitingOn = 0x0006,
+    ProposeRunCompletionAck = 0x0007,
     InputCommand = 0x0400,
     OutputCommand = 0x0401,
     GetLazyStateCommand = 0x0402,

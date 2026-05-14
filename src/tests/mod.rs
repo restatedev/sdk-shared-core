@@ -104,6 +104,13 @@ impl VMTestCase {
         }
     }
 
+    fn with_version(version: Version) -> Self {
+        Self {
+            encoder: Encoder::new(version),
+            vm: CoreVM::mock_init_with_options(version, Default::default()),
+        }
+    }
+
     fn input<M: RestateEncodableMessage>(mut self, m: M) -> Self {
         self.vm.notify_input(self.encoder.encode(&m));
         self

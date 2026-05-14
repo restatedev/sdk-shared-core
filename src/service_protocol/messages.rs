@@ -88,6 +88,7 @@ impl_message_traits!(Error: core);
 impl_message_traits!(End: core);
 impl_message_traits!(ProposeRunCompletion: core);
 impl_message_traits!(AwaitingOn: core);
+impl_message_traits!(ProposeRunCompletionAck: core);
 
 // We implement suspension message manually to transcode for protocol differences
 impl RestateMessage for SuspensionMessage {
