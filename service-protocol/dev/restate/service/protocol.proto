@@ -45,6 +45,7 @@ enum ServiceProtocolVersion {
   // * IdempotentRequestTarget.scope
   // * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
   // * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
+  // * ErrorMessage.should_pause
   V7 = 7;
 }
 
@@ -177,6 +178,10 @@ message ErrorMessage {
   // Delay before executing the next retry, specified as duration in milliseconds.
   // If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
   optional uint64 next_retry_delay = 8;
+
+  // If true, Restate will pause instead of retrying.
+  // This field supersedes next_retry_delay.
+  bool should_pause = 9;
 }
 
 // Type: 0x0000 + 3
@@ -189,10 +194,14 @@ message CommandAckMessage {
   uint32 command_index = 1;
 }
 
+// Type: 0x0000 + 5
+//
 // This is a special control message to propose ctx.run completions to the runtime.
 // This won't be written to the journal immediately, but will appear later as a new notification (meaning the result was stored).
 //
-// Type: 0x0000 + 5
+// In response to this message, the SDK expects the runtime to either:
+// * if requested_ack = true -> Send back ProposeRunCompletionAckMessage with the related completion_id
+// * if requested_ack = false -> Send back the whole notification just proposed
 message ProposeRunCompletionMessage {
   uint32 result_completion_id = 1;
   oneof result {
@@ -214,7 +223,24 @@ message AwaitingOnMessage {
 // Type: 0x0000 + 7
 //
 // This is a message sent as response to ProposeRunCompletionMessage to acknowledge the proposal was correctly stored and replicated.
+//
 // Its ordering is considered to be "relative" to the ordering of notifications.
+// In other words, the SDK expects that on replay the RunCompletionMessage,
+// to which the ProposeRunCompletionAckMessage relates to,
+// is sent in the same order relative to the other notifications.
+//
+// For example, if when PROCESSING the first time the SDK sees:
+//
+// -> SleepCompletionMessage id = 1
+// -> ProposeRunCompletionAckMessage id = 3
+// -> SleepCompletionMessage id = 2
+//
+// Then on the next replay, the SDK expects to see notifications in the following order:
+//
+// -> SleepCompletionMessage id = 1
+// -> RunCompletionMessage id = 3 (the actual completion here replaces the ack)
+// -> SleepCompletionMessage id = 2
+
 //
 // This message will only ever be sent as response to ProposeRunCompletionMessage, and will be sent only in the PROCESSING phase of the protocol, never during REPLAY.
 message ProposeRunCompletionAckMessage {

@@ -134,6 +134,10 @@ pub struct ErrorMessage {
     /// If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
     #[prost(uint64, optional, tag = "8")]
     pub next_retry_delay: ::core::option::Option<u64>,
+    /// If true, Restate will pause instead of retrying.
+    /// This field supersedes next_retry_delay.
+    #[prost(bool, tag = "9")]
+    pub should_pause: bool,
 }
 /// Type: 0x0000 + 3
 /// Implementations MUST send this message when the invocation lifecycle ends.
@@ -147,10 +151,14 @@ pub struct CommandAckMessage {
     #[prost(uint32, tag = "1")]
     pub command_index: u32,
 }
+/// Type: 0x0000 + 5
+///
 /// This is a special control message to propose ctx.run completions to the runtime.
 /// This won't be written to the journal immediately, but will appear later as a new notification (meaning the result was stored).
 ///
-/// Type: 0x0000 + 5
+/// In response to this message, the SDK expects the runtime to either:
+/// * if requested_ack = true -> Send back ProposeRunCompletionAckMessage with the related completion_id
+/// * if requested_ack = false -> Send back the whole notification just proposed
 #[allow(dead_code)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProposeRunCompletionMessage {
@@ -184,10 +192,6 @@ pub struct AwaitingOnMessage {
     #[prost(bool, tag = "2")]
     pub executing_side_effects: bool,
 }
-/// Type: 0x0000 + 7
-///
-/// This is a message sent as response to ProposeRunCompletionMessage to acknowledge the proposal was correctly stored and replicated.
-/// Its ordering is considered to be "relative" to the ordering of notifications.
 ///
 /// This message will only ever be sent as response to ProposeRunCompletionMessage, and will be sent only in the PROCESSING phase of the protocol, never during REPLAY.
 #[allow(dead_code)]
@@ -1039,6 +1043,7 @@ pub enum ServiceProtocolVersion {
     /// * IdempotentRequestTarget.scope
     /// * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
     /// * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
+    /// * ErrorMessage.should_pause
     V7 = 7,
 }
 impl ServiceProtocolVersion {
