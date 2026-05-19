@@ -1,6 +1,7 @@
 use crate::service_protocol::messages::{CombinatorType, Future};
-use crate::service_protocol::{Notification, NotificationId, NotificationResult};
-use crate::{NotificationHandle, UnresolvedFuture, CANCEL_NOTIFICATION_HANDLE};
+use crate::service_protocol::{CompletionId, Notification, NotificationId, NotificationResult};
+use crate::vm::errors::BadProposeRunCompletionAck;
+use crate::{Error, NotificationHandle, UnresolvedFuture, CANCEL_NOTIFICATION_HANDLE};
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::instrument;
 
@@ -8,6 +9,10 @@ use tracing::instrument;
 pub(crate) struct AsyncResultsState {
     to_process: VecDeque<Notification>,
     ready: HashMap<NotificationId, NotificationResult>,
+
+    // We cache the results of the run completions executed during this attempt.
+    // From protocol >= v7
+    cached_run_completions: HashMap<CompletionId, NotificationResult>,
 
     handle_mapping: HashMap<NotificationHandle, NotificationId>,
     next_notification_handle: NotificationHandle,
@@ -18,6 +23,8 @@ impl Default for AsyncResultsState {
         Self {
             to_process: Default::default(),
             ready: Default::default(),
+
+            cached_run_completions: Default::default(),
 
             // First 15 are reserved for built-in signals!
             handle_mapping: HashMap::from([(
@@ -49,6 +56,46 @@ impl AsyncResultsState {
     )]
     pub(crate) fn enqueue(&mut self, notification: Notification) {
         self.to_process.push_back(notification);
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.journal.completion.id = ?completion_id,
+        ),
+        ret
+    )]
+    pub(crate) fn cache_run_completion(
+        &mut self,
+        completion_id: CompletionId,
+        notification_result: NotificationResult,
+    ) {
+        self.cached_run_completions
+            .insert(completion_id, notification_result);
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
+            restate.journal.completion.id = ?completion_id,
+        ),
+        ret
+    )]
+    pub(crate) fn enqueue_run_completion_ack(
+        &mut self,
+        completion_id: CompletionId,
+    ) -> Result<(), Error> {
+        if let Some(res) = self.cached_run_completions.remove(&completion_id) {
+            self.to_process.push_back(Notification {
+                id: NotificationId::CompletionId(completion_id),
+                result: res,
+            });
+            Ok(())
+        } else {
+            Err(BadProposeRunCompletionAck::new(completion_id).into())
+        }
     }
 
     #[instrument(

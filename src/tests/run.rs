@@ -2,9 +2,9 @@ use super::*;
 
 use crate::service_protocol::messages::{
     propose_run_completion_message, run_completion_notification_message, AwaitingOnMessage,
-    EndMessage, ErrorMessage, Failure, OutputCommandMessage, ProposeRunCompletionMessage,
-    RunCommandMessage, RunCompletionNotificationMessage, SleepCommandMessage,
-    SleepCompletionNotificationMessage, StartMessage, SuspensionMessage,
+    EndMessage, ErrorMessage, Failure, OutputCommandMessage, ProposeRunCompletionAckMessage,
+    ProposeRunCompletionMessage, RunCommandMessage, RunCompletionNotificationMessage,
+    SleepCommandMessage, SleepCompletionNotificationMessage, StartMessage, SuspensionMessage,
 };
 use crate::PayloadOptions;
 use test_log::test;
@@ -101,7 +101,7 @@ fn enter_then_propose_completion_then_suspend() {
 
 #[test]
 fn enter_then_propose_completion_then_complete() {
-    let mut output = VMTestCase::new()
+    let mut output = VMTestCase::with_version(Version::V6)
         .input(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
@@ -185,19 +185,6 @@ fn enter_then_propose_completion_then_complete() {
         }
     );
     assert_that!(
-        output.next_decoded::<AwaitingOnMessage>().unwrap(),
-        pat!(AwaitingOnMessage {
-            awaiting_on: some(pat!(messages::Future {
-                waiting_completions: eq(vec![1]),
-                waiting_signals: eq(vec![1]),
-                waiting_named_signals: empty(),
-                nested_futures: empty(),
-                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
-            })),
-            executing_side_effects: eq(false)
-        })
-    );
-    assert_that!(
         output.next_decoded::<OutputCommandMessage>().unwrap(),
         is_output_with_success(b"123")
     );
@@ -207,7 +194,7 @@ fn enter_then_propose_completion_then_complete() {
 
 #[test]
 fn enter_then_propose_completion_then_complete_with_failure() {
-    let mut output = VMTestCase::new()
+    let mut output = VMTestCase::with_version(Version::V6)
         .input(StartMessage {
             id: Bytes::from_static(b"123"),
             debug_id: "123".to_string(),
@@ -586,6 +573,270 @@ fn enter_then_notify_error() {
         )
     );
     assert_eq!(output.next(), None);
+}
+
+// Tests for the protocol v7 ProposeRunCompletionAck flow.
+mod v7_with_ack {
+    use super::*;
+
+    use test_log::test;
+
+    #[test]
+    fn propose_then_receive_ack_completes_with_success() {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                partial_state: false,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+
+                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert_eq!(
+                    vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                    AwaitResponse::ExecuteRun(handle)
+                );
+
+                vm.propose_run_completion(
+                    handle,
+                    RunExitResult::Success(Bytes::from_static(b"result")),
+                    RetryPolicy::default(),
+                )
+                .unwrap();
+
+                // Still waiting for the ack from the runtime
+                assert_eq!(
+                    vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                    AwaitResponse::WaitingExternalProgress {
+                        waiting_input: true,
+                        waiting_run_proposal: false
+                    }
+                );
+
+                // Runtime sends the ack — result was cached at proposal time
+                vm.notify_input(
+                    encoder.encode(&ProposeRunCompletionAckMessage { completion_id: 1 }),
+                );
+
+                assert_eq!(
+                    vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                    AwaitResponse::AnyCompleted
+                );
+                let result = vm.take_notification(handle).unwrap().unwrap();
+                assert2::assert!(let Value::Success(s) = result);
+
+                vm.sys_write_output(NonEmptyValue::Success(s), PayloadOptions::default())
+                    .unwrap();
+                vm.sys_end().unwrap();
+            });
+
+        assert_that!(
+            output.next_decoded::<RunCommandMessage>().unwrap(),
+            eq(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_owned(),
+            })
+        );
+        let (propose_header, propose_msg) = output
+            .next_with_header_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_eq!(propose_header.requested_ack(), Some(true));
+        assert_eq!(
+            propose_msg,
+            ProposeRunCompletionMessage {
+                result_completion_id: 1,
+                result: Some(propose_run_completion_message::Result::Value(
+                    Bytes::from_static(b"result")
+                )),
+            }
+        );
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            pat!(AwaitingOnMessage {
+                awaiting_on: some(pat!(messages::Future {
+                    waiting_completions: eq(vec![1]),
+                    waiting_signals: eq(vec![1]),
+                    combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+                })),
+                executing_side_effects: eq(false)
+            })
+        );
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"result")
+        );
+        output.next_decoded::<EndMessage>().unwrap();
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn propose_then_receive_ack_completes_with_failure() {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                partial_state: false,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+
+                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert_eq!(
+                    vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                    AwaitResponse::ExecuteRun(handle)
+                );
+
+                vm.propose_run_completion(
+                    handle,
+                    RunExitResult::TerminalFailure(TerminalFailure {
+                        code: 500,
+                        message: "side-effect-error".to_string(),
+                        metadata: vec![],
+                    }),
+                    RetryPolicy::default(),
+                )
+                .unwrap();
+
+                // Runtime sends the ack
+                vm.notify_input(
+                    encoder.encode(&ProposeRunCompletionAckMessage { completion_id: 1 }),
+                );
+
+                assert_eq!(
+                    vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                    AwaitResponse::AnyCompleted
+                );
+                let result = vm.take_notification(handle).unwrap().unwrap();
+                assert2::assert!(let Value::Failure(f) = result);
+
+                vm.sys_write_output(NonEmptyValue::Failure(f), PayloadOptions::default())
+                    .unwrap();
+                vm.sys_end().unwrap();
+            });
+
+        assert_that!(
+            output.next_decoded::<RunCommandMessage>().unwrap(),
+            eq(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_owned(),
+            })
+        );
+        let (propose_header, propose_msg) = output
+            .next_with_header_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_eq!(propose_header.requested_ack(), Some(true));
+        assert_eq!(
+            propose_msg,
+            ProposeRunCompletionMessage {
+                result_completion_id: 1,
+                result: Some(propose_run_completion_message::Result::Failure(Failure {
+                    code: 500,
+                    message: "side-effect-error".to_string(),
+                    metadata: vec![],
+                })),
+            }
+        );
+        // No AwaitingOnMessage: do_await was never called between propose and ack
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_failure(500, "side-effect-error")
+        );
+        output.next_decoded::<EndMessage>().unwrap();
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn ack_with_unknown_completion_id_errors() {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                partial_state: false,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+
+                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert_eq!(
+                    vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                    AwaitResponse::ExecuteRun(handle)
+                );
+
+                vm.propose_run_completion(
+                    handle,
+                    RunExitResult::Success(Bytes::from_static(b"result")),
+                    RetryPolicy::default(),
+                )
+                .unwrap();
+
+                // Runtime sends ack with a completion_id we never proposed
+                vm.notify_input(
+                    encoder.encode(&ProposeRunCompletionAckMessage { completion_id: 99 }),
+                );
+            });
+
+        let _ = output.next_decoded::<RunCommandMessage>().unwrap();
+        let (propose_header, _) = output
+            .next_with_header_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_eq!(propose_header.requested_ack(), Some(true));
+        // No AwaitingOnMessage: do_await was not called between propose and the bad ack
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            pat!(ErrorMessage {
+                code: eq(crate::vm::errors::codes::PROTOCOL_VIOLATION.code() as u32),
+            })
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn ack_during_replay_is_unexpected() {
+        // Feed the ack while the VM is still replaying (known_entries=3 but only 2 replayed).
+        // The third entry in the stream is ProposeRunCompletionAckMessage, which is illegal
+        // during replay.
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 3,
+                partial_state: false,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_owned(),
+            })
+            // This is fed as if it were the third journal entry, but it is not a valid
+            // journal entry — the runtime must never send ProposeRunCompletionAckMessage
+            // during the replay phase.
+            .input(ProposeRunCompletionAckMessage { completion_id: 1 });
+
+        // The VM should have transitioned to an error state. Drain any buffered output
+        // without going through run_without_closing_input (which would assert ready-to-execute).
+        let mut decoder =
+            crate::service_protocol::Decoder::new(Version::maximum_supported_version());
+        while let TakeOutputResult::Buffer(b) = output.vm.take_output() {
+            decoder.push(b);
+        }
+        let mut raw_output: Vec<_> =
+            std::iter::from_fn(|| decoder.consume_next().unwrap()).collect();
+
+        let last = raw_output.pop().unwrap();
+        let error_msg = last.decode_to::<ErrorMessage>(0).unwrap();
+        assert_ne!(error_msg.code, 0);
+    }
 }
 
 mod retry_policy {

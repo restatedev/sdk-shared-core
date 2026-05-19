@@ -15,6 +15,8 @@ const COMMAND_ENTRY_MASK: u16 = 0x0400;
 const NOTIFICATION_ENTRY_MASK: u16 = 0x8000;
 const CUSTOM_ENTRY_MASK: u16 = 0xFC00;
 
+const REQUESTED_ACK_MASK: u64 = 0x8000_0000_0000;
+
 type MessageTypeId = u16;
 
 #[derive(Debug, thiserror::Error)]
@@ -74,6 +76,7 @@ gen_message_type_enum!(
     End = 0x0003,
     ProposeRunCompletion = 0x0005,
     AwaitingOn = 0x0006,
+    ProposeRunCompletionAck = 0x0007,
     InputCommand = 0x0400,
     OutputCommand = 0x0401,
     GetLazyStateCommand = 0x0402,
@@ -120,6 +123,11 @@ impl MessageType {
     pub fn is_notification(&self) -> bool {
         (NOTIFICATION_ENTRY_MASK..CUSTOM_ENTRY_MASK).contains(&self.id())
     }
+
+    /// Returns true if this message type carries the `requires_ack` flag in its header.
+    pub fn allows_ack(&self) -> bool {
+        matches!(self, MessageType::ProposeRunCompletion)
+    }
 }
 
 impl fmt::Display for MessageType {
@@ -135,12 +143,26 @@ impl fmt::Display for MessageType {
 pub struct MessageHeader {
     ty: MessageType,
     length: u32,
+    requested_ack_flag: Option<bool>,
 }
 
 impl MessageHeader {
     #[inline]
     pub fn new(ty: MessageType, length: u32) -> Self {
-        Self { ty, length }
+        Self {
+            ty,
+            length,
+            requested_ack_flag: None,
+        }
+    }
+
+    #[inline]
+    pub fn new_with_requested_ack(ty: MessageType, requested_ack: bool, length: u32) -> Self {
+        Self {
+            ty,
+            length,
+            requested_ack_flag: Some(requested_ack),
+        }
     }
 
     #[inline]
@@ -151,6 +173,12 @@ impl MessageHeader {
     #[inline]
     pub fn message_length(&self) -> u32 {
         self.length
+    }
+
+    /// `Some(_)` when the message type carries the `requires_ack` flag, `None` otherwise.
+    #[inline]
+    pub fn requested_ack(&self) -> Option<bool> {
+        self.requested_ack_flag
     }
 }
 
@@ -164,7 +192,17 @@ impl TryFrom<u64> for MessageHeader {
         let ty: MessageType = ty_code.try_into()?;
         let length = value as u32;
 
-        Ok(MessageHeader::new(ty, length))
+        let requested_ack_flag = if ty.allows_ack() {
+            Some((value & REQUESTED_ACK_MASK) != 0)
+        } else {
+            None
+        };
+
+        Ok(MessageHeader {
+            ty,
+            length,
+            requested_ack_flag,
+        })
     }
 }
 
@@ -172,7 +210,14 @@ impl From<MessageHeader> for u64 {
     /// Serialize the protocol header.
     /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#message-header
     fn from(message_header: MessageHeader) -> Self {
-        ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64)
+        let mut res =
+            ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64);
+
+        if let Some(true) = message_header.requested_ack_flag {
+            res |= REQUESTED_ACK_MASK;
+        }
+
+        res
     }
 }
 
@@ -214,4 +259,32 @@ mod tests {
         CustomEntry(0xFC01),
         10341
     );
+
+    #[test]
+    fn propose_run_completion_with_requested_ack_roundtrip() {
+        let original = MessageHeader::new_with_requested_ack(ProposeRunCompletion, true, 42);
+        let serialized: u64 = original.into();
+
+        // The flag bit must be set in the wire form.
+        assert_ne!(serialized & REQUESTED_ACK_MASK, 0);
+
+        let header: MessageHeader = serialized.try_into().unwrap();
+        assert_eq!(header.message_type(), ProposeRunCompletion);
+        assert_eq!(header.message_length(), 42);
+        assert_eq!(header.requested_ack(), Some(true));
+    }
+
+    #[test]
+    fn propose_run_completion_without_requested_ack_roundtrip() {
+        let original = MessageHeader::new(ProposeRunCompletion, 42);
+        let serialized: u64 = original.into();
+
+        assert_eq!(serialized & REQUESTED_ACK_MASK, 0);
+
+        let header: MessageHeader = serialized.try_into().unwrap();
+        assert_eq!(header.message_type(), ProposeRunCompletion);
+        assert_eq!(header.message_length(), 42);
+        // ProposeRunCompletion carries the flag; when not set on the wire it decodes as Some(false).
+        assert_eq!(header.requested_ack(), Some(false));
+    }
 }

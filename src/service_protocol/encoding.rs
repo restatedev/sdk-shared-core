@@ -69,6 +69,11 @@ impl RawMessage {
         self.0.message_type()
     }
 
+    #[cfg(test)]
+    pub fn header(&self) -> MessageHeader {
+        self.0
+    }
+
     pub fn decode_to<M: RestateMessage>(self, command_index: i64) -> Result<M, DecodingError> {
         if self.0.message_type() != M::ty() {
             return Err(DecodingError::UnexpectedMessageType(
@@ -178,12 +183,6 @@ impl DecoderState {
 mod tests {
 
     use super::*;
-
-    impl RawMessage {
-        pub fn header(&self) -> MessageHeader {
-            self.0
-        }
-    }
 
     #[test]
     fn fill_decoder_with_several_messages() {

@@ -134,6 +134,10 @@ pub struct ErrorMessage {
     /// If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
     #[prost(uint64, optional, tag = "8")]
     pub next_retry_delay: ::core::option::Option<u64>,
+    /// If true, Restate will pause instead of retrying.
+    /// This field supersedes next_retry_delay.
+    #[prost(bool, tag = "9")]
+    pub should_pause: bool,
 }
 /// Type: 0x0000 + 3
 /// Implementations MUST send this message when the invocation lifecycle ends.
@@ -147,10 +151,14 @@ pub struct CommandAckMessage {
     #[prost(uint32, tag = "1")]
     pub command_index: u32,
 }
+/// Type: 0x0000 + 5
+///
 /// This is a special control message to propose ctx.run completions to the runtime.
 /// This won't be written to the journal immediately, but will appear later as a new notification (meaning the result was stored).
 ///
-/// Type: 0x0000 + 5
+/// In response to this message, the SDK expects the runtime to either:
+/// * if requested_ack = true -> Send back ProposeRunCompletionAckMessage with the related completion_id
+/// * if requested_ack = false -> Send back the whole notification just proposed
 #[allow(dead_code)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProposeRunCompletionMessage {
@@ -183,6 +191,14 @@ pub struct AwaitingOnMessage {
     /// True if any of the notifications the SDK is awaiting on are side effects the SDK is currently executing.
     #[prost(bool, tag = "2")]
     pub executing_side_effects: bool,
+}
+///
+/// This message will only ever be sent as response to ProposeRunCompletionMessage, and will be sent only in the PROCESSING phase of the protocol, never during REPLAY.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProposeRunCompletionAckMessage {
+    #[prost(uint32, tag = "1")]
+    pub completion_id: u32,
 }
 /// A notification message follows the following duck-type:
 ///
@@ -970,7 +986,7 @@ pub struct WorkflowTarget {
     pub workflow_key: ::prost::alloc::string::String,
     /// Scope for the invocation target. Empty string means no scope (unscoped invocation).
     /// Since V7.
-    #[prost(string, optional, tag = "7")]
+    #[prost(string, optional, tag = "3")]
     pub scope: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(dead_code)]
@@ -986,7 +1002,7 @@ pub struct IdempotentRequestTarget {
     pub idempotency_key: ::prost::alloc::string::String,
     /// Scope for the invocation target. Empty string means no scope (unscoped invocation).
     /// Since V7.
-    #[prost(string, optional, tag = "7")]
+    #[prost(string, optional, tag = "5")]
     pub scope: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(dead_code)]
@@ -1026,6 +1042,8 @@ pub enum ServiceProtocolVersion {
     /// * WorkflowTarget.scope
     /// * IdempotentRequestTarget.scope
     /// * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
+    /// * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
+    /// * ErrorMessage.should_pause
     V7 = 7,
 }
 impl ServiceProtocolVersion {

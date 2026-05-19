@@ -1,5 +1,5 @@
 use crate::service_protocol::messages::StartMessage;
-use crate::service_protocol::{MessageType, RawMessage};
+use crate::service_protocol::{messages, MessageType, RawMessage};
 use crate::vm::context::{Context, EagerState, StartInfo};
 use crate::vm::errors::{
     BadEagerStateKeyError, INPUT_CLOSED_WHILE_WAITING_ENTRIES, KNOWN_ENTRIES_IS_ZERO,
@@ -21,6 +21,9 @@ impl Transition<Context, NewMessage> for State {
             }
             ty if ty.is_command() => self.transition(context, NewCommandMessage(msg)),
             ty if ty.is_notification() => self.transition(context, NewNotificationMessage(msg)),
+            MessageType::ProposeRunCompletionAck => {
+                self.transition(context, NewProposeRunCompletionAckMessage(msg))
+            }
             _ => Err(UNEXPECTED_INPUT_MESSAGE)?,
         }
     }
@@ -99,6 +102,28 @@ impl Transition<Context, NewNotificationMessage> for State {
         };
 
         self.transition(context, PostReceiveEntry)
+    }
+}
+
+struct NewProposeRunCompletionAckMessage(RawMessage);
+
+impl Transition<Context, NewProposeRunCompletionAckMessage> for State {
+    fn transition(
+        mut self,
+        _: &mut Context,
+        NewProposeRunCompletionAckMessage(msg): NewProposeRunCompletionAckMessage,
+    ) -> Result<Self, Error> {
+        match &mut self {
+            State::Processing { async_results, .. } => {
+                let msg = msg.decode_to::<messages::ProposeRunCompletionAckMessage>(0)?;
+                async_results.enqueue_run_completion_ack(msg.completion_id)?;
+            }
+            State::Closed => {
+                // Can ignore
+            }
+            s => return Err(s.as_unexpected_state("NewProposeRunCompletionAckMessage")),
+        };
+        Ok(self)
     }
 }
 
