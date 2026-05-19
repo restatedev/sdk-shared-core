@@ -16,7 +16,9 @@ use crate::service_protocol::messages::{
     OutputCommandMessage, RestateEncodableMessage, RestateMessage, SignalNotificationMessage,
     StartMessage, SuspensionMessage,
 };
-use crate::service_protocol::{messages, CompletionId, Decoder, Encoder, RawMessage, Version};
+use crate::service_protocol::{
+    messages, CompletionId, Decoder, Encoder, MessageHeader, RawMessage, Version,
+};
 use bytes::Bytes;
 use googletest::prelude::*;
 use test_log::test;
@@ -155,6 +157,14 @@ impl OutputIterator {
             .consume_next()
             .unwrap()
             .map(|msg| msg.decode_to::<M>(0).unwrap())
+    }
+
+    fn next_with_header_decoded<M: RestateMessage>(&mut self) -> Option<(MessageHeader, M)> {
+        self.0.consume_next().unwrap().map(|raw| {
+            let header = raw.header();
+            let msg = raw.decode_to::<M>(0).unwrap();
+            (header, msg)
+        })
     }
 }
 

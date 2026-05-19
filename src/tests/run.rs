@@ -641,10 +641,12 @@ mod v7_with_ack {
                 name: "my-side-effect".to_owned(),
             })
         );
+        let (propose_header, propose_msg) = output
+            .next_with_header_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_eq!(propose_header.requested_ack(), Some(true));
         assert_eq!(
-            output
-                .next_decoded::<ProposeRunCompletionMessage>()
-                .unwrap(),
+            propose_msg,
             ProposeRunCompletionMessage {
                 result_completion_id: 1,
                 result: Some(propose_run_completion_message::Result::Value(
@@ -726,10 +728,12 @@ mod v7_with_ack {
                 name: "my-side-effect".to_owned(),
             })
         );
+        let (propose_header, propose_msg) = output
+            .next_with_header_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_eq!(propose_header.requested_ack(), Some(true));
         assert_eq!(
-            output
-                .next_decoded::<ProposeRunCompletionMessage>()
-                .unwrap(),
+            propose_msg,
             ProposeRunCompletionMessage {
                 result_completion_id: 1,
                 result: Some(propose_run_completion_message::Result::Failure(Failure {
@@ -782,9 +786,10 @@ mod v7_with_ack {
             });
 
         let _ = output.next_decoded::<RunCommandMessage>().unwrap();
-        let _ = output
-            .next_decoded::<ProposeRunCompletionMessage>()
+        let (propose_header, _) = output
+            .next_with_header_decoded::<ProposeRunCompletionMessage>()
             .unwrap();
+        assert_eq!(propose_header.requested_ack(), Some(true));
         // No AwaitingOnMessage: do_await was not called between propose and the bad ack
         assert_that!(
             output.next_decoded::<ErrorMessage>().unwrap(),

@@ -86,16 +86,27 @@ macro_rules! impl_message_traits {
 impl_message_traits!(Start: core);
 impl_message_traits!(Error: core);
 impl_message_traits!(End: core);
-impl_message_traits!(ProposeRunCompletion: core);
+impl_message_traits!(ProposeRunCompletion: message);
 impl_message_traits!(AwaitingOn: core);
 impl_message_traits!(ProposeRunCompletionAck: core);
 
-// We implement suspension message manually to transcode for protocol differences
-impl RestateMessage for SuspensionMessage {
-    fn ty() -> MessageType {
-        MessageType::Suspension
+impl RestateEncodableMessage for ProposeRunCompletionMessage {
+    fn encode(&self, service_protocol_version: Version) -> Bytes {
+        if service_protocol_version >= Version::V7 {
+            // The shared core in Protocol V7+ always expects from the runtime a ProposeRunCompletionAck instead of RunCompletionMessage.
+            // To enable this behavior in the runtime, we must send `requested_ack`.
+            // See AsyncResultsState::cache_run_completion for more details.
+            encode_message_with_custom_header(self, |t, len| {
+                MessageHeader::new_with_requested_ack(t, true, len)
+            })
+        } else {
+            encode_message(self)
+        }
     }
 }
+
+// We implement suspension message manually to transcode for protocol differences
+impl_message_traits!(Suspension: message);
 impl RestateEncodableMessage for SuspensionMessage {
     fn encode(&self, service_protocol_version: Version) -> Bytes {
         if service_protocol_version >= Version::V7 {
@@ -1023,13 +1034,21 @@ impl From<NotificationResult> for crate::Value {
 
 #[inline]
 fn encode_message<T: RestateMessage>(msg: &T) -> Bytes {
+    encode_message_with_custom_header(msg, MessageHeader::new)
+}
+
+#[inline]
+fn encode_message_with_custom_header<T: RestateMessage>(
+    msg: &T,
+    header_factory: impl FnOnce(MessageType, u32) -> MessageHeader,
+) -> Bytes {
     let msg_encoded_len = msg.encoded_len();
     // Header is 8 bytes
     let buf_len = 8 + msg_encoded_len;
     let mut buf = BytesMut::with_capacity(buf_len);
 
     // Write header out
-    let header = MessageHeader::new(T::ty(), msg_encoded_len as u32);
+    let header = header_factory(T::ty(), msg_encoded_len as u32);
     buf.put_u64(header.into());
 
     // Write payload out
