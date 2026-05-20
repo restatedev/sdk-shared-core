@@ -101,7 +101,7 @@ impl Error {
                 .as_ref()
                 .map(|cmd| u16::from(cmd.ty).into()),
             next_retry_delay: self.next_retry_delay.map(|d| d.as_millis() as u64),
-            should_pause: false,
+            should_pause: self.should_pause,
         }
     }
 }

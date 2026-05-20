@@ -75,6 +75,7 @@ pub struct Error {
     pub(crate) stacktrace: String,
     pub(crate) related_command: Option<CommandMetadata>,
     pub(crate) next_retry_delay: Option<Duration>,
+    pub(crate) should_pause: bool,
 }
 
 impl fmt::Display for Error {
@@ -101,6 +102,7 @@ impl Error {
             stacktrace: Default::default(),
             related_command: None,
             next_retry_delay: None,
+            should_pause: false,
         }
     }
 
@@ -127,6 +129,13 @@ impl Error {
 
     pub fn with_next_retry_delay_override(mut self, delay: Duration) -> Self {
         self.next_retry_delay = Some(delay);
+        self
+    }
+
+    /// When set to `true`, the runtime will pause the invocation instead of retrying
+    /// after this error. Requires service protocol V7 or newer.
+    pub fn with_should_pause(mut self, should_pause: bool) -> Self {
+        self.should_pause = should_pause;
         self
     }
 

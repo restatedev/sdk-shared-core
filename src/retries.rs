@@ -2,6 +2,17 @@ use crate::EntryRetryInfo;
 use std::cmp;
 use std::time::Duration;
 
+/// What to do when a `RetryPolicy` runs out of attempts or duration.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum OnMaxAttempts {
+    /// Convert the retryable failure into a terminal failure on the run handle.
+    #[default]
+    FailAsTerminal,
+    /// Pause the invocation instead of failing it. The invocation MUST be manually resumed by the user.
+    /// Requires service protocol V7 or newer.
+    Pause,
+}
+
 /// This struct represents the policy to execute retries.
 #[derive(Debug, Clone, Default)]
 pub enum RetryPolicy {
@@ -36,6 +47,11 @@ pub enum RetryPolicy {
         /// or `max_attempts` (if set) is reached first.
         /// Infinite retries if this field and `max_attempts` are unset.
         max_duration: Option<Duration>,
+
+        /// # On max attempts
+        ///
+        /// What to do once `max_attempts` or `max_duration` is reached.
+        on_max_attempts: OnMaxAttempts,
     },
     /// # Exponential
     ///
@@ -69,13 +85,19 @@ pub enum RetryPolicy {
         /// or `max_attempts` (if set) is reached first.
         /// Infinite retries if this field and `max_attempts` are unset.
         max_duration: Option<Duration>,
+
+        /// # On max attempts
+        ///
+        /// What to do once `max_attempts` or `max_duration` is reached.
+        on_max_attempts: OnMaxAttempts,
     },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) enum NextRetry {
     Retry(Option<Duration>),
-    DoNotRetry,
+    FailAsTerminal,
+    Pause,
 }
 
 impl RetryPolicy {
@@ -83,11 +105,13 @@ impl RetryPolicy {
         interval: Option<Duration>,
         max_attempts: Option<u32>,
         max_duration: Option<Duration>,
+        on_max_attempts: OnMaxAttempts,
     ) -> Self {
         Self::FixedDelay {
             interval,
             max_attempts,
             max_duration,
+            on_max_attempts,
         }
     }
 
@@ -97,6 +121,7 @@ impl RetryPolicy {
         max_attempts: Option<u32>,
         max_interval: Option<Duration>,
         max_duration: Option<Duration>,
+        on_max_attempts: OnMaxAttempts,
     ) -> Self {
         Self::Exponential {
             initial_interval,
@@ -104,24 +129,42 @@ impl RetryPolicy {
             max_attempts,
             max_interval,
             max_duration,
+            on_max_attempts,
         }
+    }
+
+    pub(crate) fn should_pause_on_max_attempts(&self) -> bool {
+        matches!(
+            self,
+            RetryPolicy::FixedDelay {
+                on_max_attempts: OnMaxAttempts::Pause,
+                ..
+            } | RetryPolicy::Exponential {
+                on_max_attempts: OnMaxAttempts::Pause,
+                ..
+            }
+        )
     }
 
     pub(crate) fn next_retry(&self, retry_info: EntryRetryInfo) -> NextRetry {
         match self {
             RetryPolicy::Infinite => NextRetry::Retry(None),
-            RetryPolicy::None => NextRetry::DoNotRetry,
+            RetryPolicy::None => NextRetry::FailAsTerminal,
             RetryPolicy::FixedDelay {
                 interval,
                 max_attempts,
                 max_duration,
+                on_max_attempts,
             } => {
                 if max_attempts.is_some_and(|max_attempts| max_attempts <= retry_info.retry_count)
                     || max_duration
                         .is_some_and(|max_duration| max_duration <= retry_info.retry_loop_duration)
                 {
                     // Reached either max_attempts or max_duration bound
-                    return NextRetry::DoNotRetry;
+                    return match on_max_attempts {
+                        OnMaxAttempts::FailAsTerminal => NextRetry::FailAsTerminal,
+                        OnMaxAttempts::Pause => NextRetry::Pause,
+                    };
                 }
 
                 // No bound reached, we need to retry
@@ -133,13 +176,17 @@ impl RetryPolicy {
                 max_interval,
                 max_attempts,
                 max_duration,
+                on_max_attempts,
             } => {
                 if max_attempts.is_some_and(|max_attempts| max_attempts <= retry_info.retry_count)
                     || max_duration
                         .is_some_and(|max_duration| max_duration <= retry_info.retry_loop_duration)
                 {
                     // Reached either max_attempts or max_duration bound
-                    return NextRetry::DoNotRetry;
+                    return match on_max_attempts {
+                        OnMaxAttempts::FailAsTerminal => NextRetry::FailAsTerminal,
+                        OnMaxAttempts::Pause => NextRetry::Pause,
+                    };
                 }
 
                 NextRetry::Retry(Some(cmp::min(
@@ -163,6 +210,7 @@ mod tests {
             max_interval: Some(Duration::from_millis(500)),
             max_attempts: None,
             max_duration: Some(Duration::from_secs(10)),
+            on_max_attempts: OnMaxAttempts::FailAsTerminal,
         };
 
         assert_eq!(
@@ -191,7 +239,7 @@ mod tests {
                 retry_count: 4,
                 retry_loop_duration: Duration::from_secs(10)
             }),
-            NextRetry::DoNotRetry
+            NextRetry::FailAsTerminal
         );
     }
 }

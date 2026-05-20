@@ -75,6 +75,54 @@ fn explicit_error_notification() {
     assert_eq!(output.next(), None);
 }
 
+#[test]
+fn notify_error_with_should_pause() {
+    let mut output = VMTestCase::new()
+        .input(start_message(1))
+        .input(input_entry_message(b"my-data"))
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.notify_error(
+                Error::internal(Cow::Borrowed("please pause")).with_should_pause(true),
+                None,
+            );
+        });
+    assert_that!(
+        output.next_decoded::<ErrorMessage>().unwrap(),
+        pat!(ErrorMessage {
+            code: eq(500u32),
+            message: eq("please pause".to_owned()),
+            should_pause: eq(true),
+            next_retry_delay: eq(None),
+        })
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn notify_error_with_should_pause_on_v6_emits_unsupported_feature() {
+    let mut output = VMTestCase::with_version(Version::V6)
+        .input(start_message(1))
+        .input(input_entry_message(b"my-data"))
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            vm.notify_error(
+                Error::internal(Cow::Borrowed("please pause")).with_should_pause(true),
+                None,
+            );
+        });
+    assert_that!(
+        output.next_decoded::<ErrorMessage>().unwrap(),
+        pat!(ErrorMessage {
+            code: eq(crate::vm::errors::codes::UNSUPPORTED_FEATURE.code() as u32),
+            should_pause: eq(false),
+        })
+    );
+    assert_eq!(output.next(), None);
+}
+
 mod journal_mismatch {
     use super::*;
     use crate::error::NotificationMetadata;

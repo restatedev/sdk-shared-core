@@ -13,7 +13,7 @@ use bytes::Bytes;
 use std::borrow::Cow;
 use std::time::Duration;
 
-pub use crate::retries::RetryPolicy;
+pub use crate::retries::{OnMaxAttempts, RetryPolicy};
 pub use error::Error;
 pub use headers::HeaderMap;
 #[cfg(feature = "request_identity")]
