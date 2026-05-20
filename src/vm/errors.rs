@@ -86,6 +86,7 @@ impl Error {
             stacktrace: String::new(),
             related_command: None,
             next_retry_delay: None,
+            should_pause: false,
         }
     }
 }

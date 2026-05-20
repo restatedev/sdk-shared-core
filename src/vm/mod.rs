@@ -352,6 +352,10 @@ impl super::VM for CoreVM {
         mut error: Error,
         command_relationship: Option<CommandRelationship>,
     ) {
+        if error.should_pause && self.verify_feature_support("pause", Version::V7).is_err() {
+            return;
+        }
+
         if let Some(command_relationship) = command_relationship {
             error = error.with_related_command_metadata(
                 self.context
@@ -1182,6 +1186,9 @@ impl super::VM for CoreVM {
             if !f.metadata.is_empty() {
                 self.verify_feature_support("terminal error metadata", Version::V6)?;
             }
+        }
+        if retry_policy.should_pause_on_max_attempts() {
+            self.verify_feature_support("pause", Version::V7)?;
         }
 
         self.do_transition(ProposeRunCompletion(

@@ -774,7 +774,18 @@ impl Transition<Context, ProposeRunCompletion> for State {
                                 // We need to retry!
                                 return Err(error);
                             }
-                            NextRetry::DoNotRetry => {
+                            NextRetry::Pause => {
+                                error.should_pause = true;
+                                error.related_command = Some(CommandMetadata::new_named(
+                                    run_name,
+                                    run_command_index,
+                                    MessageType::RunCommand,
+                                ));
+
+                                // Returning error here with should_pause.
+                                return Err(error);
+                            }
+                            NextRetry::FailAsTerminal => {
                                 // We don't retry, but convert the retryable error to actual error
                                 propose_run_completion_message::Result::Failure(messages::Failure {
                                     code: error.code.into(),

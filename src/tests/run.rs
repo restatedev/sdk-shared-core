@@ -1014,6 +1014,7 @@ mod retry_policy {
                 max_attempts: Some(max_attempts as u32),
                 max_duration: None,
                 max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
             },
         );
     }
@@ -1037,6 +1038,7 @@ mod retry_policy {
                 max_attempts: Some(max_attempts as u32),
                 max_duration: None,
                 max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
             },
             Some(Duration::from_secs(1)),
         );
@@ -1054,6 +1056,7 @@ mod retry_policy {
                 max_attempts: None,
                 max_duration: Some(Duration::from_secs(1)),
                 max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
             },
         );
     }
@@ -1073,6 +1076,7 @@ mod retry_policy {
                 interval: Some(Duration::from_secs(1)),
                 max_attempts: None,
                 max_duration: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
             },
             Some(Duration::from_secs(1)),
         );
@@ -1088,6 +1092,7 @@ mod retry_policy {
                 interval: Some(Duration::from_secs(1)),
                 max_attempts: None,
                 max_duration: Some(Duration::from_secs(2)),
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
             },
         );
     }
@@ -1102,6 +1107,7 @@ mod retry_policy {
                 interval: Some(Duration::from_secs(1)),
                 max_attempts: Some(10),
                 max_duration: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
             },
         );
     }
@@ -1118,6 +1124,7 @@ mod retry_policy {
                 max_attempts: Some(0),
                 max_duration: None,
                 max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
             },
         );
     }
@@ -1134,6 +1141,7 @@ mod retry_policy {
                 max_attempts: Some(0),
                 max_duration: None,
                 max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
             },
         );
     }
@@ -1168,6 +1176,7 @@ mod retry_policy {
                             interval: Some(Duration::from_secs(1)),
                             max_attempts: Some(2),
                             max_duration: Some(Duration::from_millis(100)),
+                            on_max_attempts: OnMaxAttempts::FailAsTerminal,
                         }
                     )
                     .is_err());
@@ -1190,5 +1199,140 @@ mod retry_policy {
             })
         );
         assert_eq!(output.next(), None);
+    }
+
+    fn test_should_pause_on_exhaustion(
+        retry_count_since_last_stored_entry: u32,
+        duration_since_last_stored_entry: Duration,
+        attempt_duration: Duration,
+        retry_policy: RetryPolicy,
+    ) {
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                retry_count_since_last_stored_entry,
+                duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis()
+                    as u64,
+                ..start_message(2)
+            })
+            .input(input_entry_message(b"my-data"))
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_string(),
+            })
+            .input(RunCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(run_completion_notification_message::Result::Failure(
+                    Failure {
+                        code: 500,
+                        message: "my-error".to_string(),
+                        metadata: vec![],
+                    },
+                )),
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(vm
+                    .propose_run_completion(
+                        handle,
+                        RunExitResult::RetryableFailure {
+                            error: Error::internal("my-error").with_stacktrace("my-stacktrace"),
+                            attempt_duration,
+                        },
+                        retry_policy,
+                    )
+                    .is_err());
+            });
+
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            pat!(ErrorMessage {
+                code: eq(500),
+                message: eq("my-error".to_string()),
+                stacktrace: eq("my-stacktrace".to_string()),
+                should_pause: eq(true),
+                next_retry_delay: eq(None),
+            })
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn exit_with_retryable_error_fixed_delay_pause_on_max_attempts() {
+        test_should_pause_on_exhaustion(
+            9,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            RetryPolicy::FixedDelay {
+                interval: Some(Duration::from_secs(1)),
+                max_attempts: Some(10),
+                max_duration: None,
+                on_max_attempts: OnMaxAttempts::Pause,
+            },
+        );
+    }
+
+    #[test]
+    fn exit_with_retryable_error_fixed_delay_pause_on_max_duration() {
+        test_should_pause_on_exhaustion(
+            1,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            RetryPolicy::FixedDelay {
+                interval: Some(Duration::from_secs(1)),
+                max_attempts: None,
+                max_duration: Some(Duration::from_secs(2)),
+                on_max_attempts: OnMaxAttempts::Pause,
+            },
+        );
+    }
+
+    #[test]
+    fn exit_with_retryable_error_exponential_pause_on_max_attempts() {
+        test_should_pause_on_exhaustion(
+            0,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 1.0,
+                max_attempts: Some(0),
+                max_duration: None,
+                max_interval: None,
+                on_max_attempts: OnMaxAttempts::Pause,
+            },
+        );
+    }
+
+    #[test]
+    fn propose_run_completion_with_pause_policy_on_v6_returns_unsupported_feature() {
+        let mut vm = CoreVM::mock_init(Version::V6);
+        let encoder = Encoder::new(Version::V6);
+        vm.notify_input(encoder.encode(&start_message(1)));
+        vm.notify_input(encoder.encode(&input_entry_message(b"my-data")));
+        vm.notify_input_closed();
+        vm.sys_input().unwrap();
+        let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+
+        let err = vm
+            .propose_run_completion(
+                handle,
+                RunExitResult::RetryableFailure {
+                    error: Error::internal("my-error"),
+                    attempt_duration: Duration::from_millis(0),
+                },
+                RetryPolicy::FixedDelay {
+                    interval: Some(Duration::from_secs(1)),
+                    max_attempts: Some(1),
+                    max_duration: None,
+                    on_max_attempts: OnMaxAttempts::Pause,
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            err.code,
+            crate::vm::errors::codes::UNSUPPORTED_FEATURE.code()
+        );
     }
 }
