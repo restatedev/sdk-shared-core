@@ -367,6 +367,15 @@ pub enum AwaitResponse {
     CancelSignalReceived,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, strum::EnumIs)]
+#[repr(u8)]
+pub enum State {
+    WaitingPreFlight = 0,
+    Replaying = 1,
+    Processing = 2,
+    Closed = 3,
+}
+
 pub trait VM: Sized {
     fn new(request_headers: impl HeaderMap, options: VMOptions) -> VMResult<Self>;
 
@@ -496,14 +505,8 @@ pub trait VM: Sized {
 
     fn sys_end(&mut self) -> VMResult<()>;
 
-    // Returns true if the state machine is waiting pre-flight to complete
-    fn is_waiting_preflight(&self) -> bool;
-
-    // Returns true if the state machine is replaying
-    fn is_replaying(&self) -> bool;
-
-    /// Returns true if the state machine is in processing state
-    fn is_processing(&self) -> bool;
+    /// Returns the current state of the state machine.
+    fn state(&self) -> State;
 
     /// Returns last command index. Returns `-1` if there was no progress in the journal.
     fn last_command_index(&self) -> i64;

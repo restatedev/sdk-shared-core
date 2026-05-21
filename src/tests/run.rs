@@ -436,13 +436,13 @@ fn replay_without_completion_with_any() {
                 .unwrap(),
                 AwaitResponse::AnyCompleted
             );
-            assert!(vm.is_replaying());
+            assert!(vm.state().is_replaying());
 
             // Now we try to run!
             let second_sleep_handle = vm
                 .sys_sleep(Default::default(), Duration::ZERO, None)
                 .unwrap();
-            assert!(vm.is_processing());
+            assert!(vm.state().is_processing());
             assert_that!(
                 vm.do_await(UnresolvedFuture::FirstCompleted(vec![
                     UnresolvedFuture::Single(run_handle),

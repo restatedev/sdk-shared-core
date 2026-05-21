@@ -174,6 +174,10 @@ impl CoreVM {
             ImplicitCancellationOption::Enabled { .. }
         )
     }
+
+    fn is_processing(&self) -> bool {
+        matches!(&self.last_transition, Ok(State::Processing { .. }))
+    }
 }
 
 impl fmt::Debug for CoreVM {
@@ -1418,19 +1422,16 @@ impl super::VM for CoreVM {
         self.do_transition(SysEnd)
     }
 
-    fn is_waiting_preflight(&self) -> bool {
-        matches!(
-            &self.last_transition,
-            Ok(State::WaitingStart) | Ok(State::WaitingReplayEntries { .. })
-        )
-    }
-
-    fn is_replaying(&self) -> bool {
-        matches!(&self.last_transition, Ok(State::Replaying { .. }))
-    }
-
-    fn is_processing(&self) -> bool {
-        matches!(&self.last_transition, Ok(State::Processing { .. }))
+    #[inline]
+    fn state(&self) -> crate::State {
+        match &self.last_transition {
+            Ok(State::WaitingStart) | Ok(State::WaitingReplayEntries { .. }) => {
+                crate::State::WaitingPreFlight
+            }
+            Ok(State::Replaying { .. }) => crate::State::Replaying,
+            Ok(State::Processing { .. }) => crate::State::Processing,
+            Ok(State::Closed) | Err(_) => crate::State::Closed,
+        }
     }
 
     fn last_command_index(&self) -> i64 {
