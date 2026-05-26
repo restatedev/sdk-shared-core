@@ -6,6 +6,13 @@ Shared core to build SDKs in various languages. Currently used by:
 * [Python SDK](https://github.com/restatedev/sdk-python)
 * [Rust SDK](https://github.com/restatedev/sdk-rust)
 
+## Documentation
+
+* [Service invocation protocol](docs/service-invocation-protocol.md) — the wire protocol
+  spoken between the Restate runtime and a service deployment.
+* [SDK integration guide](docs/sdk-integration.md) — how to build a new SDK on top of this crate:
+  driving the VM, the progress loop, and the invocation lifecycle.
+
 ## Versions
 
 This library follows [Semantic Versioning](https://semver.org/).

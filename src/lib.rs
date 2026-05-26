@@ -512,46 +512,5 @@ pub trait VM: Sized {
     fn last_command_index(&self) -> i64;
 }
 
-// HOW TO USE THIS API
-//
-// pre_user_code:
-//     while !vm.is_ready_to_execute() {
-//         match io.read_input() {
-//             buffer => vm.notify_input(buffer),
-//             EOF => vm.notify_input_closed()
-//         }
-//     }
-//
-// sys_[something]:
-//     try {
-//         vm.sys_[something]()
-//         io.write_out(vm.take_output())
-//     } catch (e) {
-//         log(e)
-//         io.write_out(vm.take_output())
-//         throw e
-//     }
-//
-// await_restate_future:
-//     vm.notify_await_point(handle);
-//     loop {
-//         // Result here can be value, not_ready, suspended, vm error
-//         let result = vm.take_async_result(handle);
-//         if result.is_not_ready() {
-//             match await io.read_input() {
-//                buffer => vm.notify_input(buffer),
-//                EOF => vm.notify_input_closed()
-//             }
-//         }
-//         return result
-//     }
-//
-// post_user_code:
-//     // Consume vm.take_output() until EOF
-//     while buffer = vm.take_output() {
-//         io.write_out(buffer)
-//     }
-//     io.close()
-
 #[cfg(test)]
 mod tests;
