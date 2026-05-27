@@ -6,10 +6,14 @@ use test_log::test;
 
 fn echo_handler(vm: &mut CoreVM) {
     assert2::assert!(let Input { input, .. } = vm.sys_input().unwrap());
-    assert_eq!(input, b"my-data".to_vec());
+    let input = input.expect_in_memory();
+    assert_eq!(input.as_ref(), b"my-data");
 
-    vm.sys_write_output(NonEmptyValue::Success(input), PayloadOptions::default())
-        .unwrap();
+    vm.sys_write_output(
+        NonEmptyValue::Success(input.into()),
+        PayloadOptions::default(),
+    )
+    .unwrap();
     vm.sys_end().unwrap();
 }
 
@@ -65,7 +69,7 @@ fn headers() {
             );
 
             vm.sys_write_output(
-                NonEmptyValue::Success(Bytes::default()),
+                NonEmptyValue::Success(Bytes::default().into()),
                 PayloadOptions::default(),
             )
             .unwrap();
@@ -103,7 +107,7 @@ fn start_message_v7_fields_surface_on_input() {
             assert_eq!(input.idempotency_key, Some("idem-7".to_string()));
 
             vm.sys_write_output(
-                NonEmptyValue::Success(Bytes::default()),
+                NonEmptyValue::Success(Bytes::default().into()),
                 PayloadOptions::default(),
             )
             .unwrap();

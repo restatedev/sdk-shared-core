@@ -1,16 +1,23 @@
+use crate::buffer::BufferWriter;
 use crate::service_protocol::{MessageHeader, MessageType, NotificationResult};
 use crate::Version;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes};
 use pastey::paste;
 use std::borrow::Cow;
 use std::fmt;
 
-pub trait RestateMessage: prost::Message + Default {
+pub trait RestateMessage: crate::proto::Message + Default {
     fn ty() -> MessageType;
 }
 
+/// Encode side trait for messages that get sent on the output stream.
+///
+/// Writes the 8-byte header followed by the prost-shaped body straight
+/// into a [`BufferWriter`], so payload-bearing fields can dispatch on
+/// `Buffer::Host` and emit `Buffer::Host` references in-place without
+/// materialising the host buffer into shared-core linear memory.
 pub trait RestateEncodableMessage {
-    fn encode(&self, service_protocol_version: Version) -> Bytes;
+    fn encode_into(&self, service_protocol_version: Version, buf: &mut BufferWriter);
 }
 
 pub trait NamedCommandMessage {
@@ -58,11 +65,12 @@ macro_rules! impl_message_traits {
     };
     ($name:ident: encodable) => {
          impl RestateEncodableMessage for paste! { [<$name Message>] } {
-            fn encode(
+            fn encode_into(
                 &self,
                 _: Version,
-            ) -> Bytes {
-                encode_message(self)
+                buf: &mut BufferWriter,
+            ) {
+                encode_message_into(self, buf)
             }
         }
     };
@@ -91,16 +99,18 @@ impl_message_traits!(AwaitingOn: core);
 impl_message_traits!(ProposeRunCompletionAck: core);
 
 impl RestateEncodableMessage for ProposeRunCompletionMessage {
-    fn encode(&self, service_protocol_version: Version) -> Bytes {
+    fn encode_into(&self, service_protocol_version: Version, buf: &mut BufferWriter) {
         if service_protocol_version >= Version::V7 {
             // The shared core in Protocol V7+ always expects from the runtime a ProposeRunCompletionAck instead of RunCompletionMessage.
             // To enable this behavior in the runtime, we must send `requested_ack`.
             // See AsyncResultsState::cache_run_completion for more details.
-            encode_message_with_custom_header(self, |t, len| {
-                MessageHeader::new_with_requested_ack(t, true, len)
-            })
+            encode_message_with_custom_header_into(
+                self,
+                |t, len| MessageHeader::new_with_requested_ack(t, true, len),
+                buf,
+            )
         } else {
-            encode_message(self)
+            encode_message_into(self, buf)
         }
     }
 }
@@ -108,11 +118,11 @@ impl RestateEncodableMessage for ProposeRunCompletionMessage {
 // We implement suspension message manually to transcode for protocol differences
 impl_message_traits!(Suspension: message);
 impl RestateEncodableMessage for SuspensionMessage {
-    fn encode(&self, service_protocol_version: Version) -> Bytes {
+    fn encode_into(&self, service_protocol_version: Version, buf: &mut BufferWriter) {
         if service_protocol_version >= Version::V7 {
-            encode_message(self)
+            encode_message_into(self, buf)
         } else {
-            encode_message(&SuspensionMessageV6::new(self))
+            encode_message_into(&SuspensionMessageV6::new(self), buf)
         }
     }
 }
@@ -122,7 +132,7 @@ impl RestateMessage for SuspensionMessageV6 {
         MessageType::Suspension
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::restate_wire_derive::Message)]
 struct SuspensionMessageV6 {
     #[prost(uint32, repeated, tag = "1")]
     waiting_completions: Vec<u32>,
@@ -608,7 +618,11 @@ impl CommandMessageHeaderDiff for CallCommandMessage {
         }
 
         if self.parameter != expected.parameter {
-            f.write_bytes_diff("parameter", &self.parameter, &expected.parameter)?;
+            f.write_diff(
+                "parameter",
+                payload_debug(&self.parameter),
+                payload_debug(&expected.parameter),
+            )?;
         }
 
         if self.key != expected.key {
@@ -688,7 +702,11 @@ impl CommandMessageHeaderDiff for OneWayCallCommandMessage {
         }
 
         if self.parameter != expected.parameter {
-            f.write_bytes_diff("parameter", &self.parameter, &expected.parameter)?;
+            f.write_diff(
+                "parameter",
+                payload_debug(&self.parameter),
+                payload_debug(&expected.parameter),
+            )?;
         }
 
         if self.invoke_time != expected.invoke_time {
@@ -947,11 +965,30 @@ impl<'a> fmt::Display for DisplayOptionalString<'a> {
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Ok(content) = std::str::from_utf8(&self.content) {
-            write!(f, "'{content}'")
-        } else {
-            write!(f, "{:?}", &self.content)
+        match &self.content {
+            crate::Buffer::InMemory(b) => {
+                if let Ok(content) = std::str::from_utf8(b) {
+                    write!(f, "'{content}'")
+                } else {
+                    write!(f, "{b:?}")
+                }
+            }
+            crate::Buffer::Host(h) => write!(f, "<host buffer {:?}>", h),
         }
+    }
+}
+
+/// Format a `Buffer` for inclusion in diff output.
+pub(crate) fn payload_debug(p: &crate::Buffer) -> String {
+    match p {
+        crate::Buffer::InMemory(b) => {
+            if let Ok(s) = std::str::from_utf8(b) {
+                format!("'{}'", s)
+            } else {
+                format!("{:?}", b)
+            }
+        }
+        crate::Buffer::Host(h) => format!("<host buffer {:?}>", h),
     }
 }
 
@@ -1011,6 +1048,14 @@ impl From<crate::Header> for Header {
 
 impl From<Bytes> for Value {
     fn from(content: Bytes) -> Self {
+        Self {
+            content: crate::Buffer::InMemory(content),
+        }
+    }
+}
+
+impl From<crate::Buffer> for Value {
+    fn from(content: crate::Buffer) -> Self {
         Self { content }
     }
 }
@@ -1032,35 +1077,24 @@ impl From<NotificationResult> for crate::Value {
     }
 }
 
+/// Encode a message — header + prost-shaped body — into a [`BufferWriter`].
+///
+/// This is the host-aware emission path. `Buffer::Host` fields dispatched
+/// through it produce `Buffer::Host(handle)` references in the output
+/// stream rather than materialising the host buffer into shared-core memory.
 #[inline]
-fn encode_message<T: RestateMessage>(msg: &T) -> Bytes {
-    encode_message_with_custom_header(msg, MessageHeader::new)
+fn encode_message_into<T: RestateMessage>(msg: &T, buf: &mut BufferWriter) {
+    encode_message_with_custom_header_into(msg, MessageHeader::new, buf)
 }
 
 #[inline]
-fn encode_message_with_custom_header<T: RestateMessage>(
+fn encode_message_with_custom_header_into<T: RestateMessage>(
     msg: &T,
     header_factory: impl FnOnce(MessageType, u32) -> MessageHeader,
-) -> Bytes {
-    let msg_encoded_len = msg.encoded_len();
-    // Header is 8 bytes
-    let buf_len = 8 + msg_encoded_len;
-    let mut buf = BytesMut::with_capacity(buf_len);
-
-    // Write header out
-    let header = header_factory(T::ty(), msg_encoded_len as u32);
+    buf: &mut BufferWriter,
+) {
+    let msg_encoded_len = crate::proto::Message::encoded_len(msg) as u32;
+    let header = header_factory(T::ty(), msg_encoded_len);
     buf.put_u64(header.into());
-
-    // Write payload out
-    // Note:
-    // prost::EncodeError can be triggered only by a buffer smaller than required,
-    // but because we create the buffer a couple of lines above using the size computed by prost,
-    // this can happen only if there is a very bad bug in prost.
-    msg.encode(&mut buf).expect(
-        "Encoding messages should be infallible, \
-                    this error indicates a bug in the invoker code. \
-                    Please contact the Restate developers.",
-    );
-
-    buf.freeze()
+    crate::proto::Message::encode_raw(msg, buf);
 }

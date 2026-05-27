@@ -1,11 +1,11 @@
+use crate::buffer::BufferWriter;
 use crate::error::CommandMetadata;
 use crate::service_protocol::messages::{
     NamedCommandMessage, RestateEncodableMessage, RestateMessage,
 };
-use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{AwaitingOnPolicy, CommandRelationship, EntryRetryInfo};
+use crate::service_protocol::{MessageType, Version};
+use crate::{AwaitingOnPolicy, Buffer, CommandRelationship, EntryRetryInfo};
 use bytes::Bytes;
-use bytes_utils::SegmentedBuf;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -115,31 +115,43 @@ impl Default for Journal {
     }
 }
 
+/// Queue of output buffers produced by shared-core.
+///
+/// Drain via [`Self::take_next`], which returns one [`Buffer`] at a
+/// time in emission order. After [`Self::send_eof`] no further messages
+/// will be accepted by [`Self::send`].
 pub struct Output {
-    encoder: Encoder,
-    pub(crate) buffer: SegmentedBuf<Bytes>,
+    version: Version,
+    writer: BufferWriter,
     is_closed: bool,
 }
 
 impl Output {
     pub(crate) fn new(version: Version) -> Self {
         Self {
-            encoder: Encoder::new(version),
-            buffer: Default::default(),
+            version,
+            writer: BufferWriter::new(),
             is_closed: false,
         }
     }
 
+    /// Queue a protocol message for emission. No-op after `send_eof`.
     pub(crate) fn send<M: RestateEncodableMessage>(&mut self, msg: &M) {
-        if !self.is_closed {
-            self.buffer.push(self.encoder.encode(msg))
+        if self.is_closed {
+            return;
         }
+        msg.encode_into(self.version, &mut self.writer);
+    }
+
+    pub(crate) fn take_next(&mut self) -> Option<Buffer> {
+        self.writer.pop_front()
     }
 
     pub(crate) fn send_eof(&mut self) {
         self.is_closed = true;
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_closed(&self) -> bool {
         self.is_closed
     }
@@ -149,7 +161,7 @@ pub(crate) enum EagerGetState {
     /// Means we don't have sufficient information to establish whether state is there or not, so the VM should interact with the runtime to deal with it.
     Unknown,
     Empty,
-    Value(Bytes),
+    Value(Buffer),
 }
 
 #[allow(dead_code)]
@@ -162,7 +174,7 @@ pub(crate) enum EagerGetStateKeys {
 pub(crate) struct EagerState {
     is_partial: bool,
     // None means Void, Value means value
-    values: HashMap<String, Option<Bytes>>,
+    values: HashMap<String, Option<Buffer>>,
 }
 
 impl Default for EagerState {
@@ -175,7 +187,7 @@ impl Default for EagerState {
 }
 
 impl EagerState {
-    pub(crate) fn new(is_partial: bool, values: Vec<(String, Bytes)>) -> Self {
+    pub(crate) fn new(is_partial: bool, values: Vec<(String, Buffer)>) -> Self {
         Self {
             is_partial,
             values: values
@@ -210,7 +222,7 @@ impl EagerState {
         }
     }
 
-    pub(crate) fn set(&mut self, k: String, v: Bytes) {
+    pub(crate) fn set(&mut self, k: String, v: Buffer) {
         self.values.insert(k, Some(v));
     }
 

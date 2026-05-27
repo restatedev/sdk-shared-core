@@ -1,6 +1,6 @@
 use crate::service_protocol::messages::{start_message::StateEntry, *};
 use crate::tests::{is_closed, VMTestCase};
-use crate::{CoreVM, NonEmptyValue, PayloadOptions, UnresolvedFuture, Value, VM};
+use crate::{Buffer, CoreVM, NonEmptyValue, PayloadOptions, UnresolvedFuture, Value, VM};
 use bytes::Bytes;
 use googletest::assert_that;
 use googletest::matchers::pat;
@@ -24,12 +24,12 @@ fn get_state_handler(vm: &mut CoreVM) {
 
     let str_result = match vm.take_notification(h1).unwrap().unwrap() {
         Value::Void => "Unknown".to_owned(),
-        Value::Success(s) => String::from_utf8(s.to_vec()).unwrap(),
+        Value::Success(s) => String::from_utf8(s.expect_in_memory().to_vec()).unwrap(),
         _ => panic!("Unexpected variants"),
     };
 
     vm.sys_write_output(
-        NonEmptyValue::Success(Bytes::copy_from_slice(str_result.as_bytes())),
+        NonEmptyValue::Success(Bytes::copy_from_slice(str_result.as_bytes()).into()),
         PayloadOptions::default(),
     )
     .unwrap();
@@ -282,7 +282,7 @@ mod eager {
         };
 
         vm.sys_write_output(
-            NonEmptyValue::Success(Bytes::copy_from_slice(str_result.as_bytes())),
+            NonEmptyValue::Success(Bytes::copy_from_slice(str_result.as_bytes()).into()),
             PayloadOptions::default(),
         )
         .unwrap();
@@ -393,7 +393,7 @@ mod eager {
                 known_entries: 1,
                 state_map: vec![StateEntry {
                     key: Bytes::from_static(b"STATE"),
-                    value: Bytes::from_static(b"Francesco"),
+                    value: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 }],
                 key: "my-greeter".to_owned(),
                 ..Default::default()
@@ -433,7 +433,7 @@ mod eager {
                 known_entries: 1,
                 state_map: vec![StateEntry {
                     key: Bytes::from_static(b"STATE"),
-                    value: Bytes::from_static(b"Francesco"),
+                    value: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 }],
                 partial_state: true,
                 key: "my-greeter".to_owned(),
@@ -522,9 +522,11 @@ mod eager {
             _ => panic!("Unexpected variants"),
         };
 
+        let get_bytes = get_result.expect_in_memory();
+        let input_bytes = input.clone().expect_in_memory();
         vm.sys_state_set(
             "STATE".to_owned(),
-            Bytes::from([get_result.clone(), input.clone()].concat()),
+            Bytes::from([get_bytes.as_ref(), input_bytes.as_ref()].concat()),
             PayloadOptions::default(),
         )
         .unwrap();
@@ -572,7 +574,7 @@ mod eager {
                 known_entries: 1,
                 state_map: vec![StateEntry {
                     key: Bytes::from_static(b"STATE"),
-                    value: Bytes::from_static(b"Francesco"),
+                    value: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 }],
                 partial_state: true,
                 key: "my-greeter".to_owned(),
@@ -738,7 +740,7 @@ mod eager {
                 known_entries: 1,
                 state_map: vec![StateEntry {
                     key: Bytes::from_static(b"STATE"),
-                    value: Bytes::from_static(b"Francesco"),
+                    value: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 }],
                 partial_state: true,
                 key: "my-greeter".to_owned(),
@@ -902,11 +904,11 @@ mod eager {
                 state_map: vec![
                     StateEntry {
                         key: Bytes::from_static(b"STATE"),
-                        value: Bytes::from_static(b"Francesco"),
+                        value: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                     },
                     StateEntry {
                         key: Bytes::from_static(b"ANOTHER_STATE"),
-                        value: Bytes::from_static(b"Francesco"),
+                        value: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                     },
                 ],
                 partial_state: true,
@@ -1055,7 +1057,7 @@ mod eager {
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         vm.sys_write_output(
-            NonEmptyValue::Success(Bytes::default()),
+            NonEmptyValue::Success(Bytes::default().into()),
             PayloadOptions::default(),
         )
         .unwrap();
@@ -1175,7 +1177,7 @@ mod state_keys {
             return;
         }
         let output = match vm.take_notification(h1).unwrap().unwrap() {
-            Value::StateKeys(keys) => NonEmptyValue::Success(Bytes::from(keys.join(","))),
+            Value::StateKeys(keys) => NonEmptyValue::Success(Bytes::from(keys.join(",")).into()),
             _ => panic!("Unexpected variants"),
         };
 
@@ -1339,11 +1341,11 @@ mod state_keys {
                 state_map: vec![
                     StateEntry {
                         key: Bytes::from_static(b"MY-STATE"),
-                        value: Bytes::from_static(b"Francesco"),
+                        value: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                     },
                     StateEntry {
                         key: Bytes::from_static(b"ANOTHER-STATE"),
-                        value: Bytes::from_static(b"Till"),
+                        value: Buffer::InMemory(Bytes::from_static(b"Till")),
                     },
                 ],
                 ..Default::default()

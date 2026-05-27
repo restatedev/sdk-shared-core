@@ -186,11 +186,11 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             assert!(vm.is_completed(h2));
             assert_that!(
                 vm.take_notification(h2),
-                ok(some(eq(Value::Success(completion.clone()))))
+                ok(some(eq(Value::Success(completion.clone().into()))))
             );
 
             vm.sys_write_output(
-                NonEmptyValue::Success(completion.clone()),
+                NonEmptyValue::Success(completion.clone().into()),
                 PayloadOptions::default(),
             )
             .unwrap();

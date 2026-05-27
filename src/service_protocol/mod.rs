@@ -13,7 +13,7 @@ mod header;
 pub(crate) mod messages;
 mod version;
 
-pub(crate) use encoding::{Decoder, DecodingError, Encoder, RawMessage};
+pub(crate) use encoding::{Decoder, DecodingError, RawMessage};
 pub(crate) use header::{MessageHeader, MessageType};
 pub(crate) use version::ContentTypeError;
 pub use version::Version;
@@ -22,15 +22,19 @@ pub(crate) type NotificationId = messages::notification_template::Id;
 pub(crate) type NotificationResult = messages::notification_template::Result;
 pub(crate) type CompletionId = u32;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Notification {
     pub(crate) id: NotificationId,
     pub(crate) result: NotificationResult,
 }
 
-impl NotificationResult {
-    // A notification is considered failure only if it's failure variant
-    pub fn is_failure(&self) -> bool {
+pub(crate) trait NotificationResultExt {
+    /// A notification is considered failure only if it's the failure variant.
+    fn is_failure(&self) -> bool;
+}
+
+impl NotificationResultExt for NotificationResult {
+    fn is_failure(&self) -> bool {
         matches!(self, NotificationResult::Failure(_))
     }
 }

@@ -1,6 +1,8 @@
 mod async_result;
 mod calls;
+mod derive_roundtrip;
 mod failures;
+mod host_payload;
 mod implicit_cancellation;
 mod input_output;
 mod promise;
@@ -11,15 +13,17 @@ mod suspensions;
 
 use super::*;
 
+use crate::buffer::BufferWriter;
 use crate::service_protocol::messages::{
     output_command_message, signal_notification_message, ErrorMessage, InputCommandMessage,
     OutputCommandMessage, RestateEncodableMessage, RestateMessage, SignalNotificationMessage,
     StartMessage, SuspensionMessage,
 };
 use crate::service_protocol::{
-    messages, CompletionId, Decoder, Encoder, MessageHeader, RawMessage, Version,
+    messages, CompletionId, Decoder, MessageHeader, RawMessage, Version,
 };
-use bytes::Bytes;
+use crate::Buffer;
+use bytes::{BufMut, Bytes, BytesMut};
 use googletest::prelude::*;
 use test_log::test;
 
@@ -61,6 +65,48 @@ impl From<u32> for UnresolvedFuture {
 }
 
 // --- Test infra
+
+/// Tests-only message encoder. Wraps `BufferWriter` and flattens its
+/// output into a single `Bytes` so tests can feed a contiguous wire
+/// buffer into `Decoder::push` or `CoreVM::notify_input`. Prod doesn't
+/// need this — `Output::send` writes directly into the long-lived
+/// writer and the embedder drains buffers one at a time.
+pub struct Encoder {
+    service_protocol_version: Version,
+}
+
+impl Encoder {
+    pub fn new(service_protocol_version: Version) -> Self {
+        assert!(
+            service_protocol_version >= Version::minimum_supported_version(),
+            "Encoder only supports service protocol version {:?} <= x <= {:?}",
+            Version::minimum_supported_version(),
+            Version::maximum_supported_version()
+        );
+        Self {
+            service_protocol_version,
+        }
+    }
+
+    /// Encode a protocol message into a single contiguous `Bytes`.
+    /// Panics on `Buffer::Host` payloads — by design, tests that need
+    /// host payloads should go through `Output::send` instead.
+    pub fn encode<M: RestateEncodableMessage>(&self, msg: &M) -> Bytes {
+        let mut buf = BufferWriter::new();
+        msg.encode_into(self.service_protocol_version, &mut buf);
+        let mut out = BytesMut::new();
+        for buffer in buf.drain() {
+            match buffer {
+                Buffer::InMemory(b) => out.put_slice(&b),
+                Buffer::Host(_) => panic!(
+                    "Encoder::encode hit a Buffer::Host — host buffers must \
+                     flow through Output::send instead."
+                ),
+            }
+        }
+        out.freeze()
+    }
+}
 
 impl CoreVM {
     fn mock_init(version: Version) -> CoreVM {
@@ -139,28 +185,42 @@ impl VMTestCase {
     }
 }
 
-struct OutputIterator(Decoder);
+struct OutputIterator {
+    decoder: Decoder,
+}
+
+/// Test helper: drain `vm.take_output_next` and concatenate every inline
+/// fragment into a single `Bytes`. Panics on `Host` fragments — all
+/// existing tests use inline payloads only.
+fn drain_and_concat(vm: &mut impl VM) -> Bytes {
+    let mut buf = bytes::BytesMut::new();
+    while let Some(fragment) = vm.take_output_next() {
+        match fragment {
+            Buffer::InMemory(b) => buf.extend_from_slice(&b),
+            Buffer::Host(_) => {
+                panic!("drain_and_concat: Host fragments not supported in this test helper")
+            }
+        }
+    }
+    buf.freeze()
+}
 
 impl OutputIterator {
     fn collect_vm(vm: &mut impl VM) -> Self {
         let mut decoder = Decoder::new(Version::maximum_supported_version());
-        while let TakeOutputResult::Buffer(b) = vm.take_output() {
-            decoder.push(b);
-        }
-        assert_eq!(vm.take_output(), TakeOutputResult::EOF);
-
-        Self(decoder)
+        decoder.push(drain_and_concat(vm));
+        Self { decoder }
     }
 
     fn next_decoded<M: RestateMessage>(&mut self) -> Option<M> {
-        self.0
+        self.decoder
             .consume_next()
             .unwrap()
             .map(|msg| msg.decode_to::<M>(0).unwrap())
     }
 
     fn next_with_header_decoded<M: RestateMessage>(&mut self) -> Option<(MessageHeader, M)> {
-        self.0.consume_next().unwrap().map(|raw| {
+        self.decoder.consume_next().unwrap().map(|raw| {
             let header = raw.header();
             let msg = raw.decode_to::<M>(0).unwrap();
             (header, msg)
@@ -172,7 +232,7 @@ impl Iterator for OutputIterator {
     type Item = RawMessage;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.consume_next().unwrap()
+        self.decoder.consume_next().unwrap()
     }
 }
 
@@ -299,10 +359,8 @@ pub fn empty_signal_notification(id: u32) -> SignalNotificationMessage {
 #[test]
 fn take_output_on_newly_initialized_vm() {
     let mut vm = CoreVM::mock_init(Version::maximum_supported_version());
-    assert_that!(
-        vm.take_output(),
-        eq(TakeOutputResult::Buffer(Bytes::default()))
-    );
+    // A fresh VM has no output queued yet.
+    assert!(vm.take_output_next().is_none());
 }
 
 #[test]

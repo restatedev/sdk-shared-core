@@ -17,16 +17,16 @@ use crate::vm::errors::{
 use crate::vm::run_state::RunState;
 use crate::vm::transitions::*;
 use crate::{
-    AttachInvocationTarget, AwaitResponse, CallHandle, CommandRelationship, Error, Header,
+    AttachInvocationTarget, AwaitResponse, Buffer, CallHandle, CommandRelationship, Error, Header,
     ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
     NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, SendHandle,
-    TakeOutputResult, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult, Value,
+    Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult, Value,
     CANCEL_NOTIFICATION_HANDLE,
 };
 use async_results_state::AsyncResultsState;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use context::{Context, Output};
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
@@ -204,6 +204,11 @@ impl fmt::Debug for CoreVM {
 }
 
 // --- Bound checks
+//
+// `CoreVM` must be `Send` so embedders can move the VM across threads
+// (e.g. spawning the handler on an executor). It does NOT need to be
+// `Sync`: shared-core never lends `&CoreVM` to multiple threads at once.
+
 #[allow(unused)]
 const fn is_send<T: Send>() {}
 const _: () = is_send::<CoreVM>();
@@ -294,7 +299,7 @@ impl super::VM for CoreVM {
 
     #[instrument(
         level = "trace",
-        skip(self),
+        skip(self, buffer),
         fields(
             restate.invocation.id = self.debug_invocation_id(),
             restate.protocol.state = self.debug_state(),
@@ -303,7 +308,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn notify_input(&mut self, buffer: Bytes) {
+    fn notify_input(&mut self, buffer: impl Into<Buffer>) {
         self.decoder.push(buffer);
         loop {
             match self.decoder.consume_next() {
@@ -382,19 +387,8 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn take_output(&mut self) -> TakeOutputResult {
-        if self.context.output.buffer.has_remaining() {
-            TakeOutputResult::Buffer(
-                self.context
-                    .output
-                    .buffer
-                    .copy_to_bytes(self.context.output.buffer.remaining()),
-            )
-        } else if !self.context.output.is_closed() {
-            TakeOutputResult::Buffer(Bytes::default())
-        } else {
-            TakeOutputResult::EOF
-        }
+    fn take_output_next(&mut self) -> Option<Buffer> {
+        self.context.output.take_next()
     }
 
     #[instrument(
@@ -610,10 +604,11 @@ impl super::VM for CoreVM {
     fn sys_state_set(
         &mut self,
         key: String,
-        value: Bytes,
+        value: impl Into<Buffer>,
         options: PayloadOptions,
     ) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Set state {key}'");
+        let value: Buffer = value.into();
         self.context.eager_state.set(key.clone(), value.clone());
         self.do_transition(SysNonCompletableEntry(
             SetStateCommandMessage {
@@ -736,7 +731,7 @@ impl super::VM for CoreVM {
     fn sys_call(
         &mut self,
         target: Target,
-        input: Bytes,
+        input: impl Into<Buffer>,
         name: Option<String>,
         options: PayloadOptions,
     ) -> VMResult<CallHandle> {
@@ -746,6 +741,7 @@ impl super::VM for CoreVM {
             target.service,
             target.handler
         );
+        let input: Buffer = input.into();
         if let Some(idempotency_key) = &target.idempotency_key {
             if idempotency_key.is_empty() {
                 self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
@@ -830,7 +826,7 @@ impl super::VM for CoreVM {
     fn sys_send(
         &mut self,
         target: Target,
-        input: Bytes,
+        input: impl Into<Buffer>,
         delay: Option<Duration>,
         name: Option<String>,
         options: PayloadOptions,
@@ -841,6 +837,7 @@ impl super::VM for CoreVM {
             target.service,
             target.handler
         );
+        let input: Buffer = input.into();
         if let Some(idempotency_key) = &target.idempotency_key {
             if idempotency_key.is_empty() {
                 self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
