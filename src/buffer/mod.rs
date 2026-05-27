@@ -48,13 +48,12 @@ mod host;
 mod reader;
 mod writer;
 
-// Re-export so the public API surface stays under `crate::buffer::*` —
-// the submodules are pure code organisation.
-#[cfg(test)]
-pub use host::InMemoryHostBufferRegistry;
-pub use host::{HostBufferHandle, HostBufferRegistry, NopHostBufferRegistry};
+pub use host::{HostBufferHandle, HostBufferRegistry, NopHostBufferRegistry, Segment};
 pub use reader::BufferReader;
 pub use writer::BufferWriter;
+
+#[cfg(test)]
+pub(crate) use host::mocks::InMemoryHostBufferRegistry;
 
 // =====================================================================
 // Buffer
@@ -256,6 +255,8 @@ impl<B: RestateBuf> RestateBuf for ::bytes::buf::Take<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use super::host::mocks::InMemoryHostBufferRegistry;
     use crate::proto::Message;
 
     impl Buffer {
@@ -392,7 +393,10 @@ mod tests {
         out
     }
 
-    fn concat_buffers_with_registry(bufs: &[Buffer], registry: &dyn HostBufferRegistry) -> Vec<u8> {
+    fn concat_buffers_with_registry(
+        bufs: &[Buffer],
+        _registry: &dyn HostBufferRegistry,
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         for f in bufs {
             match f {
@@ -401,7 +405,10 @@ mod tests {
                     let len = h.len() as usize;
                     let start = out.len();
                     out.resize(start + len, 0);
-                    registry.read_into(h, 0, len, &mut out[start..]);
+                    // Dispatch through the handle so multi-segment works
+                    // automatically; the handle iterates its segments
+                    // and calls the registry per segment.
+                    h.read_into(0, len, &mut out[start..]);
                 }
             }
         }
@@ -681,6 +688,107 @@ mod tests {
         src.push(Buffer::Host(handle));
         assert_eq!(src.try_take_host_slice(7), None);
         assert_eq!(src.remaining(), 6, "cursor must not move on None");
+    }
+
+    #[test]
+    fn buffer_reader_try_take_coalesces_across_host_segments() {
+        // The decoder's cross-segment case: a message body spans two
+        // (or more) `Buffer::Host` segments. The fast path should
+        // coalesce them into a multi-segment handle rather than
+        // materialising into shared-core memory.
+        let registry = Arc::new(InMemoryHostBufferRegistry::new());
+        let a = registry.clone().make_handle(b"hello ");
+        let b = registry.clone().make_handle(b"world");
+        let a_id = a.id();
+        let b_id = b.id();
+        let mut src = BufferReader::new();
+        src.push(Buffer::Host(a));
+        src.push(Buffer::Host(b));
+
+        let coalesced = src
+            .try_take_host_slice(11)
+            .expect("coalesce across two host segments");
+        assert_eq!(coalesced.len(), 11);
+        assert_eq!(
+            coalesced.segments().len(),
+            2,
+            "coalesced handle must carry two segments"
+        );
+        assert_eq!(coalesced.segments()[0].id, a_id);
+        assert_eq!(coalesced.segments()[1].id, b_id);
+
+        let mut dst = vec![0u8; 11];
+        coalesced.read_into(0, 11, &mut dst);
+        assert_eq!(&dst[..], b"hello world");
+        assert_eq!(src.remaining(), 0);
+    }
+
+    #[test]
+    fn buffer_reader_try_take_partial_coalesce_leaves_tail() {
+        // Coalesce just enough to satisfy the request; the rest of the
+        // second segment stays in the reader.
+        let registry = Arc::new(InMemoryHostBufferRegistry::new());
+        let a = registry.clone().make_handle(b"hello ");
+        let b = registry.clone().make_handle(b"world!!");
+        let mut src = BufferReader::new();
+        src.push(Buffer::Host(a));
+        src.push(Buffer::Host(b));
+
+        let coalesced = src.try_take_host_slice(8).expect("partial coalesce");
+        assert_eq!(coalesced.len(), 8);
+        let mut dst = vec![0u8; 8];
+        coalesced.read_into(0, 8, &mut dst);
+        assert_eq!(&dst[..], b"hello wo");
+        assert_eq!(src.remaining(), 5, "5 bytes of 'world!!' left");
+
+        // Drain the rest as another host slice.
+        let tail = src.try_take_host_slice(5).expect("tail");
+        let mut dst2 = vec![0u8; 5];
+        tail.read_into(0, 5, &mut dst2);
+        assert_eq!(&dst2[..], b"rld!!");
+        assert_eq!(src.remaining(), 0);
+    }
+
+    #[test]
+    fn buffer_reader_try_take_refuses_to_cross_in_memory() {
+        // Host, InMemory, Host: a request that would need to "skip
+        // over" an InMemory segment cannot be served zero-copy.
+        let registry = Arc::new(InMemoryHostBufferRegistry::new());
+        let a = registry.clone().make_handle(b"abc");
+        let c = registry.clone().make_handle(b"ghi");
+        let mut src = BufferReader::new();
+        src.push(Buffer::Host(a));
+        src.push(Bytes::from_static(b"def"));
+        src.push(Buffer::Host(c));
+        assert_eq!(
+            src.try_take_host_slice(9),
+            None,
+            "host fast path must refuse to materialise across an InMemory gap"
+        );
+        assert_eq!(src.remaining(), 9, "cursor must not advance on None");
+    }
+
+    #[test]
+    fn buffer_reader_coalesce_handle_drops_release_all_segments() {
+        // Building a multi-segment handle retains each underlying
+        // segment; dropping it must release each so refcounts net to
+        // zero.
+        let registry = Arc::new(InMemoryHostBufferRegistry::new());
+        let a = registry.clone().make_handle(b"abcd");
+        let b = registry.clone().make_handle(b"efgh");
+        assert_eq!(registry.live_buffers(), 2);
+        let mut src = BufferReader::new();
+        src.push(Buffer::Host(a));
+        src.push(Buffer::Host(b));
+        let coalesced = src.try_take_host_slice(8).expect("coalesce");
+        // Both ids still live (held by the coalesced handle).
+        assert_eq!(registry.live_buffers(), 2);
+        drop(coalesced);
+        assert_eq!(
+            registry.live_buffers(),
+            0,
+            "drop of multi-segment handle must release every segment"
+        );
     }
 
     #[test]

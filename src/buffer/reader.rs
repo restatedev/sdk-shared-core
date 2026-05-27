@@ -7,7 +7,7 @@
 //! [`BufferReader`] — the host-aware decode source owned by the
 //! protocol `Decoder`. See module docs in [`crate::buffer`].
 
-use super::{Buffer, HostBufferHandle, RestateBuf};
+use super::{Buffer, HostBufferHandle, RestateBuf, Segment};
 use bytes::{Buf, Bytes};
 use std::collections::VecDeque;
 
@@ -232,24 +232,76 @@ impl Buf for BufferReader {
 }
 
 impl RestateBuf for BufferReader {
+    /// Consume the next `len` bytes as a single (possibly multi-segment)
+    /// host handle.
+    ///
+    /// Coalesces across consecutive `Buffer::Host` segments at the front
+    /// of the queue. Returns `None` if:
+    /// - `len` is zero,
+    /// - the head segment is `Buffer::InMemory` (can't satisfy a Host
+    ///   request from inline bytes), or
+    /// - the front `Buffer::Host` segments don't add up to `len` before
+    ///   an `InMemory` segment intervenes (or the queue runs out).
     fn try_take_host_slice(&mut self, len: usize) -> Option<HostBufferHandle> {
         let len_u32 = u32::try_from(len).ok()?;
-        let head = self.segments.front_mut()?;
-        let Buffer::Host(h) = head else {
+        if len_u32 == 0 {
             return None;
+        }
+
+        // Phase 1: confirm we can satisfy `len` from a contiguous run
+        // of `Buffer::Host` segments at the front of the queue.
+        let mut accumulated = 0u32;
+        for buf in self.segments.iter() {
+            let Buffer::Host(h) = buf else {
+                return None;
+            };
+            accumulated = accumulated.saturating_add(h.len());
+            if accumulated >= len_u32 {
+                break;
+            }
+        }
+        if accumulated < len_u32 {
+            return None;
+        }
+
+        // Snapshot the registry from the head — every host segment in
+        // the same `BufferReader` shares the same registry by
+        // construction, so the head's reference is canonical.
+        let registry = match self.segments.front()? {
+            Buffer::Host(h) => h.registry(),
+            // Phase 1 already guaranteed Host at the head.
+            _ => unreachable!(),
         };
-        if h.len() < len_u32 {
-            return None;
+
+        // Phase 2: drain `len_u32` bytes by repeatedly minting
+        // sub-views of the head and transferring their segments into
+        // `taken`. `sub_view` retains; we `mem::forget` so the
+        // refcount-shares end up owned by the resulting handle (built
+        // via `from_segments_no_retain`).
+        let mut taken: Vec<Segment> = Vec::new();
+        let mut remaining = len_u32;
+        while remaining > 0 {
+            let head = self.segments.front_mut()?;
+            let Buffer::Host(h) = head else {
+                // Phase 1 guarantees this can't happen, but stay
+                // defensive — a hostile interleaving would otherwise
+                // panic deeper.
+                return None;
+            };
+            let take = h.len().min(remaining);
+            let sub = h.sub_view(0, take);
+            taken.extend_from_slice(sub.segments());
+            std::mem::forget(sub);
+            h.advance(take);
+            if h.is_empty() {
+                self.segments.pop_front();
+            }
+            remaining -= take;
         }
-        // Mint a sub-view at the current cursor — bumps refcount.
-        let sub = h.sub_view(0, len_u32);
-        h.advance(len_u32);
-        if h.is_empty() {
-            self.segments.pop_front();
-        }
+
         self.scratch_start = 0;
         self.scratch_end = 0;
         self.fill_scratch();
-        Some(sub)
+        Some(HostBufferHandle::from_segments_no_retain(registry, taken))
     }
 }

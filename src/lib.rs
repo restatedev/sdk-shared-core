@@ -19,9 +19,9 @@ mod vm;
 use std::borrow::Cow;
 use std::time::Duration;
 
-#[cfg(test)]
-pub use crate::buffer::InMemoryHostBufferRegistry;
-pub use crate::buffer::{Buffer, HostBufferHandle, HostBufferRegistry, NopHostBufferRegistry};
+pub use crate::buffer::{
+    Buffer, HostBufferHandle, HostBufferRegistry, NopHostBufferRegistry, Segment,
+};
 pub use crate::retries::{OnMaxAttempts, RetryPolicy};
 pub use error::Error;
 pub use headers::HeaderMap;

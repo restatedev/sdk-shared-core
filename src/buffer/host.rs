@@ -20,24 +20,39 @@
 use bytes::Bytes;
 use std::sync::Arc;
 
+/// One contiguous view into a registered host buffer.
+///
+/// A [`HostBufferHandle`] is either a single `Segment` (the common
+/// case — input chunk, decoder sub-view of a single chunk) or a vector
+/// of segments (when the decoder coalesces a body that spans multiple
+/// `Buffer::Host` segments). Per-segment retain/release semantics carry
+/// across both cases.
+#[derive(Copy, Clone, Debug)]
+pub struct Segment {
+    pub id: u32,
+    pub offset: u32,
+    pub len: u32,
+}
+
 /// Refcounted handle to a byte buffer (or sub-range thereof) owned by the
 /// embedding host.
 ///
 /// The handle is non-`Copy`. `Clone` bumps the SDK-side refcount via
-/// [`HostBufferRegistry::retain`]; `Drop` decrements via
-/// [`HostBufferRegistry::release`]. The SDK frees the underlying buffer
-/// when its refcount reaches zero.
+/// [`HostBufferRegistry::retain`] for every segment; `Drop` decrements
+/// via [`HostBufferRegistry::release`] for every segment. The SDK frees
+/// the underlying buffer when the refcount for an id reaches zero.
 ///
 /// # View semantics
 ///
-/// A handle is a *view* into the underlying buffer: bytes
-/// `[offset .. offset + len]`. Two clones share the same id but each
-/// carries an independent refcount-share.
+/// A handle is a *view* into one or more registered buffers. Each
+/// segment carries `(id, offset, len)` — the byte range
+/// `[offset .. offset + len]` within `id`. Two clones share segments
+/// 1-for-1 but each carries an independent refcount-share per segment.
 ///
-/// [`HostBufferHandle::sub_view`] mints a fresh view at a sub-range of
-/// `self`'s window, bumping the refcount. [`HostBufferHandle::advance`]
-/// shrinks the window from the left without touching the refcount —
-/// used by streaming decoders that consume bytes incrementally.
+/// [`HostBufferHandle::sub_view`] mints a fresh view of a sub-range of
+/// `self`'s window, bumping the per-segment refcount for each segment
+/// it touches. [`HostBufferHandle::advance`] shrinks the window from
+/// the left, releasing any segments fully drained from the front.
 ///
 /// # Buffer immutability invariant
 ///
@@ -47,21 +62,31 @@ use std::sync::Arc;
 ///
 /// # WASM ABI
 ///
-/// The WASM ABI MUST round-trip `id`, `offset`, and `len`. Construction
-/// across the boundary uses [`HostBufferHandle::from_parts`] (which does
-/// NOT call `retain` — the caller is responsible for the initial
-/// refcount having been established).
+/// Single-segment handles round-trip across the WASM ABI as
+/// `(id, offset, len)` tuples via [`HostBufferHandle::from_parts`].
+/// Multi-segment handles round-trip as a list of segments via
+/// [`HostBufferHandle::from_segments_no_retain`]. Neither constructor
+/// bumps refcounts — the caller is responsible for the initial
+/// refcount-shares.
 pub struct HostBufferHandle {
-    id: u32,
-    offset: u32,
-    len: u32,
+    storage: HandleStorage,
     registry: Arc<dyn HostBufferRegistry>,
 }
 
+#[derive(Clone, Debug)]
+enum HandleStorage {
+    Single(Segment),
+    Multi {
+        segments: Box<[Segment]>,
+        total_len: u32,
+    },
+}
+
 impl HostBufferHandle {
-    /// Construct a handle from raw `(id, offset, len)` and a registry
-    /// reference WITHOUT bumping the refcount. The caller is responsible
-    /// for having already established (or transferred) a refcount-share.
+    /// Construct a single-segment handle from raw `(id, offset, len)`
+    /// and a registry reference WITHOUT bumping the refcount. The
+    /// caller is responsible for having already established (or
+    /// transferred) a refcount-share.
     ///
     /// Used by SDK WASM bridges to reconstruct handles from wire
     /// `(id, offset, len)` tuples — the host's `register` call already
@@ -73,95 +98,254 @@ impl HostBufferHandle {
         len: u32,
     ) -> Self {
         Self {
-            id,
-            offset,
-            len,
+            storage: HandleStorage::Single(Segment { id, offset, len }),
             registry,
         }
     }
 
-    /// Underlying buffer id. Sub-views of the same buffer share an id.
-    pub fn id(&self) -> u32 {
-        self.id
+    /// Construct a handle from an ordered list of segments WITHOUT
+    /// bumping any refcount. Caller has already established
+    /// refcount-shares for every segment (e.g. via per-segment
+    /// `sub_view` during decoder coalescing, or via per-segment
+    /// `register` on the embedder side).
+    ///
+    /// Collapses to `Single` when `segments.len() == 1`. Panics on
+    /// empty input — a zero-segment handle is not a valid view.
+    pub fn from_segments_no_retain(
+        registry: Arc<dyn HostBufferRegistry>,
+        segments: Vec<Segment>,
+    ) -> Self {
+        assert!(
+            !segments.is_empty(),
+            "from_segments_no_retain requires at least one segment"
+        );
+        if segments.len() == 1 {
+            return Self {
+                storage: HandleStorage::Single(segments[0]),
+                registry,
+            };
+        }
+        let total_len = segments
+            .iter()
+            .map(|s| s.len)
+            .try_fold(0u32, u32::checked_add)
+            .expect("multi-segment handle total length overflows u32");
+        Self {
+            storage: HandleStorage::Multi {
+                segments: segments.into_boxed_slice(),
+                total_len,
+            },
+            registry,
+        }
     }
 
-    /// Byte offset of this view's start within the underlying buffer.
-    pub fn offset(&self) -> u32 {
-        self.offset
+    /// The segments making up this view, in order. Single-segment
+    /// handles yield a one-element slice; multi-segment handles yield
+    /// the underlying segment list. ABI-boundary code uses
+    /// `segments().len()` to fork between the `Host` and `HostMulti`
+    /// shapes.
+    pub fn segments(&self) -> &[Segment] {
+        match &self.storage {
+            HandleStorage::Single(s) => std::slice::from_ref(s),
+            HandleStorage::Multi { segments, .. } => segments,
+        }
     }
 
-    /// Byte length of this view.
+    /// The registry this handle dispatches against. Used by the decoder
+    /// to mint a fresh multi-segment handle without rederiving the
+    /// registry reference.
+    pub(crate) fn registry(&self) -> Arc<dyn HostBufferRegistry> {
+        self.registry.clone()
+    }
+
+    /// Total byte length of this view across all its segments.
     pub fn len(&self) -> u32 {
-        self.len
+        match &self.storage {
+            HandleStorage::Single(s) => s.len,
+            HandleStorage::Multi { total_len, .. } => *total_len,
+        }
     }
 
     /// True if this view is zero-length.
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len() == 0
     }
 
-    /// Mint a sub-view at `[self.offset + view_offset .. self.offset +
-    /// view_offset + len]` within the underlying buffer. Bumps the
-    /// refcount; the returned sub-view owns an independent share.
+    /// Mint a sub-view at `[view_offset .. view_offset + len]` within
+    /// the current view. Bumps the refcount for every segment the
+    /// sub-view touches; the returned handle owns independent
+    /// refcount-shares.
     pub(crate) fn sub_view(&self, view_offset: u32, len: u32) -> Self {
         debug_assert!(
             view_offset
                 .checked_add(len)
-                .map(|e| e <= self.len)
+                .map(|e| e <= self.len())
                 .unwrap_or(false),
             "sub_view out of bounds: view_offset={} len={} self.len={}",
             view_offset,
             len,
-            self.len,
+            self.len(),
         );
-        self.registry.retain(self);
-        Self {
-            id: self.id,
-            offset: self.offset + view_offset,
-            len,
-            registry: self.registry.clone(),
+        let mut out: Vec<Segment> = Vec::new();
+        let mut remaining = len;
+        let mut skip = view_offset;
+        for seg in self.segments() {
+            if remaining == 0 {
+                break;
+            }
+            if skip >= seg.len {
+                skip -= seg.len;
+                continue;
+            }
+            let take = (seg.len - skip).min(remaining);
+            self.registry.retain(seg.id);
+            out.push(Segment {
+                id: seg.id,
+                offset: seg.offset + skip,
+                len: take,
+            });
+            remaining -= take;
+            skip = 0;
+        }
+        Self::from_segments_no_retain(self.registry.clone(), out)
+    }
+
+    /// Shrink this view from the left by `n` bytes. Releases any
+    /// segments fully drained from the front. Does NOT touch the
+    /// refcount for segments that are merely trimmed.
+    pub(crate) fn advance(&mut self, n: u32) {
+        debug_assert!(n <= self.len(), "advance past end of view");
+        if n == 0 {
+            return;
+        }
+        match &mut self.storage {
+            HandleStorage::Single(s) => {
+                s.offset += n;
+                s.len -= n;
+            }
+            HandleStorage::Multi {
+                segments,
+                total_len,
+            } => {
+                let mut skip = n;
+                let mut first_kept = 0usize;
+                for (i, seg) in segments.iter_mut().enumerate() {
+                    if skip == 0 {
+                        break;
+                    }
+                    if skip >= seg.len {
+                        self.registry.release(seg.id);
+                        skip -= seg.len;
+                        first_kept = i + 1;
+                    } else {
+                        seg.offset += skip;
+                        seg.len -= skip;
+                        skip = 0;
+                    }
+                }
+                *total_len -= n;
+                if first_kept == segments.len() {
+                    // Whole view drained; storage stays Multi with an
+                    // empty inner slice. The caller should drop us
+                    // anyway — we're now empty.
+                    debug_assert_eq!(*total_len, 0);
+                    self.storage = HandleStorage::Multi {
+                        segments: Vec::new().into_boxed_slice(),
+                        total_len: 0,
+                    };
+                    return;
+                }
+                if first_kept > 0 {
+                    let kept: Vec<Segment> = segments[first_kept..].to_vec();
+                    let new_total = *total_len;
+                    if kept.len() == 1 {
+                        self.storage = HandleStorage::Single(kept[0]);
+                    } else {
+                        self.storage = HandleStorage::Multi {
+                            segments: kept.into_boxed_slice(),
+                            total_len: new_total,
+                        };
+                    }
+                }
+            }
         }
     }
 
-    /// Shrink this view from the left by `n` bytes (offset += n, len -= n).
-    /// Does NOT touch the refcount — the handle still owns its share of
-    /// the underlying buffer; the window just got smaller.
-    pub(crate) fn advance(&mut self, n: u32) {
-        debug_assert!(n <= self.len, "advance past end of view");
-        self.offset += n;
-        self.len -= n;
-    }
-
-    /// Read `len` bytes from `[self.offset + view_offset ..]` of the
-    /// underlying buffer into `dst`. Convenience wrapper around
+    /// Read `len` bytes from `[view_offset ..]` of this view into
+    /// `dst`. Dispatches per-segment through
     /// [`HostBufferRegistry::read_into`].
     pub fn read_into(&self, view_offset: usize, len: usize, dst: &mut [u8]) {
-        self.registry.read_into(self, view_offset, len, dst);
+        assert_eq!(dst.len(), len, "dst.len() must equal len");
+        let mut remaining = len;
+        let mut skip = view_offset;
+        let mut dst_off = 0;
+        for seg in self.segments() {
+            if remaining == 0 {
+                break;
+            }
+            let seg_len = seg.len as usize;
+            if skip >= seg_len {
+                skip -= seg_len;
+                continue;
+            }
+            let read_off = seg.offset as usize + skip;
+            let take = (seg_len - skip).min(remaining);
+            self.registry.read_into(
+                seg.id,
+                read_off as u32,
+                take as u32,
+                &mut dst[dst_off..dst_off + take],
+            );
+            dst_off += take;
+            remaining -= take;
+            skip = 0;
+        }
     }
 
-    /// True iff `self` and `other` reference the same bytes. Fast-path
-    /// short-circuit on view identity (same id + offset + len); otherwise
-    /// dispatches through [`HostBufferRegistry::eq`] for a byte
-    /// comparison — required by replay equality when a wire-decoded
-    /// expected payload comes back as a host sub-view but the actual
-    /// payload was produced by a different registration.
+    /// True iff `self` and `other` reference byte-equal content.
+    ///
+    /// Fast paths:
+    /// - Length mismatch — `false`.
+    /// - Both single-segment with identical `(id, offset)` — `true`.
+    /// - Both single-segment otherwise — dispatch through
+    ///   [`HostBufferRegistry::eq`] for a direct registry compare.
+    ///
+    /// Slow path: at least one side multi-segment. Materialise both
+    /// views via `read_into` into temp buffers and compare. The
+    /// materialise allocation is the cost of being correct across a
+    /// cross-segment boundary; sub-views from the decoder's coalesce
+    /// path go this way only when the SDK does a replay equality
+    /// against an unrelated host buffer.
     pub fn byte_eq(&self, other: &Self) -> bool {
-        if self.len != other.len {
+        if self.len() != other.len() {
             return false;
         }
-        // Same view: same id and offset (length is already equal).
-        if self.id == other.id && self.offset == other.offset {
+        if let (HandleStorage::Single(a), HandleStorage::Single(b)) =
+            (&self.storage, &other.storage)
+        {
+            if a.id == b.id && a.offset == b.offset {
+                return true;
+            }
+            return self
+                .registry
+                .eq(a.id, a.offset, a.len, b.id, b.offset, b.len);
+        }
+        let len = self.len() as usize;
+        if len == 0 {
             return true;
         }
-        self.registry.eq(self, other)
+        let mut a_buf = vec![0u8; len];
+        let mut b_buf = vec![0u8; len];
+        self.read_into(0, len, &mut a_buf);
+        other.read_into(0, len, &mut b_buf);
+        a_buf == b_buf
     }
 
     /// True iff this handle's bytes equal `other`. Materialises the
-    /// host bytes via [`HostBufferRegistry::read_into`] — the slow path
-    /// used when comparing a `Buffer::Host` to a `Buffer::InMemory` for
-    /// replay equality.
+    /// host bytes via [`Self::read_into`] (which dispatches
+    /// per-segment) and compares.
     pub fn byte_eq_inline(&self, other: &[u8]) -> bool {
-        if self.len as usize != other.len() {
+        if self.len() as usize != other.len() {
             return false;
         }
         if other.is_empty() {
@@ -175,11 +359,11 @@ impl HostBufferHandle {
 
 impl Clone for HostBufferHandle {
     fn clone(&self) -> Self {
-        self.registry.retain(self);
+        for seg in self.segments() {
+            self.registry.retain(seg.id);
+        }
         Self {
-            id: self.id,
-            offset: self.offset,
-            len: self.len,
+            storage: self.storage.clone(),
             registry: self.registry.clone(),
         }
     }
@@ -187,15 +371,25 @@ impl Clone for HostBufferHandle {
 
 impl Drop for HostBufferHandle {
     fn drop(&mut self) {
-        self.registry.release(self);
+        for seg in self.segments() {
+            self.registry.release(seg.id);
+        }
     }
 }
 
 impl PartialEq for HostBufferHandle {
+    /// Identity equality across all segments — same registry view
+    /// shape, same `(id, offset, len)` per segment. Byte-equality uses
+    /// [`Self::byte_eq`].
     fn eq(&self, other: &Self) -> bool {
-        // Compare by view identity only — registry Arc is implementation
-        // detail.
-        self.id == other.id && self.offset == other.offset && self.len == other.len
+        let a = self.segments();
+        let b = other.segments();
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.id == y.id && x.offset == y.offset && x.len == y.len)
     }
 }
 
@@ -203,19 +397,32 @@ impl Eq for HostBufferHandle {}
 
 impl std::hash::Hash for HostBufferHandle {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-        self.offset.hash(state);
-        self.len.hash(state);
+        for seg in self.segments() {
+            seg.id.hash(state);
+            seg.offset.hash(state);
+            seg.len.hash(state);
+        }
     }
 }
 
 impl std::fmt::Debug for HostBufferHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HostBufferHandle")
-            .field("id", &self.id)
-            .field("offset", &self.offset)
-            .field("len", &self.len)
-            .finish()
+        match &self.storage {
+            HandleStorage::Single(s) => f
+                .debug_struct("HostBufferHandle")
+                .field("id", &s.id)
+                .field("offset", &s.offset)
+                .field("len", &s.len)
+                .finish(),
+            HandleStorage::Multi {
+                segments,
+                total_len,
+            } => f
+                .debug_struct("HostBufferHandle")
+                .field("segments", segments)
+                .field("total_len", total_len)
+                .finish(),
+        }
     }
 }
 
@@ -223,42 +430,48 @@ impl std::fmt::Debug for HostBufferHandle {
 ///
 /// Implementations live on the embedder side. Shared-core invokes the
 /// registry only on payloads carried via the `Host` variant of the
-/// [`Buffer`](super::Buffer) enum.
+/// [`Buffer`](super::Buffer) enum. All methods take raw
+/// `(id, offset, len)` tuples — multi-segment handles dispatch through
+/// the trait one segment at a time.
 ///
 /// # Refcounting contract
 ///
-/// - [`register`](Self::register) stores `bytes`, returns a fresh id, and
-///   establishes refcount = 1.
-/// - [`retain`](Self::retain) increments the refcount for `handle.id()`.
-/// - [`release`](Self::release) decrements the refcount; when it reaches
-///   zero the SDK MUST free the backing storage.
-/// - `retain` / `release` look at `handle.id()` only — the view
-///   `offset`/`len` are not part of the refcounting key. Sub-views of the
-///   same id contribute equally to the same refcount.
+/// - [`retain`](Self::retain) increments the refcount for `id`.
+/// - [`release`](Self::release) decrements the refcount; when it
+///   reaches zero the SDK MUST free the backing storage.
+/// - `retain` / `release` look at `id` only — view `offset`/`len` are
+///   not part of the refcounting key. Sub-views of the same id
+///   contribute equally to the same refcount.
 ///
 /// # Buffer immutability invariant
 ///
 /// Bytes behind a registered buffer MUST be content-immutable for as
 /// long as any refcount-share is outstanding.
 pub trait HostBufferRegistry: Send + Sync {
-    /// Byte-equality between two views (possibly into the same buffer).
-    /// Implementations MUST honour each handle's `offset`/`len` and
-    /// compare those byte ranges. Implementations should short-circuit
-    /// on length mismatch.
-    fn eq(&self, a: &HostBufferHandle, b: &HostBufferHandle) -> bool;
+    /// Byte-equality between two views (possibly into the same
+    /// buffer). Implementations MUST honour each side's `offset`/`len`
+    /// and compare those byte ranges. Implementations should
+    /// short-circuit on length mismatch.
+    fn eq(
+        &self,
+        a_id: u32,
+        a_offset: u32,
+        a_len: u32,
+        b_id: u32,
+        b_offset: u32,
+        b_len: u32,
+    ) -> bool;
 
-    /// Copy a range of the host buffer into `dst`. The range is
-    /// `[handle.offset() + view_offset .. handle.offset() + view_offset + len]`
-    /// within the underlying buffer identified by `handle.id()`. Caller
-    /// guarantees `dst.len() == len` and `view_offset + len <= handle.len()`.
-    fn read_into(&self, handle: &HostBufferHandle, view_offset: usize, len: usize, dst: &mut [u8]);
+    /// Copy `len` bytes from `[offset .. offset + len]` of the buffer
+    /// `id` into `dst`. Caller guarantees `dst.len() == len`.
+    fn read_into(&self, id: u32, offset: u32, len: u32, dst: &mut [u8]);
 
-    /// Increment the refcount for `handle.id()`.
-    fn retain(&self, handle: &HostBufferHandle);
+    /// Increment the refcount for `id`.
+    fn retain(&self, id: u32);
 
-    /// Decrement the refcount for `handle.id()`. When it reaches zero the
-    /// SDK frees the underlying buffer.
-    fn release(&self, handle: &HostBufferHandle);
+    /// Decrement the refcount for `id`. When it reaches zero the SDK
+    /// frees the underlying buffer.
+    fn release(&self, id: u32);
 }
 
 /// A registry that panics on every call. The default for native embedders
@@ -269,22 +482,16 @@ pub trait HostBufferRegistry: Send + Sync {
 pub struct NopHostBufferRegistry;
 
 impl HostBufferRegistry for NopHostBufferRegistry {
-    fn eq(&self, _a: &HostBufferHandle, _b: &HostBufferHandle) -> bool {
+    fn eq(&self, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32) -> bool {
         nop_registry_panic()
     }
-    fn read_into(
-        &self,
-        _handle: &HostBufferHandle,
-        _view_offset: usize,
-        _len: usize,
-        _dst: &mut [u8],
-    ) {
+    fn read_into(&self, _: u32, _: u32, _: u32, _: &mut [u8]) {
         nop_registry_panic()
     }
-    fn retain(&self, _handle: &HostBufferHandle) {
+    fn retain(&self, _: u32) {
         nop_registry_panic()
     }
-    fn release(&self, _handle: &HostBufferHandle) {
+    fn release(&self, _: u32) {
         nop_registry_panic()
     }
 }
@@ -298,93 +505,131 @@ fn nop_registry_panic() -> ! {
     )
 }
 
-/// In-memory test/dev-only host buffer registry. Backed by a `HashMap<u32,
-/// (Bytes, refcount)>`. Lets Rust unit tests exercise host-backed code
-/// paths without standing up a real WASM-bridged registry.
 #[cfg(test)]
-#[derive(Default)]
-pub struct InMemoryHostBufferRegistry {
-    next_id: std::sync::atomic::AtomicU32,
-    /// `id -> (bytes, refcount)`. Entries are inserted at `register` with
-    /// refcount=1, mutated by `retain`/`release`, and removed when
-    /// refcount drops to zero.
-    buffers: std::sync::Mutex<std::collections::HashMap<u32, (Bytes, u32)>>,
-}
+pub(crate) mod mocks {
+    use super::*;
 
-#[cfg(test)]
-impl InMemoryHostBufferRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Number of distinct buffer ids currently alive (refcount > 0).
-    /// Test introspection only.
-    pub fn live_buffers(&self) -> usize {
-        self.buffers.lock().unwrap().len()
-    }
-
-    /// Test-only: insert `bytes` into the registry with refcount = 1 and
-    /// return a fresh handle wrapping the assigned id. Consumes one `Arc`
-    /// share (use `registry.clone().make_handle(...)`).
-    pub fn make_handle(self: Arc<Self>, bytes: &[u8]) -> HostBufferHandle {
-        let id = self
-            .next_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.buffers
-            .lock()
-            .unwrap()
-            .insert(id, (Bytes::copy_from_slice(bytes), 1));
-        let len = bytes.len() as u32;
-        HostBufferHandle::from_parts(self as Arc<dyn HostBufferRegistry>, id, 0, len)
-    }
-}
-
-#[cfg(test)]
-impl HostBufferRegistry for InMemoryHostBufferRegistry {
-    fn eq(&self, a: &HostBufferHandle, b: &HostBufferHandle) -> bool {
-        if a.len() != b.len() {
-            return false;
+    impl HostBufferHandle {
+        /// Underlying buffer id. Test-only introspection helper —
+        /// production code reads `segments()` directly. Panics on
+        /// multi-segment handles.
+        pub fn id(&self) -> u32 {
+            match &self.storage {
+                HandleStorage::Single(s) => s.id,
+                HandleStorage::Multi { .. } => {
+                    panic!("HostBufferHandle::id() called on multi-segment handle")
+                }
+            }
         }
-        let buffers = self.buffers.lock().unwrap();
-        let (a_buf, _) = buffers.get(&a.id()).expect("unknown host buffer handle");
-        let (b_buf, _) = buffers.get(&b.id()).expect("unknown host buffer handle");
-        let a_range = a.offset() as usize..(a.offset() + a.len()) as usize;
-        let b_range = b.offset() as usize..(b.offset() + b.len()) as usize;
-        a_buf[a_range] == b_buf[b_range]
+
+        /// Byte offset of this view's start within the underlying buffer.
+        /// Panics on multi-segment handles (the concept does not apply).
+        #[cfg(test)]
+        pub fn offset(&self) -> u32 {
+            match &self.storage {
+                HandleStorage::Single(s) => s.offset,
+                HandleStorage::Multi { .. } => {
+                    panic!("HostBufferHandle::offset() called on multi-segment handle")
+                }
+            }
+        }
     }
 
-    fn read_into(&self, handle: &HostBufferHandle, view_offset: usize, len: usize, dst: &mut [u8]) {
-        assert_eq!(dst.len(), len, "dst.len() must equal len");
-        let buffers = self.buffers.lock().unwrap();
-        let (buf, _) = buffers
-            .get(&handle.id())
-            .expect("unknown host buffer handle");
-        let start = handle.offset() as usize + view_offset;
-        dst.copy_from_slice(&buf[start..start + len]);
+    /// In-memory test/dev-only host buffer registry. Backed by a `HashMap<u32,
+    /// (Bytes, refcount)>`. Lets Rust unit tests exercise host-backed code
+    /// paths without standing up a real WASM-bridged registry.
+    #[cfg(test)]
+    #[derive(Default)]
+    pub struct InMemoryHostBufferRegistry {
+        next_id: std::sync::atomic::AtomicU32,
+        /// `id -> (bytes, refcount)`. Entries are inserted at `register` with
+        /// refcount=1, mutated by `retain`/`release`, and removed when
+        /// refcount drops to zero.
+        buffers: std::sync::Mutex<std::collections::HashMap<u32, (Bytes, u32)>>,
     }
 
-    fn retain(&self, handle: &HostBufferHandle) {
-        let mut buffers = self.buffers.lock().unwrap();
-        let entry = buffers
-            .get_mut(&handle.id())
-            .expect("retain on unknown host buffer handle");
-        entry.1 = entry
-            .1
-            .checked_add(1)
-            .expect("host buffer refcount overflow");
+    #[cfg(test)]
+    impl InMemoryHostBufferRegistry {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Number of distinct buffer ids currently alive (refcount > 0).
+        /// Test introspection only.
+        pub fn live_buffers(&self) -> usize {
+            self.buffers.lock().unwrap().len()
+        }
+
+        /// Test-only: insert `bytes` into the registry with refcount = 1 and
+        /// return a fresh handle wrapping the assigned id. Consumes one `Arc`
+        /// share (use `registry.clone().make_handle(...)`).
+        pub fn make_handle(self: Arc<Self>, bytes: &[u8]) -> HostBufferHandle {
+            let id = self
+                .next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.buffers
+                .lock()
+                .unwrap()
+                .insert(id, (Bytes::copy_from_slice(bytes), 1));
+            let len = bytes.len() as u32;
+            HostBufferHandle::from_parts(self as Arc<dyn HostBufferRegistry>, id, 0, len)
+        }
     }
 
-    fn release(&self, handle: &HostBufferHandle) {
-        let mut buffers = self.buffers.lock().unwrap();
-        let entry = buffers
-            .get_mut(&handle.id())
-            .expect("release on unknown host buffer handle (double-release?)");
-        entry.1 = entry
-            .1
-            .checked_sub(1)
-            .expect("host buffer refcount underflow");
-        if entry.1 == 0 {
-            buffers.remove(&handle.id());
+    #[cfg(test)]
+    impl HostBufferRegistry for InMemoryHostBufferRegistry {
+        fn eq(
+            &self,
+            a_id: u32,
+            a_offset: u32,
+            a_len: u32,
+            b_id: u32,
+            b_offset: u32,
+            b_len: u32,
+        ) -> bool {
+            if a_len != b_len {
+                return false;
+            }
+            let buffers = self.buffers.lock().unwrap();
+            let (a_buf, _) = buffers.get(&a_id).expect("unknown host buffer id");
+            let (b_buf, _) = buffers.get(&b_id).expect("unknown host buffer id");
+            let a_range = a_offset as usize..(a_offset + a_len) as usize;
+            let b_range = b_offset as usize..(b_offset + b_len) as usize;
+            a_buf[a_range] == b_buf[b_range]
+        }
+
+        fn read_into(&self, id: u32, offset: u32, len: u32, dst: &mut [u8]) {
+            assert_eq!(dst.len(), len as usize, "dst.len() must equal len");
+            let buffers = self.buffers.lock().unwrap();
+            let (buf, _) = buffers.get(&id).expect("unknown host buffer id");
+            let start = offset as usize;
+            let end = start + len as usize;
+            dst.copy_from_slice(&buf[start..end]);
+        }
+
+        fn retain(&self, id: u32) {
+            let mut buffers = self.buffers.lock().unwrap();
+            let entry = buffers
+                .get_mut(&id)
+                .expect("retain on unknown host buffer id");
+            entry.1 = entry
+                .1
+                .checked_add(1)
+                .expect("host buffer refcount overflow");
+        }
+
+        fn release(&self, id: u32) {
+            let mut buffers = self.buffers.lock().unwrap();
+            let entry = buffers
+                .get_mut(&id)
+                .expect("release on unknown host buffer id (double-release?)");
+            entry.1 = entry
+                .1
+                .checked_sub(1)
+                .expect("host buffer refcount underflow");
+            if entry.1 == 0 {
+                buffers.remove(&id);
+            }
         }
     }
 }

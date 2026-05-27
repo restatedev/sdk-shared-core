@@ -16,7 +16,7 @@ use crate::proto::{self, Message as _};
 use crate::Buffer;
 use ::bytes::Bytes;
 
-use crate::{HostBufferHandle, HostBufferRegistry};
+use crate::HostBufferRegistry;
 
 /// A `HostBufferRegistry` that panics on every method. Use in tests that
 /// only exercise `Buffer::InMemory` — calls into the registry would
@@ -24,16 +24,16 @@ use crate::{HostBufferHandle, HostBufferRegistry};
 struct PanickingRegistry;
 
 impl HostBufferRegistry for PanickingRegistry {
-    fn eq(&self, _: &HostBufferHandle, _: &HostBufferHandle) -> bool {
+    fn eq(&self, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32) -> bool {
         panic!("PanickingRegistry::eq called");
     }
-    fn read_into(&self, _: &HostBufferHandle, _: usize, _: usize, _: &mut [u8]) {
+    fn read_into(&self, _: u32, _: u32, _: u32, _: &mut [u8]) {
         panic!("PanickingRegistry::read_into called");
     }
-    fn retain(&self, _: &HostBufferHandle) {
+    fn retain(&self, _: u32) {
         panic!("PanickingRegistry::retain called");
     }
-    fn release(&self, _: &HostBufferHandle) {
+    fn release(&self, _: u32) {
         panic!("PanickingRegistry::release called");
     }
 }

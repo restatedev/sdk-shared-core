@@ -27,14 +27,13 @@ use std::sync::Arc;
 use bytes::Bytes;
 use test_log::test;
 
+use crate::buffer::InMemoryHostBufferRegistry;
 use crate::service_protocol::messages::{
     EndMessage, InputCommandMessage, OutputCommandMessage, SetStateCommandMessage, StartMessage,
 };
 use crate::service_protocol::{Decoder, Version};
 use crate::tests::Encoder;
-use crate::{
-    Buffer, CoreVM, InMemoryHostBufferRegistry, NonEmptyValue, PayloadOptions, VMOptions, Value, VM,
-};
+use crate::{Buffer, CoreVM, NonEmptyValue, PayloadOptions, VMOptions, Value, VM};
 
 /// Concat a fragment stream into a single `Vec<u8>` by resolving every
 /// `Buffer::Host` through the registry. Used to drive the standard
