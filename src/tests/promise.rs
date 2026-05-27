@@ -132,7 +132,7 @@ mod peek_promise {
             return;
         }
         let output = match vm.take_notification(h1).unwrap().expect("Should be ready") {
-            Value::Void => NonEmptyValue::Success("null".into()),
+            Value::Void => NonEmptyValue::Success(Bytes::from_static(b"null").into()),
             Value::Success(s) => NonEmptyValue::Success(s),
             Value::Failure(f) => NonEmptyValue::Failure(f),
             v => panic!("Unexpected value {v:?}"),
@@ -292,8 +292,11 @@ mod complete_promise {
                 v => panic!("Unexpected value {v:?}"),
             };
 
-            vm.sys_write_output(NonEmptyValue::Success(output), PayloadOptions::default())
-                .unwrap();
+            vm.sys_write_output(
+                NonEmptyValue::Success(output.into()),
+                PayloadOptions::default(),
+            )
+            .unwrap();
             vm.sys_end().unwrap();
         }
     }
@@ -317,9 +320,9 @@ mod complete_promise {
                     ),
                 ),
             })
-            .run(handler(NonEmptyValue::Success(Bytes::from_static(
-                b"my val",
-            ))));
+            .run(handler(NonEmptyValue::Success(
+                Bytes::from_static(b"my val").into(),
+            )));
 
         assert_eq!(
             output
@@ -368,9 +371,9 @@ mod complete_promise {
                     }),
                 ),
             })
-            .run(handler(NonEmptyValue::Success(Bytes::from_static(
-                b"my val",
-            ))));
+            .run(handler(NonEmptyValue::Success(
+                Bytes::from_static(b"my val").into(),
+            )));
 
         assert_eq!(
             output

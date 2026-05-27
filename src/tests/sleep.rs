@@ -22,7 +22,7 @@ fn sleep_handler(vm: &mut CoreVM) {
     assert2::assert!(let Some(Value::Void) = vm.take_notification(h1).unwrap());
 
     vm.sys_write_output(
-        NonEmptyValue::Success(Bytes::default()),
+        NonEmptyValue::Success(Bytes::default().into()),
         PayloadOptions::default(),
     )
     .unwrap();

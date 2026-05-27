@@ -1,6 +1,13 @@
+// Alias the crate to its own name so the `restate_wire_derive::Message`
+// proc-macro (which hard-codes `::restate_sdk_shared_core::proto::*`
+// paths) can resolve them when expanded inside this crate itself.
+extern crate self as restate_sdk_shared_core;
+
+pub mod buffer;
 pub mod error;
 pub mod fmt;
 mod headers;
+pub mod proto;
 #[cfg(feature = "request_identity")]
 mod request_identity;
 mod retries;
@@ -9,10 +16,12 @@ mod service_protocol;
 pub mod tracing_pretty;
 mod vm;
 
-use bytes::Bytes;
 use std::borrow::Cow;
 use std::time::Duration;
 
+#[cfg(test)]
+pub use crate::buffer::InMemoryHostBufferRegistry;
+pub use crate::buffer::{Buffer, HostBufferHandle, HostBufferRegistry, NopHostBufferRegistry};
 pub use crate::retries::{OnMaxAttempts, RetryPolicy};
 pub use error::Error;
 pub use headers::HeaderMap;
@@ -67,7 +76,7 @@ pub struct Input {
     pub random_seed: u64,
     pub key: String,
     pub headers: Vec<Header>,
-    pub input: Bytes,
+    pub input: Buffer,
     /// Scope for this invocation, if it was called within a scope. Since V7.
     pub scope: Option<String>,
     /// Limit key for this invocation, if one was provided. Since V7.
@@ -165,7 +174,7 @@ pub struct SendHandle {
 pub enum Value {
     /// a void/None/undefined success
     Void,
-    Success(Bytes),
+    Success(Buffer),
     Failure(TerminalFailure),
     /// Only returned for get_state_keys
     StateKeys(Vec<String>),
@@ -191,7 +200,7 @@ pub struct EntryRetryInfo {
 
 #[derive(Debug, Clone)]
 pub enum RunExitResult {
-    Success(Bytes),
+    Success(Buffer),
     TerminalFailure(TerminalFailure),
     RetryableFailure {
         attempt_duration: Duration,
@@ -201,7 +210,7 @@ pub enum RunExitResult {
 
 #[derive(Debug, Clone)]
 pub enum NonEmptyValue {
-    Success(Bytes),
+    Success(Buffer),
     Failure(TerminalFailure),
 }
 
@@ -231,12 +240,6 @@ pub enum AttachInvocationTarget {
         /// Scope for the invocation target. `None` means unscoped. Since V7.
         scope: Option<String>,
     },
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum TakeOutputResult {
-    Buffer(Bytes),
-    EOF,
 }
 
 pub type VMResult<T> = Result<T, Error>;
@@ -383,7 +386,7 @@ pub trait VM: Sized {
 
     // --- Input stream
 
-    fn notify_input(&mut self, buffer: Bytes);
+    fn notify_input(&mut self, buffer: impl Into<Buffer>);
 
     fn notify_input_closed(&mut self);
 
@@ -393,7 +396,20 @@ pub trait VM: Sized {
 
     // --- Output stream
 
-    fn take_output(&mut self) -> TakeOutputResult;
+    /// Drain the next output buffer, if any.
+    ///
+    /// Returns `None` when the output queue is empty — which may mean the
+    /// VM is mid-execution and will produce more output later, or that the
+    /// output stream has been closed via `sys_end`. Callers that need to
+    /// distinguish "no data right now" from "stream finished" should look
+    /// at the VM state.
+    ///
+    /// Each `Buffer::InMemory` carries shared-core-owned bytes that the
+    /// caller must write to the wire. Each `Buffer::Host` is a pass-
+    /// through reference to a host-owned payload buffer — the embedder
+    /// splices the full host buffer (`registry.len(handle)` bytes) at
+    /// that position.
+    fn take_output_next(&mut self) -> Option<Buffer>;
 
     // --- Execution start waiting point
 
@@ -419,8 +435,12 @@ pub trait VM: Sized {
 
     fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle>;
 
-    fn sys_state_set(&mut self, key: String, value: Bytes, options: PayloadOptions)
-        -> VMResult<()>;
+    fn sys_state_set(
+        &mut self,
+        key: String,
+        value: impl Into<Buffer>,
+        options: PayloadOptions,
+    ) -> VMResult<()>;
 
     fn sys_state_clear(&mut self, key: String) -> VMResult<()>;
 
@@ -437,7 +457,7 @@ pub trait VM: Sized {
     fn sys_call(
         &mut self,
         target: Target,
-        input: Bytes,
+        input: impl Into<Buffer>,
         name: Option<String>,
         options: PayloadOptions,
     ) -> VMResult<CallHandle>;
@@ -445,7 +465,7 @@ pub trait VM: Sized {
     fn sys_send(
         &mut self,
         target: Target,
-        input: Bytes,
+        input: impl Into<Buffer>,
         execution_time_since_unix_epoch: Option<Duration>,
         name: Option<String>,
         options: PayloadOptions,

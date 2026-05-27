@@ -40,7 +40,7 @@ fn dont_await_call() {
                 )
                 .unwrap();
             vm.sys_write_output(
-                NonEmptyValue::Success(Bytes::from_static(b"Whatever")),
+                NonEmptyValue::Success(Bytes::from_static(b"Whatever").into()),
                 PayloadOptions::default(),
             )
             .unwrap();
@@ -52,7 +52,7 @@ fn dont_await_call() {
         CallCommandMessage {
             service_name: "Greeter".to_owned(),
             handler_name: "greeter".to_owned(),
-            parameter: Bytes::from_static(b"Francesco"),
+            parameter: Buffer::InMemory(Bytes::from_static(b"Francesco")),
             invocation_id_notification_idx: 1,
             result_completion_id: 2,
             ..Default::default()
@@ -90,7 +90,7 @@ fn dont_await_call_dont_notify_input_closed() {
                 )
                 .unwrap();
             vm.sys_write_output(
-                NonEmptyValue::Success(Bytes::from_static(b"Whatever")),
+                NonEmptyValue::Success(Bytes::from_static(b"Whatever").into()),
                 PayloadOptions::default(),
             )
             .unwrap();
@@ -102,7 +102,7 @@ fn dont_await_call_dont_notify_input_closed() {
         CallCommandMessage {
             service_name: "Greeter".to_owned(),
             handler_name: "greeter".to_owned(),
-            parameter: Bytes::from_static(b"Francesco"),
+            parameter: Buffer::InMemory(Bytes::from_static(b"Francesco")),
             invocation_id_notification_idx: 1,
             result_completion_id: 2,
             ..Default::default()
@@ -273,11 +273,13 @@ mod do_await {
             // This should not perform any mutations.
             assert_that!(self.vm.do_await(await_on), err(is_suspended()));
             // Drain all buffered output into our decoder
-            while let TakeOutputResult::Buffer(b) = self.vm.take_output() {
-                if b.is_empty() {
-                    break;
+            while let Some(fragment) = self.vm.take_output_next() {
+                match fragment {
+                    crate::Buffer::InMemory(b) => self.decoder.push(b),
+                    crate::Buffer::Host(_) => {
+                        panic!("Host fragments not supported in test infra")
+                    }
                 }
-                self.decoder.push(b);
             }
 
             let msg = self
@@ -312,11 +314,13 @@ mod do_await {
                 }
             );
             // Drain all buffered output into our decoder
-            while let TakeOutputResult::Buffer(b) = self.vm.take_output() {
-                if b.is_empty() {
-                    break;
+            while let Some(fragment) = self.vm.take_output_next() {
+                match fragment {
+                    crate::Buffer::InMemory(b) => self.decoder.push(b),
+                    crate::Buffer::Host(_) => {
+                        panic!("Host fragments not supported in test infra")
+                    }
                 }
-                self.decoder.push(b);
             }
 
             let msg = self
@@ -895,8 +899,12 @@ mod reverse_await_order {
                 vm.take_notification(h1.call_notification_handle).unwrap()
         );
 
+        let h1_bytes = h1_value.expect_in_memory();
+        let h2_bytes = h2_value.expect_in_memory();
         vm.sys_write_output(
-            NonEmptyValue::Success(Bytes::from([&h1_value[..], b"-", &h2_value[..]].concat())),
+            NonEmptyValue::Success(
+                Bytes::from([&h1_bytes[..], b"-", &h2_bytes[..]].concat()).into(),
+            ),
             PayloadOptions::default(),
         )
         .unwrap();
@@ -921,7 +929,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Francesco"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 invocation_id_notification_idx: 1,
                 result_completion_id: 2,
                 ..Default::default()
@@ -932,7 +940,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Till"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Till")),
                 invocation_id_notification_idx: 3,
                 result_completion_id: 4,
                 ..Default::default()
@@ -984,7 +992,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Francesco"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 invocation_id_notification_idx: 1,
                 result_completion_id: 2,
                 ..Default::default()
@@ -995,7 +1003,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Till"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Till")),
                 invocation_id_notification_idx: 3,
                 result_completion_id: 4,
                 ..Default::default()
@@ -1051,7 +1059,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Francesco"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 invocation_id_notification_idx: 1,
                 result_completion_id: 2,
                 ..Default::default()
@@ -1062,7 +1070,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Till"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Till")),
                 invocation_id_notification_idx: 3,
                 result_completion_id: 4,
                 ..Default::default()
@@ -1112,7 +1120,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Francesco"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 invocation_id_notification_idx: 1,
                 result_completion_id: 2,
                 ..Default::default()
@@ -1123,7 +1131,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Till"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Till")),
                 invocation_id_notification_idx: 3,
                 result_completion_id: 4,
                 ..Default::default()
@@ -1169,7 +1177,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Francesco"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Francesco")),
                 invocation_id_notification_idx: 1,
                 result_completion_id: 2,
                 ..Default::default()
@@ -1180,7 +1188,7 @@ mod reverse_await_order {
             CallCommandMessage {
                 service_name: "Greeter".to_owned(),
                 handler_name: "greeter".to_owned(),
-                parameter: Bytes::from_static(b"Till"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"Till")),
                 invocation_id_notification_idx: 3,
                 result_completion_id: 4,
                 ..Default::default()

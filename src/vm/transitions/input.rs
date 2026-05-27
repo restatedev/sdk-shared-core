@@ -7,8 +7,7 @@ use crate::vm::errors::{
 };
 use crate::vm::transitions::Transition;
 use crate::vm::{errors, State};
-use crate::{Error, Version};
-use bytes::Bytes;
+use crate::{Buffer, Error, Version};
 use tracing::debug;
 
 pub(crate) struct NewMessage(pub(crate) RawMessage);
@@ -59,12 +58,12 @@ impl Transition<Context, NewStartMessage> for State {
             msg.state_map
                 .into_iter()
                 .map(|e| {
-                    Ok::<(String, Bytes), BadEagerStateKeyError>((
+                    Ok::<(String, Buffer), BadEagerStateKeyError>((
                         String::from_utf8(e.key.to_vec()).map_err(BadEagerStateKeyError)?,
                         e.value,
                     ))
                 })
-                .collect::<Result<Vec<(String, Bytes)>, _>>()?,
+                .collect::<Result<Vec<(String, Buffer)>, _>>()?,
         );
 
         debug!("Start invocation");

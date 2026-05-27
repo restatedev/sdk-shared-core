@@ -1,0 +1,17 @@
+[package]
+name = "restate-wire-derive"
+version = "0.10.0"
+edition = "2021"
+description = "Derive macro for restate_sdk_shared_core::proto::Message"
+license = "MIT"
+repository = "https://github.com/restatedev/sdk-shared-core"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+anyhow = "1.0"
+itertools = ">=0.10.1, <=0.14"
+proc-macro2 = "1.0.60"
+quote = "1"
+syn = { version = "2", features = ["extra-traits"] }

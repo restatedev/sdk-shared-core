@@ -9,15 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use super::header::UnknownMessageType;
-use super::messages::{RestateEncodableMessage, RestateMessage};
+use super::messages::RestateMessage;
 use super::*;
 
-use std::mem;
-
+use crate::buffer::{BufferReader, RestateBuf};
+use crate::proto::Message;
 use crate::vm::errors::CommandTypeMismatchError;
+use crate::Buffer;
 use bytes::{Buf, Bytes};
-use bytes_utils::SegmentedBuf;
-use prost::Message;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DecodingError {
@@ -34,35 +33,14 @@ pub enum DecodingError {
     UnknownMessageType(#[from] UnknownMessageType),
 }
 
-// --- Input protocol.message encoder
-
-pub struct Encoder {
-    service_protocol_version: Version,
-}
-
-impl Encoder {
-    pub fn new(service_protocol_version: Version) -> Self {
-        assert!(
-            service_protocol_version >= Version::minimum_supported_version(),
-            "Encoder only supports service protocol version {:?} <= x <= {:?}",
-            Version::minimum_supported_version(),
-            Version::maximum_supported_version()
-        );
-        Self {
-            service_protocol_version,
-        }
-    }
-
-    /// Encodes a protocol message to bytes
-    pub fn encode<M: RestateEncodableMessage>(&self, msg: &M) -> Bytes {
-        msg.encode(self.service_protocol_version)
-    }
-}
-
 // --- Input protocol.message decoder
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RawMessage(MessageHeader, Bytes);
+/// A protocol message peeled off the decoder, header + body. The body is
+/// carried as [`Buffer`] so a host-backed input flows through decode as a
+/// `Buffer::Host` sub-view (zero-copy), or as a `Buffer::InMemory` for
+/// inline / cross-segment bodies (materialised path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawMessage(MessageHeader, Buffer);
 
 impl RawMessage {
     pub fn ty(&self) -> MessageType {
@@ -80,16 +58,36 @@ impl RawMessage {
                 CommandTypeMismatchError::new(command_index, self.0.message_type(), M::ty()),
             ));
         }
-        M::decode(self.1).map_err(|e| DecodingError::DecodeMessage(self.0.message_type(), e))
+        let ty = self.0.message_type();
+        match self.1 {
+            Buffer::InMemory(b) => M::decode(b).map_err(|e| DecodingError::DecodeMessage(ty, e)),
+            Buffer::Host(h) => {
+                // Wrap the single-segment host body in a BufferReader so
+                // prost decodes via the same Buf + RestateBuf machinery
+                // used by the protocol Decoder. Single-segment means
+                // `try_take_host_slice` succeeds whenever a `bytes =
+                // "buffer"` field fits in the body — zero-copy.
+                let mut src = BufferReader::new();
+                src.push(Buffer::Host(h));
+                M::decode(&mut src).map_err(|e| DecodingError::DecodeMessage(ty, e))
+            }
+        }
     }
 
     pub fn decode_as_notification(self) -> Result<Notification, DecodingError> {
         let ty = self.ty();
         assert!(ty.is_notification(), "Expected a notification");
 
-        let messages::NotificationTemplate { id, result } =
-            messages::NotificationTemplate::decode(self.1)
-                .map_err(|e| DecodingError::DecodeMessage(self.0.message_type(), e))?;
+        let messages::NotificationTemplate { id, result } = match self.1 {
+            Buffer::InMemory(b) => messages::NotificationTemplate::decode(b)
+                .map_err(|e| DecodingError::DecodeMessage(self.0.message_type(), e))?,
+            Buffer::Host(h) => {
+                let mut src = BufferReader::new();
+                src.push(Buffer::Host(h));
+                messages::NotificationTemplate::decode(&mut src)
+                    .map_err(|e| DecodingError::DecodeMessage(self.0.message_type(), e))?
+            }
+        };
 
         Ok(Notification {
             id: id.ok_or(DecodingError::MissingField {
@@ -104,9 +102,18 @@ impl RawMessage {
     }
 }
 
-/// Stateful decoder to decode [`RestateMessage`]
+/// Stateful decoder to decode [`RestateMessage`]s out of a stream of
+/// host-aware input buffers.
+///
+/// Owns one [`BufferReader`] — the protocol decoder appends new segments
+/// via [`Self::push`] and reads the 8-byte header off it via `Buf`. Each
+/// message body is extracted as a [`Buffer`] (single-segment) and
+/// returned in a [`RawMessage`]. When the body fits entirely within a
+/// single head host segment the body is a `Buffer::Host(sub_view)`
+/// (zero-copy); cross-segment bodies and inline bodies materialise into
+/// `Buffer::InMemory`.
 pub struct Decoder {
-    buf: SegmentedBuf<Bytes>,
+    reader: BufferReader,
     state: DecoderState,
 }
 
@@ -119,70 +126,74 @@ impl Decoder {
             Version::maximum_supported_version()
         );
         Self {
-            buf: SegmentedBuf::new(),
+            reader: BufferReader::new(),
             state: DecoderState::WaitingHeader,
         }
     }
 
-    /// Concatenate a new chunk in the internal buffer.
-    pub fn push(&mut self, buf: Bytes) {
-        self.buf.push(buf)
+    /// Append a new buffer segment to the internal reader.
+    pub fn push(&mut self, buf: impl Into<Buffer>) {
+        self.reader.push(buf);
     }
 
     /// Try to consume the next protocol.message in the internal buffer.
     pub fn consume_next(&mut self) -> Result<Option<RawMessage>, DecodingError> {
         loop {
-            let remaining = self.buf.remaining();
-
-            if remaining < self.state.needs_bytes() {
-                return Ok(None);
-            }
-
-            if let Some(res) = self.state.decode(&mut self.buf)? {
-                return Ok(Some(res));
+            match self.state {
+                DecoderState::WaitingHeader => {
+                    if self.reader.remaining() < 8 {
+                        return Ok(None);
+                    }
+                    let header: MessageHeader = self.reader.get_u64().try_into()?;
+                    self.state = DecoderState::WaitingPayload(header);
+                }
+                DecoderState::WaitingPayload(header) => {
+                    let body_len = header.message_length() as usize;
+                    if self.reader.remaining() < body_len {
+                        return Ok(None);
+                    }
+                    let body = take_body(&mut self.reader, body_len);
+                    self.state = DecoderState::WaitingHeader;
+                    return Ok(Some(RawMessage(header, body)));
+                }
             }
         }
     }
 }
 
-#[derive(Default)]
+/// Peel a body of exactly `len` bytes off the reader, preferring the
+/// zero-copy single-segment path.
+///
+/// - **Single-segment Host**: mint a sub-view and advance — zero-copy.
+/// - **Single-segment InMemory**: `Bytes::split_to` — zero-copy.
+/// - **Cross-segment**: materialise into a fresh `Bytes` via the
+///   `Buf::copy_to_bytes` path.
+fn take_body(reader: &mut BufferReader, len: usize) -> Buffer {
+    if len == 0 {
+        return Buffer::InMemory(Bytes::new());
+    }
+    // Single-segment host fast path.
+    if let Some(handle) = reader.try_take_host_slice(len) {
+        return Buffer::Host(handle);
+    }
+    // Single-segment InMemory or cross-segment: defer to `copy_to_bytes`.
+    // The `BufferReader::copy_to_bytes` impl picks the zero-copy
+    // `Bytes::split_to` path when the head is an InMemory segment with
+    // enough bytes, otherwise materialises.
+    Buffer::InMemory(reader.copy_to_bytes(len))
+}
+
+#[derive(Copy, Clone, Debug)]
 enum DecoderState {
-    #[default]
     WaitingHeader,
     WaitingPayload(MessageHeader),
-}
-
-impl DecoderState {
-    fn needs_bytes(&self) -> usize {
-        match self {
-            DecoderState::WaitingHeader => 8,
-            DecoderState::WaitingPayload(h) => h.message_length() as usize,
-        }
-    }
-
-    fn decode(&mut self, mut buf: impl Buf) -> Result<Option<RawMessage>, DecodingError> {
-        let mut res = None;
-
-        *self = match mem::take(self) {
-            DecoderState::WaitingHeader => {
-                let header: MessageHeader = buf.get_u64().try_into()?;
-                DecoderState::WaitingPayload(header)
-            }
-            DecoderState::WaitingPayload(h) => {
-                let msg = RawMessage(h, buf.copy_to_bytes(h.message_length() as usize));
-                res = Some(msg);
-                DecoderState::WaitingHeader
-            }
-        };
-
-        Ok(res)
-    }
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+    use crate::tests::Encoder;
 
     #[test]
     fn fill_decoder_with_several_messages() {
@@ -206,7 +217,7 @@ mod tests {
 
         let expected_msg_1 = messages::InputCommandMessage {
             value: Some(messages::Value {
-                content: Bytes::from_static("input".as_bytes()),
+                content: Buffer::InMemory(Bytes::from_static("input".as_bytes())),
             }),
             ..messages::InputCommandMessage::default()
         };
@@ -273,7 +284,7 @@ mod tests {
 
         let expected_msg = messages::InputCommandMessage {
             value: Some(messages::Value {
-                content: Bytes::from_static("input".as_bytes()),
+                content: Buffer::InMemory(Bytes::from_static("input".as_bytes())),
             }),
             ..messages::InputCommandMessage::default()
         };

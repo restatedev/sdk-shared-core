@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "restate-wire-derive"]
+
 [package]
 name = "restate-sdk-shared-core"
 version = "0.10.0"
@@ -19,8 +22,8 @@ tracing_pretty = ["dep:tracing-subscriber"]
 [dependencies]
 thiserror = "2.0"
 prost = "0.14"
+restate-wire-derive = { path = "./restate-wire-derive", version = "0.10.0" }
 bytes = "1.10"
-bytes-utils = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
 pastey = "0.2"

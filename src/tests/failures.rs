@@ -157,14 +157,14 @@ mod journal_mismatch {
             SetStateCommandMessage {
                 key: Bytes::from_static(b"my-key"),
                 value: Some(messages::Value {
-                    content: Bytes::from_static(b"my-value"),
+                    content: Buffer::InMemory(Bytes::from_static(b"my-value")),
                 }),
                 ..Default::default()
             },
             SetStateCommandMessage {
                 key: Bytes::from_static(b"my-key"),
                 value: Some(messages::Value {
-                    content: Bytes::from_static(b"another-value"),
+                    content: Buffer::InMemory(Bytes::from_static(b"another-value")),
                 }),
                 ..Default::default()
             },
@@ -185,7 +185,7 @@ mod journal_mismatch {
                 service_name: "greeter".to_owned(),
                 handler_name: "greet".to_owned(),
                 key: "my-key".to_owned(),
-                parameter: Bytes::from_static(b"123"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"123")),
                 invocation_id_notification_idx: 1,
                 ..Default::default()
             },
@@ -193,7 +193,7 @@ mod journal_mismatch {
                 service_name: "greeter".to_owned(),
                 handler_name: "greet".to_owned(),
                 key: "my-key".to_owned(),
-                parameter: Bytes::from_static(b"456"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"456")),
                 invocation_id_notification_idx: 1,
                 ..Default::default()
             },
@@ -270,7 +270,7 @@ mod journal_mismatch {
             state_map: vec![StateEntry {
                 key: Bytes::from_static(b"STATE"),
                 // NOTE: this is different payload than the one recorded in the entry!
-                value: Bytes::from_static(b"456"),
+                value: Buffer::InMemory(Bytes::from_static(b"456")),
             }],
             ..Default::default()
         })
@@ -279,7 +279,7 @@ mod journal_mismatch {
             service_name: "greeter".to_owned(),
             handler_name: "greet".to_owned(),
             key: "my-key".to_owned(),
-            parameter: Bytes::from_static(b"123"),
+            parameter: Buffer::InMemory(Bytes::from_static(b"123")),
             invocation_id_notification_idx: 1,
             ..Default::default()
         })
@@ -287,7 +287,7 @@ mod journal_mismatch {
             service_name: "greeter".to_owned(),
             handler_name: "greet".to_owned(),
             key: "my-key".to_owned(),
-            parameter: Bytes::from_static(b"123"),
+            parameter: Buffer::InMemory(Bytes::from_static(b"123")),
             invocation_id_notification_idx: 2,
             result_completion_id: 3,
             ..Default::default()
@@ -295,7 +295,7 @@ mod journal_mismatch {
         .input(SetStateCommandMessage {
             key: Bytes::from_static(b"my-key"),
             value: Some(messages::Value {
-                content: Bytes::from_static(b"123"),
+                content: Buffer::InMemory(Bytes::from_static(b"123")),
             }),
             ..Default::default()
         })
@@ -303,7 +303,7 @@ mod journal_mismatch {
             key: Bytes::from_static(b"STATE"),
             result: Some(messages::get_eager_state_command_message::Result::Value(
                 messages::Value {
-                    content: Bytes::from_static(b"123"),
+                    content: Buffer::InMemory(Bytes::from_static(b"123")),
                 },
             )),
             ..Default::default()
@@ -380,7 +380,7 @@ mod journal_mismatch {
                 service_name: "greeter".to_owned(),
                 handler_name: "greet".to_owned(),
                 key: "my-key".to_owned(),
-                parameter: Bytes::from_static(b"123"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"123")),
                 invocation_id_notification_idx: 1,
                 ..Default::default()
             })
@@ -425,7 +425,7 @@ mod journal_mismatch {
                 service_name: "greeter".to_owned(),
                 handler_name: "greet".to_owned(),
                 key: "my-key".to_owned(),
-                parameter: Bytes::from_static(b"123"),
+                parameter: Buffer::InMemory(Bytes::from_static(b"123")),
                 invocation_id_notification_idx: 1,
                 result_completion_id: 2,
                 ..Default::default()
@@ -469,7 +469,7 @@ mod journal_mismatch {
             .input(SetStateCommandMessage {
                 key: Bytes::from_static(b"my-key"),
                 value: Some(messages::Value {
-                    content: Bytes::from_static(b"123"),
+                    content: Buffer::InMemory(Bytes::from_static(b"123")),
                 }),
                 ..Default::default()
             })
@@ -507,7 +507,7 @@ mod journal_mismatch {
                 state_map: vec![StateEntry {
                     key: Bytes::from_static(b"my-key"),
                     // This is the "current" value, different from recorded
-                    value: Bytes::from_static(b"456"),
+                    value: Buffer::InMemory(Bytes::from_static(b"456")),
                 }],
                 ..Default::default()
             })
@@ -516,7 +516,7 @@ mod journal_mismatch {
                 key: Bytes::from_static(b"my-key"),
                 result: Some(messages::get_eager_state_command_message::Result::Value(
                     messages::Value {
-                        content: Bytes::from_static(b"123"),
+                        content: Buffer::InMemory(Bytes::from_static(b"123")),
                     },
                 )),
                 ..Default::default()
@@ -560,7 +560,7 @@ mod journal_mismatch {
                 vm.sys_complete_promise(
                     "my-prom".to_owned(),
                     // Different bytes than recorded, but marked as unstable.
-                    NonEmptyValue::Success(Bytes::from_static(b"456")),
+                    NonEmptyValue::Success(Bytes::from_static(b"456").into()),
                     PayloadOptions::unstable(),
                 )
                 .unwrap();
@@ -594,7 +594,7 @@ mod journal_mismatch {
                 vm.sys_complete_awakeable(
                     "awk-123".to_owned(),
                     // Different bytes than recorded, but marked as unstable.
-                    NonEmptyValue::Success(Bytes::from_static(b"456")),
+                    NonEmptyValue::Success(Bytes::from_static(b"456").into()),
                     PayloadOptions::unstable(),
                 )
                 .unwrap();
@@ -626,7 +626,7 @@ mod journal_mismatch {
 
                 vm.sys_write_output(
                     // Different bytes than recorded, but marked as unstable.
-                    NonEmptyValue::Success(Bytes::from_static(b"456")),
+                    NonEmptyValue::Success(Bytes::from_static(b"456").into()),
                     PayloadOptions::unstable(),
                 )
                 .unwrap();

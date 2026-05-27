@@ -1,5 +1,7 @@
 use crate::service_protocol::messages::{CombinatorType, Future};
-use crate::service_protocol::{CompletionId, Notification, NotificationId, NotificationResult};
+use crate::service_protocol::{
+    CompletionId, Notification, NotificationId, NotificationResult, NotificationResultExt,
+};
 use crate::vm::errors::BadProposeRunCompletionAck;
 use crate::{Error, NotificationHandle, UnresolvedFuture, CANCEL_NOTIFICATION_HANDLE};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -488,7 +490,7 @@ mod tests {
     fn success(id: u32) -> Notification {
         Notification {
             id: NotificationId::CompletionId(id),
-            result: NotificationResult::Void(Void {}),
+            result: NotificationResult::Void(Void::default()),
         }
     }
 

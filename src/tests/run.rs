@@ -39,7 +39,7 @@ fn enter_then_propose_completion_then_suspend() {
 
             vm.propose_run_completion(
                 handle,
-                RunExitResult::Success(Bytes::from_static(b"123")),
+                RunExitResult::Success(Bytes::from_static(b"123").into()),
                 RetryPolicy::default(),
             )
             .unwrap();
@@ -75,7 +75,7 @@ fn enter_then_propose_completion_then_suspend() {
         eq(ProposeRunCompletionMessage {
             result_completion_id: 1,
             result: Some(propose_run_completion_message::Result::Value(
-                Bytes::from_static(b"123")
+                Bytes::from_static(b"123").into()
             )),
         })
     );
@@ -130,7 +130,7 @@ fn enter_then_propose_completion_then_complete() {
 
             vm.propose_run_completion(
                 handle,
-                RunExitResult::Success(Bytes::from_static(b"123")),
+                RunExitResult::Success(Bytes::from_static(b"123").into()),
                 RetryPolicy::default(),
             )
             .unwrap();
@@ -180,7 +180,7 @@ fn enter_then_propose_completion_then_complete() {
         ProposeRunCompletionMessage {
             result_completion_id: 1,
             result: Some(propose_run_completion_message::Result::Value(
-                Bytes::from_static(b"123")
+                Bytes::from_static(b"123").into()
             )),
         }
     );
@@ -311,7 +311,7 @@ fn enter_then_notify_input_closed_then_propose_completion() {
             // Propose run completion
             vm.propose_run_completion(
                 handle,
-                RunExitResult::Success(Bytes::from_static(b"123")),
+                RunExitResult::Success(Bytes::from_static(b"123").into()),
                 RetryPolicy::default(),
             )
             .unwrap();
@@ -336,7 +336,7 @@ fn enter_then_notify_input_closed_then_propose_completion() {
         ProposeRunCompletionMessage {
             result_completion_id: 1,
             result: Some(propose_run_completion_message::Result::Value(
-                Bytes::from_static(b"123")
+                Bytes::from_static(b"123").into()
             )),
         }
     );
@@ -367,7 +367,7 @@ fn replay_without_completion() {
             );
             vm.propose_run_completion(
                 handle,
-                RunExitResult::Success(Bytes::from_static(b"123")),
+                RunExitResult::Success(Bytes::from_static(b"123").into()),
                 RetryPolicy::default(),
             )
             .unwrap();
@@ -385,7 +385,7 @@ fn replay_without_completion() {
         ProposeRunCompletionMessage {
             result_completion_id: 1,
             result: Some(propose_run_completion_message::Result::Value(
-                Bytes::from_static(b"123")
+                Bytes::from_static(b"123").into()
             )),
         }
     );
@@ -453,7 +453,7 @@ fn replay_without_completion_with_any() {
 
             vm.propose_run_completion(
                 run_handle,
-                RunExitResult::Success(Bytes::from_static(b"123")),
+                RunExitResult::Success(Bytes::from_static(b"123").into()),
                 RetryPolicy::default(),
             )
             .unwrap();
@@ -474,7 +474,7 @@ fn replay_without_completion_with_any() {
         ProposeRunCompletionMessage {
             result_completion_id: 1,
             result: Some(propose_run_completion_message::Result::Value(
-                Bytes::from_static(b"123")
+                Bytes::from_static(b"123").into()
             )),
         }
     );
@@ -603,7 +603,7 @@ mod v7_with_ack {
 
                 vm.propose_run_completion(
                     handle,
-                    RunExitResult::Success(Bytes::from_static(b"result")),
+                    RunExitResult::Success(Bytes::from_static(b"result").into()),
                     RetryPolicy::default(),
                 )
                 .unwrap();
@@ -650,7 +650,7 @@ mod v7_with_ack {
             ProposeRunCompletionMessage {
                 result_completion_id: 1,
                 result: Some(propose_run_completion_message::Result::Value(
-                    Bytes::from_static(b"result")
+                    Bytes::from_static(b"result").into()
                 )),
             }
         );
@@ -774,7 +774,7 @@ mod v7_with_ack {
 
                 vm.propose_run_completion(
                     handle,
-                    RunExitResult::Success(Bytes::from_static(b"result")),
+                    RunExitResult::Success(Bytes::from_static(b"result").into()),
                     RetryPolicy::default(),
                 )
                 .unwrap();
@@ -827,8 +827,11 @@ mod v7_with_ack {
         // without going through run_without_closing_input (which would assert ready-to-execute).
         let mut decoder =
             crate::service_protocol::Decoder::new(Version::maximum_supported_version());
-        while let TakeOutputResult::Buffer(b) = output.vm.take_output() {
-            decoder.push(b);
+        while let Some(fragment) = output.vm.take_output_next() {
+            match fragment {
+                crate::Buffer::InMemory(b) => decoder.push(b),
+                crate::Buffer::Host(_) => panic!("Host fragments not supported in test infra"),
+            }
         }
         let mut raw_output: Vec<_> =
             std::iter::from_fn(|| decoder.consume_next().unwrap()).collect();
