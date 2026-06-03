@@ -690,7 +690,7 @@ mod journal_mismatch {
             .run(|vm| {
                 vm.sys_input().unwrap();
 
-                let run_handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                let run_handle = vm.sys_run("my-side-effect".to_owned()).unwrap().handle;
 
                 // On await, this is the expected error
                 assert_that!(
@@ -821,7 +821,7 @@ mod journal_mismatch {
                 //
                 // Otherwise the notification for the awakeable should be in the journal before the second awakeable!
 
-                let (_, awakeable_handle) = vm.sys_awakeable().unwrap();
+                let awakeable_handle = vm.sys_awakeable().unwrap().handle;
 
                 // On await, this is the expected error
                 assert_that!(

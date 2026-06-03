@@ -23,7 +23,8 @@ fn enter_then_propose_completion_then_suspend() {
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(!replayed);
 
             assert_eq!(
                 vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
@@ -113,7 +114,8 @@ fn enter_then_propose_completion_then_complete() {
         .run_without_closing_input(|vm, encoder| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(!replayed);
             assert_eq!(
                 vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
                 AwaitResponse::ExecuteRun(handle)
@@ -206,7 +208,8 @@ fn enter_then_propose_completion_then_complete_with_failure() {
         .run_without_closing_input(|vm, encoder| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(!replayed);
 
             assert_eq!(
                 vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
@@ -291,7 +294,8 @@ fn enter_then_notify_input_closed_then_propose_completion() {
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(!replayed);
             assert_eq!(
                 vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
                 AwaitResponse::ExecuteRun(handle)
@@ -359,7 +363,8 @@ fn replay_without_completion() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(!replayed);
 
             assert_eq!(
                 vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
@@ -422,7 +427,11 @@ fn replay_without_completion_with_any() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let run_handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let RunHandle {
+                replayed,
+                handle: run_handle,
+            } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(!replayed);
             let first_sleep_handle = vm
                 .sys_sleep(Default::default(), Duration::ZERO, None)
                 .unwrap();
@@ -518,7 +527,8 @@ fn replay_with_completion() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(replayed);
             assert_eq!(
                 vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
                 AwaitResponse::AnyCompleted
@@ -543,6 +553,61 @@ fn replay_with_completion() {
 }
 
 #[test]
+fn replay_with_completion_followed_by_another_command_is_replayed() {
+    let mut output = VMTestCase::new()
+        .input(start_message(4))
+        .input(input_entry_message(b"my-data"))
+        .input(RunCommandMessage {
+            result_completion_id: 1,
+            name: "my-side-effect".to_owned(),
+        })
+        .input(SleepCommandMessage {
+            wake_up_time: 0,
+            result_completion_id: 2,
+            ..Default::default()
+        })
+        .input(RunCompletionNotificationMessage {
+            completion_id: 1,
+            result: Some(run_completion_notification_message::Result::Value(
+                Bytes::from_static(b"123").into(),
+            )),
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            // We're still replaying and the run completion is already buffered,
+            // so the closure must NOT be executed.
+            let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(replayed);
+            assert!(vm.state().is_replaying());
+
+            // Replay the trailing command too.
+            let _sleep_handle = vm
+                .sys_sleep(Default::default(), Duration::ZERO, None)
+                .unwrap();
+
+            assert_eq!(
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::AnyCompleted
+            );
+            let result = vm.take_notification(handle).unwrap().unwrap();
+            assert2::assert!(let Value::Success(s) = result);
+
+            vm.sys_write_output(NonEmptyValue::Success(s), PayloadOptions::default())
+                .unwrap();
+            vm.sys_end().unwrap();
+        });
+
+    // The run was replayed: no RunCommand nor ProposeRunCompletion is emitted.
+    assert_that!(
+        output.next_decoded::<OutputCommandMessage>().unwrap(),
+        is_output_with_success(b"123")
+    );
+    output.next_decoded::<EndMessage>().unwrap();
+    assert_eq!(output.next(), None);
+}
+
+#[test]
 fn enter_then_notify_error() {
     let mut output = VMTestCase::new()
         .input(start_message(1))
@@ -550,7 +615,8 @@ fn enter_then_notify_error() {
         .run(|vm| {
             vm.sys_input().unwrap();
 
-            let _ = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            let RunHandle { replayed, .. } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(!replayed);
 
             vm.notify_error(
                 Error::internal(Cow::Borrowed("my-error"))
@@ -595,7 +661,9 @@ mod v7_with_ack {
             .run_without_closing_input(|vm, encoder| {
                 vm.sys_input().unwrap();
 
-                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
                 assert_eq!(
                     vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
                     AwaitResponse::ExecuteRun(handle)
@@ -687,7 +755,9 @@ mod v7_with_ack {
             .run_without_closing_input(|vm, encoder| {
                 vm.sys_input().unwrap();
 
-                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
                 assert_eq!(
                     vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
                     AwaitResponse::ExecuteRun(handle)
@@ -766,7 +836,9 @@ mod v7_with_ack {
             .run_without_closing_input(|vm, encoder| {
                 vm.sys_input().unwrap();
 
-                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
                 assert_eq!(
                     vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
                     AwaitResponse::ExecuteRun(handle)
@@ -864,20 +936,12 @@ mod retry_policy {
                 result_completion_id: 1,
                 name: "my-side-effect".to_string(),
             })
-            .input(RunCompletionNotificationMessage {
-                completion_id: 1,
-                result: Some(run_completion_notification_message::Result::Failure(
-                    Failure {
-                        code: 500,
-                        message: "my-error".to_string(),
-                        metadata: vec![],
-                    },
-                )),
-            })
-            .run(|vm| {
+            .run_without_closing_input(|vm, encoder| {
                 vm.sys_input().unwrap();
 
-                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
                 vm.propose_run_completion(
                     handle,
                     RunExitResult::RetryableFailure {
@@ -887,6 +951,18 @@ mod retry_policy {
                     retry_policy,
                 )
                 .unwrap();
+
+                vm.notify_input(encoder.encode(&RunCompletionNotificationMessage {
+                    completion_id: 1,
+                    result: Some(run_completion_notification_message::Result::Failure(
+                        Failure {
+                            code: 500,
+                            message: "my-error".to_string(),
+                            metadata: vec![],
+                        },
+                    )),
+                }));
+                vm.notify_input_closed();
 
                 assert_eq!(
                     vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
@@ -948,7 +1024,9 @@ mod retry_policy {
             .input(input_entry_message(b"my-data"))
             .run(|vm| {
                 vm.sys_input().unwrap();
-                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
                 assert!(vm
                     .propose_run_completion(
                         handle,
@@ -1163,7 +1241,9 @@ mod retry_policy {
                     .unwrap();
 
                 // Now try to enter run
-                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
 
                 assert!(vm
                     .propose_run_completion(
@@ -1219,19 +1299,11 @@ mod retry_policy {
                 result_completion_id: 1,
                 name: "my-side-effect".to_string(),
             })
-            .input(RunCompletionNotificationMessage {
-                completion_id: 1,
-                result: Some(run_completion_notification_message::Result::Failure(
-                    Failure {
-                        code: 500,
-                        message: "my-error".to_string(),
-                        metadata: vec![],
-                    },
-                )),
-            })
             .run(|vm| {
                 vm.sys_input().unwrap();
-                let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
                 assert!(vm
                     .propose_run_completion(
                         handle,
@@ -1312,7 +1384,8 @@ mod retry_policy {
         vm.notify_input(encoder.encode(&input_entry_message(b"my-data")));
         vm.notify_input_closed();
         vm.sys_input().unwrap();
-        let handle = vm.sys_run("my-side-effect".to_owned()).unwrap();
+        let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+        assert!(!replayed);
 
         let err = vm
             .propose_run_completion(

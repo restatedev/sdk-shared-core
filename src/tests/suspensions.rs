@@ -54,8 +54,8 @@ fn trigger_suspension_with_correct_awakeable() {
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
 
-            let (_, _h1) = vm.sys_awakeable().unwrap();
-            let (_, h2) = vm.sys_awakeable().unwrap();
+            let _h1 = vm.sys_awakeable().unwrap().handle;
+            let h2 = vm.sys_awakeable().unwrap().handle;
 
             // Also take_async_result returns Ok(None)
             assert_that!(vm.take_notification(h2), ok(none()));
@@ -91,7 +91,7 @@ fn await_many_notifications() {
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
 
-            let (_, h1) = vm.sys_awakeable().unwrap();
+            let h1 = vm.sys_awakeable().unwrap().handle;
             let h2 = vm.create_signal_handle("abc".into()).unwrap();
             let h3 = vm
                 .sys_state_get("Personaggio".to_owned(), PayloadOptions::default())
@@ -149,8 +149,8 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
         .run_without_closing_input(|vm, encoder| {
             vm.sys_input().unwrap();
 
-            let (_, h1) = vm.sys_awakeable().unwrap();
-            let (_, h2) = vm.sys_awakeable().unwrap();
+            let h1 = vm.sys_awakeable().unwrap().handle;
+            let h2 = vm.sys_awakeable().unwrap().handle;
 
             // Do progress will ask for more input
             assert_that!(

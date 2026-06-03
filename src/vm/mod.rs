@@ -17,11 +17,11 @@ use crate::vm::errors::{
 use crate::vm::run_state::RunState;
 use crate::vm::transitions::*;
 use crate::{
-    AttachInvocationTarget, AwaitResponse, CallHandle, CommandRelationship, Error, Header,
-    ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
-    NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, SendHandle,
-    TakeOutputResult, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult, Value,
-    CANCEL_NOTIFICATION_HANDLE,
+    AttachInvocationTarget, AwaitResponse, AwakeableHandle, CallHandle, CommandRelationship, Error,
+    Header, ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
+    NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, RunHandle,
+    SendHandle, TakeOutputResult, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult,
+    Value, CANCEL_NOTIFICATION_HANDLE,
 };
 use async_results_state::AsyncResultsState;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -923,7 +923,7 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_awakeable(&mut self) -> VMResult<(String, NotificationHandle)> {
+    fn sys_awakeable(&mut self) -> VMResult<AwakeableHandle> {
         invocation_debug_logs!(self, "Executing 'Create awakeable'");
 
         let signal_id = self.context.journal.next_signal_notification_id();
@@ -933,10 +933,10 @@ impl super::VM for CoreVM {
             NotificationId::SignalId(signal_id),
         ))?;
 
-        Ok((
-            awakeable_id_str(&self.context.expect_start_info().id, signal_id),
+        Ok(AwakeableHandle {
+            id: awakeable_id_str(&self.context.expect_start_info().id, signal_id),
             handle,
-        ))
+        })
     }
 
     #[instrument(
@@ -1135,12 +1135,12 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_run(&mut self, name: String) -> VMResult<NotificationHandle> {
+    fn sys_run(&mut self, name: String) -> VMResult<RunHandle> {
         match self.do_transition(SysRun(name.clone())) {
             Ok(handle) => {
-                if enabled!(Level::DEBUG) {
+                if enabled!(Level::DEBUG) && !handle.replayed {
                     // Store the name, we need it later when completing
-                    self.sys_run_names.insert(handle, name);
+                    self.sys_run_names.insert(handle.handle, name);
                 }
                 Ok(handle)
             }
@@ -1166,10 +1166,9 @@ impl super::VM for CoreVM {
         retry_policy: RetryPolicy,
     ) -> VMResult<()> {
         if enabled!(Level::DEBUG) {
-            let name: &str = self
+            let name = self
                 .sys_run_names
-                .get(&notification_handle)
-                .map(String::as_str)
+                .remove(&notification_handle)
                 .unwrap_or_default();
             match &value {
                 RunExitResult::Success(_) => {

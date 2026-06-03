@@ -132,7 +132,7 @@ fn await_twice_the_same_handle() {
         .run_without_closing_input(|vm, _| {
             vm.sys_input().unwrap();
 
-            let (_, h) = vm.sys_awakeable().unwrap();
+            let h = vm.sys_awakeable().unwrap().handle;
 
             assert_eq!(
                 vm.do_await(h.into()).unwrap(),
@@ -216,7 +216,7 @@ mod do_await {
 
             let mut handles = Vec::with_capacity(n);
             for _ in 0..n {
-                let (_, h) = vm.sys_awakeable().unwrap();
+                let h = vm.sys_awakeable().unwrap().handle;
                 handles.push(h);
             }
 
@@ -715,9 +715,9 @@ fn awaiting_on_shrinks_across_calls() {
         .run_without_closing_input(|vm, encoder| {
             vm.sys_input().unwrap();
 
-            let (_, h1) = vm.sys_awakeable().unwrap(); // signal 17
-            let (_, h2) = vm.sys_awakeable().unwrap(); // signal 18
-            let (_, h3) = vm.sys_awakeable().unwrap(); // signal 19
+            let h1 = vm.sys_awakeable().unwrap().handle; // signal 17
+            let h2 = vm.sys_awakeable().unwrap().handle; // signal 18
+            let h3 = vm.sys_awakeable().unwrap().handle; // signal 19
 
             let fut = || all_completed!(h1, h2, h3);
 
