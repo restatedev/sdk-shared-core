@@ -22,7 +22,7 @@ use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{
     CommandRelationship, CommandType, EntryRetryInfo, Error, Header, Input, NotificationHandle,
-    PayloadOptions, RetryPolicy, RunExitResult, Version,
+    PayloadOptions, RetryPolicy, RunExitResult, RunHandle, Version,
 };
 use bytes::Bytes;
 use std::collections::VecDeque;
@@ -668,7 +668,7 @@ fn process_get_entry_keys_during_replay(
 pub(crate) struct SysRun(pub(crate) String);
 
 impl TransitionAndReturn<Context, SysRun> for State {
-    type Output = NotificationHandle;
+    type Output = RunHandle;
 
     fn transition_and_return(
         self,
@@ -690,10 +690,21 @@ impl TransitionAndReturn<Context, SysRun> for State {
 
         let notification_id = NotificationId::CompletionId(result_completion_id);
         let mut needs_execution = true;
-        if let State::Replaying { async_results, .. } = &mut s {
-            // If we're replying,
-            // we need to check whether there is a completion already,
-            // otherwise enqueue it to execute it.
+        if let State::Replaying { async_results, .. } | State::Processing { async_results, .. } =
+            &mut s
+        {
+            // Previously in the shared core we used to do this non_deterministic_find_id check only in replaying,
+            // but now we do it either in replaying or processing. Why is it safe?
+            //
+            // * non_deterministic_find_id returns true iff the completion is in the journal, looking at prefix and suffix of the currently known journal:
+            //      * If we're replaying, we have all the replayed journal prefix at hand (because we pre-load it).
+            //      * If we're processing, we have all the replayed journal prefix at hand PLUS commands we have executed in this attempt and various notifications.
+            // * If non_deterministic_find_id returns true, then the completion must be in the journal, that means either:
+            //      * We're replaying, and the completion was already in the journal
+            //          -> in that case needs_execution = false is correct because the run closure was executed in a previous attempt.
+            //      * We're processing, and the completion was already in the journal
+            //          -> In that case either we transitioned to processing (we do that on sys_*, not on do_await!) and the completion was in the replayed journal prefix.
+            //          -> or we executed the run closure in this attempt. But this contradicts the ordering of events: sys_run gets called before propose_run_completion for that run!
             if async_results.non_deterministic_find_id(&notification_id) {
                 trace!(
                     "Found notification for {handle:?} with id {notification_id:?} while replaying, the run closure won't be executed."
@@ -718,7 +729,13 @@ impl TransitionAndReturn<Context, SysRun> for State {
             };
         }
 
-        Ok((s, handle))
+        Ok((
+            s,
+            RunHandle {
+                replayed: !needs_execution,
+                handle,
+            },
+        ))
     }
 }
 

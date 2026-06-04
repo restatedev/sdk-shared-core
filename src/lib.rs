@@ -376,6 +376,19 @@ pub enum State {
     Closed = 3,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AwakeableHandle {
+    pub id: String,
+    pub handle: NotificationHandle,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct RunHandle {
+    /// If true, the run result will be replayed, meaning the SDK don't need to schedule the closure for execution.
+    pub replayed: bool,
+    pub handle: NotificationHandle,
+}
+
 pub trait VM: Sized {
     fn new(request_headers: impl HeaderMap, options: VMOptions) -> VMResult<Self>;
 
@@ -451,7 +464,7 @@ pub trait VM: Sized {
         options: PayloadOptions,
     ) -> VMResult<SendHandle>;
 
-    fn sys_awakeable(&mut self) -> VMResult<(String, NotificationHandle)>;
+    fn sys_awakeable(&mut self) -> VMResult<AwakeableHandle>;
 
     fn sys_complete_awakeable(
         &mut self,
@@ -480,7 +493,7 @@ pub trait VM: Sized {
         options: PayloadOptions,
     ) -> VMResult<NotificationHandle>;
 
-    fn sys_run(&mut self, name: String) -> VMResult<NotificationHandle>;
+    fn sys_run(&mut self, name: String) -> VMResult<RunHandle>;
 
     fn propose_run_completion(
         &mut self,
