@@ -597,6 +597,24 @@ impl CommandMessageHeaderDiff for CompletePromiseCommandMessage {
     }
 }
 
+impl CommandMessageHeaderDiff for SleepCommandMessage {
+    fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
+        if self.name != expected.name {
+            f.write_diff("name", &self.name, &expected.name)?;
+        }
+
+        if self.result_completion_id != expected.result_completion_id {
+            f.write_diff(
+                "result_completion_id",
+                self.result_completion_id,
+                expected.result_completion_id,
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
 impl CommandMessageHeaderDiff for CallCommandMessage {
     fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
         if self.service_name != expected.service_name {
@@ -613,6 +631,14 @@ impl CommandMessageHeaderDiff for CallCommandMessage {
 
         if self.key != expected.key {
             f.write_diff("key", &self.key, &expected.key)?;
+        }
+
+        if self.headers != expected.headers {
+            f.write_diff(
+                "headers",
+                DisplaySlice(&self.headers),
+                DisplaySlice(&expected.headers),
+            )?;
         }
 
         if self.name != expected.name {
@@ -663,24 +689,6 @@ impl CommandMessageHeaderDiff for CallCommandMessage {
     }
 }
 
-impl CommandMessageHeaderDiff for SleepCommandMessage {
-    fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
-        if self.name != expected.name {
-            f.write_diff("name", &self.name, &expected.name)?;
-        }
-
-        if self.result_completion_id != expected.result_completion_id {
-            f.write_diff(
-                "result_completion_id",
-                self.result_completion_id,
-                expected.result_completion_id,
-            )?;
-        }
-
-        Ok(())
-    }
-}
-
 impl CommandMessageHeaderDiff for OneWayCallCommandMessage {
     fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
         if self.service_name != expected.service_name {
@@ -697,6 +705,14 @@ impl CommandMessageHeaderDiff for OneWayCallCommandMessage {
 
         if self.key != expected.key {
             f.write_diff("key", &self.key, &expected.key)?;
+        }
+
+        if self.headers != expected.headers {
+            f.write_diff(
+                "headers",
+                DisplaySlice(&self.headers),
+                DisplaySlice(&expected.headers),
+            )?;
         }
 
         if self.name != expected.name {
@@ -966,6 +982,26 @@ impl fmt::Display for Value {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "error [{}] '{}'", self.code, self.message)
+    }
+}
+
+impl fmt::Display for Header {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}: {}", self.key, self.value)
+    }
+}
+
+struct DisplaySlice<'a, T>(&'a [T]);
+
+impl<'a, T: fmt::Display> fmt::Display for DisplaySlice<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (i, item) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", item)?;
+        }
+        Ok(())
     }
 }
 
