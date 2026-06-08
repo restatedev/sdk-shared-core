@@ -615,6 +615,10 @@ impl CommandMessageHeaderDiff for CallCommandMessage {
             f.write_diff("key", &self.key, &expected.key)?;
         }
 
+        if self.name != expected.name {
+            f.write_diff("name", &self.name, &expected.name)?;
+        }
+
         if self.idempotency_key != expected.idempotency_key {
             f.write_diff(
                 "idempotency_key",
@@ -661,8 +665,8 @@ impl CommandMessageHeaderDiff for CallCommandMessage {
 
 impl CommandMessageHeaderDiff for SleepCommandMessage {
     fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
-        if self.wake_up_time != expected.wake_up_time {
-            f.write_diff("wake_up_time", self.wake_up_time, expected.wake_up_time)?;
+        if self.name != expected.name {
+            f.write_diff("name", &self.name, &expected.name)?;
         }
 
         if self.result_completion_id != expected.result_completion_id {
@@ -691,12 +695,12 @@ impl CommandMessageHeaderDiff for OneWayCallCommandMessage {
             f.write_bytes_diff("parameter", &self.parameter, &expected.parameter)?;
         }
 
-        if self.invoke_time != expected.invoke_time {
-            f.write_diff("invoke_time", self.invoke_time, expected.invoke_time)?;
-        }
-
         if self.key != expected.key {
             f.write_diff("key", &self.key, &expected.key)?;
+        }
+
+        if self.name != expected.name {
+            f.write_diff("name", &self.name, &expected.name)?;
         }
 
         if self.idempotency_key != expected.idempotency_key {
@@ -800,6 +804,10 @@ impl CommandMessageHeaderDiff for SendSignalCommandMessage {
 
 impl CommandMessageHeaderDiff for RunCommandMessage {
     fn write_diff(&self, expected: &Self, mut f: crate::fmt::DiffFormatter<'_, '_>) -> fmt::Result {
+        if self.name != expected.name {
+            f.write_diff("name", &self.name, &expected.name)?;
+        }
+
         if self.result_completion_id != expected.result_completion_id {
             f.write_diff(
                 "result_completion_id",
