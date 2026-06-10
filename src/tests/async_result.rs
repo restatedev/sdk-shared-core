@@ -273,7 +273,8 @@ mod do_await {
             // This should not perform any mutations.
             assert_that!(self.vm.do_await(await_on), err(is_suspended()));
             // Drain all buffered output into our decoder
-            while let TakeOutputResult::Buffer(b) = self.vm.take_output() {
+            loop {
+                let b = self.vm.take_output();
                 if b.is_empty() {
                     break;
                 }
@@ -312,7 +313,8 @@ mod do_await {
                 }
             );
             // Drain all buffered output into our decoder
-            while let TakeOutputResult::Buffer(b) = self.vm.take_output() {
+            loop {
+                let b = self.vm.take_output();
                 if b.is_empty() {
                     break;
                 }

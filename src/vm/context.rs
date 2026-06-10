@@ -139,10 +139,6 @@ impl Output {
     pub(crate) fn send_eof(&mut self) {
         self.is_closed = true;
     }
-
-    pub(crate) fn is_closed(&self) -> bool {
-        self.is_closed
-    }
 }
 
 pub(crate) enum EagerGetState {

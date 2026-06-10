@@ -899,7 +899,11 @@ mod v7_with_ack {
         // without going through run_without_closing_input (which would assert ready-to-execute).
         let mut decoder =
             crate::service_protocol::Decoder::new(Version::maximum_supported_version());
-        while let TakeOutputResult::Buffer(b) = output.vm.take_output() {
+        loop {
+            let b = output.vm.take_output();
+            if b.is_empty() {
+                break;
+            }
             decoder.push(b);
         }
         let mut raw_output: Vec<_> =

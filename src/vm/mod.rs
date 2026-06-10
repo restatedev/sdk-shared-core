@@ -20,8 +20,8 @@ use crate::{
     AttachInvocationTarget, AwaitResponse, AwakeableHandle, CallHandle, CommandRelationship, Error,
     Header, ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
     NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, RunHandle,
-    SendHandle, TakeOutputResult, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult,
-    Value, CANCEL_NOTIFICATION_HANDLE,
+    SendHandle, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult, Value,
+    CANCEL_NOTIFICATION_HANDLE,
 };
 use async_results_state::AsyncResultsState;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -382,19 +382,11 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn take_output(&mut self) -> TakeOutputResult {
-        if self.context.output.buffer.has_remaining() {
-            TakeOutputResult::Buffer(
-                self.context
-                    .output
-                    .buffer
-                    .copy_to_bytes(self.context.output.buffer.remaining()),
-            )
-        } else if !self.context.output.is_closed() {
-            TakeOutputResult::Buffer(Bytes::default())
-        } else {
-            TakeOutputResult::EOF
-        }
+    fn take_output(&mut self) -> Bytes {
+        self.context
+            .output
+            .buffer
+            .copy_to_bytes(self.context.output.buffer.remaining())
     }
 
     #[instrument(
