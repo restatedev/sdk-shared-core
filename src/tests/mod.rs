@@ -144,10 +144,13 @@ struct OutputIterator(Decoder);
 impl OutputIterator {
     fn collect_vm(vm: &mut impl VM) -> Self {
         let mut decoder = Decoder::new(Version::maximum_supported_version());
-        while let TakeOutputResult::Buffer(b) = vm.take_output() {
+        loop {
+            let b = vm.take_output();
+            if b.is_empty() {
+                break;
+            }
             decoder.push(b);
         }
-        assert_eq!(vm.take_output(), TakeOutputResult::EOF);
 
         Self(decoder)
     }
@@ -299,10 +302,7 @@ pub fn empty_signal_notification(id: u32) -> SignalNotificationMessage {
 #[test]
 fn take_output_on_newly_initialized_vm() {
     let mut vm = CoreVM::mock_init(Version::maximum_supported_version());
-    assert_that!(
-        vm.take_output(),
-        eq(TakeOutputResult::Buffer(Bytes::default()))
-    );
+    assert_that!(vm.take_output(), eq(Bytes::default()));
 }
 
 #[test]

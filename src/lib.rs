@@ -233,12 +233,6 @@ pub enum AttachInvocationTarget {
     },
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum TakeOutputResult {
-    Buffer(Bytes),
-    EOF,
-}
-
 pub type VMResult<T> = Result<T, Error>;
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -406,7 +400,8 @@ pub trait VM: Sized {
 
     // --- Output stream
 
-    fn take_output(&mut self) -> TakeOutputResult;
+    /// Returns all the bytes currently buffered in the output buffer.
+    fn take_output(&mut self) -> Bytes;
 
     // --- Execution start waiting point
 
