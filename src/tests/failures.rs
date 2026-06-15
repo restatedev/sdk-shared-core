@@ -256,6 +256,104 @@ mod journal_mismatch {
         assert_eq!(output.next(), None);
     }
 
+    /// Replays a one way call triggering a JOURNAL_MISMATCH  error.
+    fn expect_should_pause(test_case: VMTestCase, should_pause: bool) {
+        let mut output = test_case
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(OneWayCallCommandMessage {
+                service_name: "greeter".to_owned(),
+                handler_name: "greet".to_owned(),
+                key: "my-key".to_owned(),
+                parameter: Bytes::from_static(b"123"),
+                invocation_id_notification_idx: 1,
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                // Different parameter than recorded -> journal mismatch
+                let _ = vm.sys_send(
+                    Target {
+                        service: "greeter".to_owned(),
+                        handler: "greet".to_owned(),
+                        key: Some("my-key".to_owned()),
+                        idempotency_key: None,
+                        scope: None,
+                        limit_key: None,
+                        headers: Vec::new(),
+                    },
+                    Bytes::from_static(b"456"),
+                    None,
+                    None,
+                    PayloadOptions::default(),
+                );
+            });
+
+        if should_pause {
+            assert_that!(
+                output.next_decoded::<ErrorMessage>().unwrap(),
+                pat!(ErrorMessage {
+                    code: eq(vm::errors::codes::JOURNAL_MISMATCH.code() as u32),
+                    should_pause: eq(true),
+                    next_retry_delay: eq(None),
+                })
+            );
+        } else {
+            assert_that!(
+                output.next_decoded::<ErrorMessage>().unwrap(),
+                pat!(ErrorMessage {
+                    code: eq(vm::errors::codes::JOURNAL_MISMATCH.code() as u32),
+                    should_pause: eq(false),
+                })
+            );
+        }
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn pause_retry_policy_sets_should_pause_on_mismatch() {
+        expect_should_pause(
+            VMTestCase::with_version_and_vm_options(
+                Version::V7,
+                VMOptions {
+                    non_determinism_checks_retry_policy: NonDeterministicChecksRetryPolicy::Pause,
+                    ..VMOptions::default()
+                },
+            ),
+            true,
+        );
+    }
+
+    #[test]
+    fn follow_retry_policy_does_not_set_should_pause_on_mismatch() {
+        expect_should_pause(
+            VMTestCase::with_version_and_vm_options(
+                Version::V7,
+                VMOptions {
+                    non_determinism_checks_retry_policy:
+                        NonDeterministicChecksRetryPolicy::FollowRetryPolicy,
+                    ..VMOptions::default()
+                },
+            ),
+            false,
+        );
+    }
+
+    #[test]
+    fn pause_retry_policy_on_v6_does_not_set_should_pause() {
+        expect_should_pause(
+            VMTestCase::with_version_and_vm_options(
+                Version::V6,
+                VMOptions {
+                    non_determinism_checks_retry_policy: NonDeterministicChecksRetryPolicy::Pause,
+                    ..VMOptions::default()
+                },
+            ),
+            false,
+        );
+    }
+
     #[test]
     fn disable_non_deterministic_payload_checks_on_vm() {
         let mut output = VMTestCase::with_vm_options(VMOptions {

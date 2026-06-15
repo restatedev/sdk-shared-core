@@ -5,8 +5,8 @@ mod terminal;
 
 use crate::service_protocol::messages::ErrorMessage;
 use crate::vm::context::Context;
-use crate::vm::State;
-use crate::{CoreVM, Error};
+use crate::vm::{errors, State};
+use crate::{CoreVM, Error, NonDeterministicChecksRetryPolicy, Version};
 pub(crate) use async_results::*;
 pub(crate) use input::*;
 pub(crate) use journal::*;
@@ -65,9 +65,14 @@ impl CoreVM {
                         self.last_transition = Ok(new_state);
                         Ok(output)
                     }
-                    Err(e) => {
-                        self.last_transition = Err(e.clone());
+                    Err(mut e) => {
                         tracing::debug!("Failed with error {e}");
+
+                        if self.should_pause_on_non_determinism_error(&e) {
+                            e.should_pause = true;
+                        }
+
+                        self.last_transition = Err(e.clone());
 
                         if !was_closed {
                             // We write it out only if it wasn't closed before
@@ -80,6 +85,16 @@ impl CoreVM {
                 }
             }
         }
+    }
+
+    /// Pausing requires service protocol version V7 or newer; on older versions this returns
+    /// false and the error follows the normal retry policy.
+    fn should_pause_on_non_determinism_error(&self, error: &Error) -> bool {
+        matches!(
+            self.options.non_determinism_checks_retry_policy,
+            NonDeterministicChecksRetryPolicy::Pause
+        ) && error.code() == errors::codes::JOURNAL_MISMATCH.code()
+            && self.context.negotiated_protocol_version >= Version::V7
     }
 }
 
