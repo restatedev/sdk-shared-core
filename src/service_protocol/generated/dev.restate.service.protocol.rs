@@ -1122,14 +1122,18 @@ impl CombinatorType {
         }
     }
 }
-/// What to do in case of an ErrorMessage
+/// What to do in case of an ErrorMessage.
 #[allow(dead_code)]
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ErrorBehavior {
     /// Retry this invocation.
-    /// In that case, next_retry_delay will be used if set, otherwise the runtime will follow the currently used retry policy.
+    ///
+    /// When retrying, next_retry_delay will be used if set, otherwise the runtime will follow the currently used retry policy.
+    ///
+    /// We use 0 for this so that unset `behavior` field is interpreter as RETRY,
+    /// which matches the default behavior in previous service protocols.
     Retry = 0,
     /// Pause the invocation.
     Pause = 1,
