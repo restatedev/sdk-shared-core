@@ -261,11 +261,31 @@ pub enum NonDeterministicChecksOption {
     Enabled,
 }
 
+/// Defines how the state machine reacts to journal mismatch (non-determinism) errors,
+/// that is errors carrying the `JOURNAL_MISMATCH` status code.
+#[derive(Debug, Default)]
+pub enum JournalMismatchRetryBehavior {
+    /// On journal mismatch error, pause the invocation instead of retrying.
+    ///
+    /// Requires service protocol V7 or newer; on older versions the error follows
+    /// the retry policy, as with [`JournalMismatchRetryBehavior::FollowRetryPolicy`].
+    Pause,
+    /// On journal mismatch error, fail the invocation terminally instead of retrying.
+    ///
+    /// Requires service protocol V7 or newer; on older versions the error follows
+    /// the retry policy, as with [`JournalMismatchRetryBehavior::FollowRetryPolicy`].
+    FailTerminally,
+    /// Just follow the retry policy for non journal mismatch.
+    #[default]
+    FollowRetryPolicy,
+}
+
 #[derive(Debug)]
 pub struct VMOptions {
     pub implicit_cancellation: ImplicitCancellationOption,
     pub non_determinism_checks: NonDeterministicChecksOption,
     pub awaiting_on_policy: AwaitingOnPolicy,
+    pub journal_mismatch_retry_behavior: JournalMismatchRetryBehavior,
 }
 
 impl Default for VMOptions {
@@ -275,8 +295,9 @@ impl Default for VMOptions {
                 cancel_children_calls: true,
                 cancel_children_one_way_calls: false,
             },
-            non_determinism_checks: NonDeterministicChecksOption::Enabled,
-            awaiting_on_policy: AwaitingOnPolicy::DontSendWhenExecutingRun,
+            non_determinism_checks: Default::default(),
+            awaiting_on_policy: Default::default(),
+            journal_mismatch_retry_behavior: Default::default(),
         }
     }
 }

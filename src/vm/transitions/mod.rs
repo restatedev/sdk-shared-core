@@ -3,10 +3,10 @@ mod input;
 mod journal;
 mod terminal;
 
-use crate::service_protocol::messages::ErrorMessage;
+use crate::service_protocol::messages::{ErrorBehavior, ErrorMessage};
 use crate::vm::context::Context;
-use crate::vm::State;
-use crate::{CoreVM, Error};
+use crate::vm::{errors, State};
+use crate::{CoreVM, Error, JournalMismatchRetryBehavior, Version};
 pub(crate) use async_results::*;
 pub(crate) use input::*;
 pub(crate) use journal::*;
@@ -65,9 +65,23 @@ impl CoreVM {
                         self.last_transition = Ok(new_state);
                         Ok(output)
                     }
-                    Err(e) => {
-                        self.last_transition = Err(e.clone());
+                    Err(mut e) => {
                         tracing::debug!("Failed with error {e}");
+
+                        // If journal mismatch, apply error policy
+                        if e.code() == errors::codes::JOURNAL_MISMATCH.code()
+                            && self.context.negotiated_protocol_version >= Version::V7
+                        {
+                            e.behavior = match self.options.journal_mismatch_retry_behavior {
+                                JournalMismatchRetryBehavior::Pause => ErrorBehavior::Pause,
+                                JournalMismatchRetryBehavior::FailTerminally => ErrorBehavior::Fail,
+                                JournalMismatchRetryBehavior::FollowRetryPolicy => {
+                                    ErrorBehavior::Retry
+                                }
+                            };
+                        }
+
+                        self.last_transition = Err(e.clone());
 
                         if !was_closed {
                             // We write it out only if it wasn't closed before
@@ -101,7 +115,7 @@ impl Error {
                 .as_ref()
                 .map(|cmd| u16::from(cmd.ty).into()),
             next_retry_delay: self.next_retry_delay.map(|d| d.as_millis() as u64),
-            should_pause: self.should_pause,
+            behavior: i32::from(self.behavior),
         }
     }
 }

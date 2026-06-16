@@ -1,6 +1,6 @@
 use crate::error::NotificationMetadata;
 use crate::fmt::{display_closed_error, format_do_progress, DiffFormatter};
-use crate::service_protocol::messages::{CommandMessageHeaderDiff, RestateMessage};
+use crate::service_protocol::messages::{CommandMessageHeaderDiff, ErrorBehavior, RestateMessage};
 use crate::service_protocol::{
     CompletionId, ContentTypeError, DecodingError, MessageType, NotificationId,
 };
@@ -86,7 +86,7 @@ impl Error {
             stacktrace: String::new(),
             related_command: None,
             next_retry_delay: None,
-            should_pause: false,
+            behavior: ErrorBehavior::Retry,
         }
     }
 }

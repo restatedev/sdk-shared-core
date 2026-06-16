@@ -4,7 +4,7 @@ use crate::service_protocol::messages::{
     complete_promise_command_message, get_invocation_output_command_message,
     output_command_message, send_signal_command_message, AttachInvocationCommandMessage,
     CallCommandMessage, ClearAllStateCommandMessage, ClearStateCommandMessage,
-    CompleteAwakeableCommandMessage, CompletePromiseCommandMessage,
+    CompleteAwakeableCommandMessage, CompletePromiseCommandMessage, ErrorBehavior,
     GetInvocationOutputCommandMessage, GetPromiseCommandMessage, IdempotentRequestTarget,
     OneWayCallCommandMessage, OutputCommandMessage, PeekPromiseCommandMessage,
     SendSignalCommandMessage, SetStateCommandMessage, SleepCommandMessage, WorkflowTarget,
@@ -356,7 +356,11 @@ impl super::VM for CoreVM {
         mut error: Error,
         command_relationship: Option<CommandRelationship>,
     ) {
-        if error.should_pause && self.verify_feature_support("pause", Version::V7).is_err() {
+        if error.behavior != ErrorBehavior::Retry
+            && self
+                .verify_feature_support("error behavior", Version::V7)
+                .is_err()
+        {
             return;
         }
 

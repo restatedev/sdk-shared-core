@@ -5,9 +5,9 @@ use crate::service_protocol::messages::start_message::StateEntry;
 use crate::service_protocol::messages::{
     complete_awakeable_command_message, complete_promise_command_message, output_command_message,
     CallCommandMessage, CommandMessageHeaderDiff, CompleteAwakeableCommandMessage,
-    CompletePromiseCommandMessage, EndMessage, ErrorMessage, GetEagerStateCommandMessage,
-    GetLazyStateCommandMessage, OneWayCallCommandMessage, OutputCommandMessage,
-    SetStateCommandMessage, StartMessage,
+    CompletePromiseCommandMessage, EndMessage, ErrorBehavior, ErrorMessage,
+    GetEagerStateCommandMessage, GetLazyStateCommandMessage, OneWayCallCommandMessage,
+    OutputCommandMessage, SetStateCommandMessage, StartMessage,
 };
 use crate::service_protocol::MessageType;
 use std::fmt;
@@ -93,7 +93,7 @@ fn notify_error_with_should_pause() {
         pat!(ErrorMessage {
             code: eq(500u32),
             message: eq("please pause".to_owned()),
-            should_pause: eq(true),
+            behavior: eq(i32::from(ErrorBehavior::Pause)),
             next_retry_delay: eq(None),
         })
     );
@@ -117,7 +117,7 @@ fn notify_error_with_should_pause_on_v6_emits_unsupported_feature() {
         output.next_decoded::<ErrorMessage>().unwrap(),
         pat!(ErrorMessage {
             code: eq(crate::vm::errors::codes::UNSUPPORTED_FEATURE.code() as u32),
-            should_pause: eq(false),
+            behavior: eq(i32::from(ErrorBehavior::Retry)),
         })
     );
     assert_eq!(output.next(), None);
@@ -254,6 +254,123 @@ mod journal_mismatch {
             )
         );
         assert_eq!(output.next(), None);
+    }
+
+    /// Replays a one way call triggering a JOURNAL_MISMATCH error, then asserts the resulting
+    /// ErrorMessage carries the expected [`ErrorBehavior`].
+    fn expect_error_behavior(test_case: VMTestCase, expected_behavior: ErrorBehavior) {
+        let mut output = test_case
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(OneWayCallCommandMessage {
+                service_name: "greeter".to_owned(),
+                handler_name: "greet".to_owned(),
+                key: "my-key".to_owned(),
+                parameter: Bytes::from_static(b"123"),
+                invocation_id_notification_idx: 1,
+                ..Default::default()
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                // Different parameter than recorded -> journal mismatch
+                let _ = vm.sys_send(
+                    Target {
+                        service: "greeter".to_owned(),
+                        handler: "greet".to_owned(),
+                        key: Some("my-key".to_owned()),
+                        idempotency_key: None,
+                        scope: None,
+                        limit_key: None,
+                        headers: Vec::new(),
+                    },
+                    Bytes::from_static(b"456"),
+                    None,
+                    None,
+                    PayloadOptions::default(),
+                );
+            });
+
+        assert_that!(
+            output.next_decoded::<ErrorMessage>().unwrap(),
+            pat!(ErrorMessage {
+                code: eq(vm::errors::codes::JOURNAL_MISMATCH.code() as u32),
+                behavior: eq(i32::from(expected_behavior)),
+                next_retry_delay: eq(None),
+            })
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn pause_retry_policy_sets_pause_behavior_on_mismatch() {
+        expect_error_behavior(
+            VMTestCase::with_version_and_vm_options(
+                Version::V7,
+                VMOptions {
+                    journal_mismatch_retry_behavior: JournalMismatchRetryBehavior::Pause,
+                    ..VMOptions::default()
+                },
+            ),
+            ErrorBehavior::Pause,
+        );
+    }
+
+    #[test]
+    fn fail_retry_policy_sets_fail_behavior_on_mismatch() {
+        expect_error_behavior(
+            VMTestCase::with_version_and_vm_options(
+                Version::V7,
+                VMOptions {
+                    journal_mismatch_retry_behavior: JournalMismatchRetryBehavior::FailTerminally,
+                    ..VMOptions::default()
+                },
+            ),
+            ErrorBehavior::Fail,
+        );
+    }
+
+    #[test]
+    fn follow_retry_policy_keeps_retry_behavior_on_mismatch() {
+        expect_error_behavior(
+            VMTestCase::with_version_and_vm_options(
+                Version::V7,
+                VMOptions {
+                    journal_mismatch_retry_behavior:
+                        JournalMismatchRetryBehavior::FollowRetryPolicy,
+                    ..VMOptions::default()
+                },
+            ),
+            ErrorBehavior::Retry,
+        );
+    }
+
+    #[test]
+    fn pause_retry_policy_on_v6_keeps_retry_behavior() {
+        expect_error_behavior(
+            VMTestCase::with_version_and_vm_options(
+                Version::V6,
+                VMOptions {
+                    journal_mismatch_retry_behavior: JournalMismatchRetryBehavior::Pause,
+                    ..VMOptions::default()
+                },
+            ),
+            ErrorBehavior::Retry,
+        );
+    }
+
+    #[test]
+    fn fail_retry_policy_on_v6_keeps_retry_behavior() {
+        expect_error_behavior(
+            VMTestCase::with_version_and_vm_options(
+                Version::V6,
+                VMOptions {
+                    journal_mismatch_retry_behavior: JournalMismatchRetryBehavior::FailTerminally,
+                    ..VMOptions::default()
+                },
+            ),
+            ErrorBehavior::Retry,
+        );
     }
 
     #[test]

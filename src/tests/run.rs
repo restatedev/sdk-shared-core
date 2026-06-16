@@ -2,9 +2,10 @@ use super::*;
 
 use crate::service_protocol::messages::{
     propose_run_completion_message, run_completion_notification_message, AwaitingOnMessage,
-    EndMessage, ErrorMessage, Failure, OutputCommandMessage, ProposeRunCompletionAckMessage,
-    ProposeRunCompletionMessage, RunCommandMessage, RunCompletionNotificationMessage,
-    SleepCommandMessage, SleepCompletionNotificationMessage, StartMessage, SuspensionMessage,
+    EndMessage, ErrorBehavior, ErrorMessage, Failure, OutputCommandMessage,
+    ProposeRunCompletionAckMessage, ProposeRunCompletionMessage, RunCommandMessage,
+    RunCompletionNotificationMessage, SleepCommandMessage, SleepCompletionNotificationMessage,
+    StartMessage, SuspensionMessage,
 };
 use crate::PayloadOptions;
 use test_log::test;
@@ -1326,7 +1327,7 @@ mod retry_policy {
                 code: eq(500),
                 message: eq("my-error".to_string()),
                 stacktrace: eq("my-stacktrace".to_string()),
-                should_pause: eq(true),
+                behavior: eq(i32::from(ErrorBehavior::Pause)),
                 next_retry_delay: eq(None),
             })
         );
