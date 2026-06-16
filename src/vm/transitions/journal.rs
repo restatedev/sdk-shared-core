@@ -2,10 +2,10 @@ use crate::error::CommandMetadata;
 use crate::retries::NextRetry;
 use crate::service_protocol::messages::{
     get_eager_state_command_message, propose_run_completion_message, CommandMessageHeaderDiff,
-    CommandMessageHeaderEq, GetEagerStateCommandMessage, GetEagerStateKeysCommandMessage,
-    GetLazyStateCommandMessage, GetLazyStateKeysCommandMessage, InputCommandMessage,
-    NamedCommandMessage, ProposeRunCompletionMessage, RestateEncodableMessage, RestateMessage,
-    RunCommandMessage, StateKeys, Void,
+    CommandMessageHeaderEq, ErrorBehavior, GetEagerStateCommandMessage,
+    GetEagerStateKeysCommandMessage, GetLazyStateCommandMessage, GetLazyStateKeysCommandMessage,
+    InputCommandMessage, NamedCommandMessage, ProposeRunCompletionMessage, RestateEncodableMessage,
+    RestateMessage, RunCommandMessage, StateKeys, Void,
 };
 use crate::service_protocol::{
     messages, CompletionId, MessageType, Notification, NotificationId, NotificationResult,
@@ -792,7 +792,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
                                 return Err(error);
                             }
                             NextRetry::Pause => {
-                                error.should_pause = true;
+                                error.behavior = ErrorBehavior::Pause;
                                 error.related_command = Some(CommandMetadata::new_named(
                                     run_name,
                                     run_command_index,

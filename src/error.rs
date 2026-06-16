@@ -1,3 +1,4 @@
+use crate::service_protocol::messages::ErrorBehavior;
 use crate::service_protocol::MessageType;
 use crate::CommandType;
 use std::borrow::Cow;
@@ -75,7 +76,7 @@ pub struct Error {
     pub(crate) stacktrace: String,
     pub(crate) related_command: Option<CommandMetadata>,
     pub(crate) next_retry_delay: Option<Duration>,
-    pub(crate) should_pause: bool,
+    pub(crate) behavior: ErrorBehavior,
 }
 
 impl fmt::Display for Error {
@@ -102,7 +103,7 @@ impl Error {
             stacktrace: Default::default(),
             related_command: None,
             next_retry_delay: None,
-            should_pause: false,
+            behavior: ErrorBehavior::Retry,
         }
     }
 
@@ -135,7 +136,11 @@ impl Error {
     /// When set to `true`, the runtime will pause the invocation instead of retrying
     /// after this error. Requires service protocol V7 or newer.
     pub fn with_should_pause(mut self, should_pause: bool) -> Self {
-        self.should_pause = should_pause;
+        self.behavior = if should_pause {
+            ErrorBehavior::Pause
+        } else {
+            ErrorBehavior::Retry
+        };
         self
     }
 

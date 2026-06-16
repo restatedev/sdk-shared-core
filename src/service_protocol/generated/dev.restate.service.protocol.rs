@@ -132,12 +132,13 @@ pub struct ErrorMessage {
     pub related_command_type: ::core::option::Option<u32>,
     /// Delay before executing the next retry, specified as duration in milliseconds.
     /// If provided, it will override the default retry policy used by Restate's invoker ONLY for the next retry attempt.
+    ///
+    /// This field is relevant only if behavior = RETRY.
     #[prost(uint64, optional, tag = "8")]
     pub next_retry_delay: ::core::option::Option<u64>,
-    /// If true, Restate will pause instead of retrying.
-    /// This field supersedes next_retry_delay.
-    #[prost(bool, tag = "9")]
-    pub should_pause: bool,
+    /// What to do in case of an ErrorMessage
+    #[prost(enumeration = "ErrorBehavior", tag = "9")]
+    pub behavior: i32,
 }
 /// Type: 0x0000 + 3
 /// Implementations MUST send this message when the invocation lifecycle ends.
@@ -1043,7 +1044,7 @@ pub enum ServiceProtocolVersion {
     /// * IdempotentRequestTarget.scope
     /// * StartMessage.scope, StartMessage.limit_key and StartMessage.idempotency_key
     /// * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
-    /// * ErrorMessage.should_pause
+    /// * ErrorMessage.behavior to customize retry behavior
     V7 = 7,
 }
 impl ServiceProtocolVersion {
@@ -1117,6 +1118,42 @@ impl CombinatorType {
             "ALL_COMPLETED" => Some(Self::AllCompleted),
             "FIRST_SUCCEEDED_OR_ALL_FAILED" => Some(Self::FirstSucceededOrAllFailed),
             "ALL_SUCCEEDED_OR_FIRST_FAILED" => Some(Self::AllSucceededOrFirstFailed),
+            _ => None,
+        }
+    }
+}
+/// What to do in case of an ErrorMessage
+#[allow(dead_code)]
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ErrorBehavior {
+    /// Retry this invocation.
+    /// In that case, next_retry_delay will be used if set, otherwise the runtime will follow the currently used retry policy.
+    Retry = 0,
+    /// Pause the invocation.
+    Pause = 1,
+    /// Fail this invocation, without retrying.
+    Fail = 2,
+}
+impl ErrorBehavior {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Retry => "RETRY",
+            Self::Pause => "PAUSE",
+            Self::Fail => "FAIL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RETRY" => Some(Self::Retry),
+            "PAUSE" => Some(Self::Pause),
+            "FAIL" => Some(Self::Fail),
             _ => None,
         }
     }

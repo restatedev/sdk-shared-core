@@ -3,10 +3,10 @@ mod input;
 mod journal;
 mod terminal;
 
-use crate::service_protocol::messages::ErrorMessage;
+use crate::service_protocol::messages::{ErrorBehavior, ErrorMessage};
 use crate::vm::context::Context;
 use crate::vm::{errors, State};
-use crate::{CoreVM, Error, NonDeterministicChecksRetryPolicy, Version};
+use crate::{CoreVM, Error, JournalMismatchRetryBehavior, Version};
 pub(crate) use async_results::*;
 pub(crate) use input::*;
 pub(crate) use journal::*;
@@ -68,8 +68,17 @@ impl CoreVM {
                     Err(mut e) => {
                         tracing::debug!("Failed with error {e}");
 
-                        if self.should_pause_on_non_determinism_error(&e) {
-                            e.should_pause = true;
+                        // If journal mismatch, apply error policy
+                        if e.code() == errors::codes::JOURNAL_MISMATCH.code()
+                            && self.context.negotiated_protocol_version >= Version::V7
+                        {
+                            e.behavior = match self.options.journal_mismatch_retry_behavior {
+                                JournalMismatchRetryBehavior::Pause => ErrorBehavior::Pause,
+                                JournalMismatchRetryBehavior::FailTerminally => ErrorBehavior::Fail,
+                                JournalMismatchRetryBehavior::FollowRetryPolicy => {
+                                    ErrorBehavior::Retry
+                                }
+                            };
                         }
 
                         self.last_transition = Err(e.clone());
@@ -85,16 +94,6 @@ impl CoreVM {
                 }
             }
         }
-    }
-
-    /// Pausing requires service protocol version V7 or newer; on older versions this returns
-    /// false and the error follows the normal retry policy.
-    fn should_pause_on_non_determinism_error(&self, error: &Error) -> bool {
-        matches!(
-            self.options.non_determinism_checks_retry_policy,
-            NonDeterministicChecksRetryPolicy::Pause
-        ) && error.code() == errors::codes::JOURNAL_MISMATCH.code()
-            && self.context.negotiated_protocol_version >= Version::V7
     }
 }
 
@@ -116,7 +115,7 @@ impl Error {
                 .as_ref()
                 .map(|cmd| u16::from(cmd.ty).into()),
             next_retry_delay: self.next_retry_delay.map(|d| d.as_millis() as u64),
-            should_pause: self.should_pause,
+            behavior: i32::from(self.behavior),
         }
     }
 }
