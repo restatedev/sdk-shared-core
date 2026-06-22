@@ -4,6 +4,8 @@ Shared core to build SDKs in various languages. Currently used by:
 
 * [Typescript SDK](https://github.com/restatedev/sdk-typescript)
 * [Python SDK](https://github.com/restatedev/sdk-python)
+* [Go SDK](https://github.com/restatedev/sdk-go)
+* [Ruby SDK](https://github.com/restatedev/sdk-ruby)
 * [Rust SDK](https://github.com/restatedev/sdk-rust)
 
 ## Documentation
@@ -19,11 +21,12 @@ This library follows [Semantic Versioning](https://semver.org/).
 
 The compatibility with Restate is described in the following table:
 
-| Restate Server\sdk-shared-core | <= 0.2 | 0.3 - 0.5 | 0.6 - 0.10 |
-|--------------------------------|--------|-----------|------------|
-| <= 1.2                         | ✅      | ❌         | ❌          |
-| 1.3 - 1.5                      | ✅      | ✅         | ✅          |
-| 1.6                            | ❌      | ✅         | ✅          |
+| Restate Server\sdk-shared-core | <= 0.2 | 0.3 - 0.5 | 0.6 - 0.10 | 7.0 |
+|--------------------------------|--------|-----------|------------|-----|
+| <= 1.2                         | ✅      | ❌         | ❌          | ❌   |
+| 1.3 - 1.5                      | ✅      | ✅         | ✅          | ✅   |
+| 1.6                            | ❌      | ✅         | ✅          | ✅   |
+| 1.7                            | ❌      | ✅         | ✅          | ✅   |
 
 ## Development
 
