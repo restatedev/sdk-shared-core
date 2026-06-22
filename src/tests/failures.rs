@@ -518,7 +518,7 @@ mod journal_mismatch {
                     Bytes::from_static(b"456"),
                     None,
                     None,
-                    PayloadOptions::unstable(),
+                    PayloadOptions::unstable_serialization(),
                 )
                 .unwrap();
 
@@ -563,7 +563,7 @@ mod journal_mismatch {
                     // Different bytes than recorded, but marked as unstable.
                     Bytes::from_static(b"456"),
                     None,
-                    PayloadOptions::unstable(),
+                    PayloadOptions::unstable_serialization(),
                 )
                 .unwrap();
 
@@ -597,7 +597,7 @@ mod journal_mismatch {
                     "my-key".to_owned(),
                     // Different bytes than recorded, but marked as unstable.
                     Bytes::from_static(b"456"),
-                    PayloadOptions::unstable(),
+                    PayloadOptions::unstable_serialization(),
                 )
                 .unwrap();
 
@@ -642,8 +642,11 @@ mod journal_mismatch {
                 vm.sys_input().unwrap();
 
                 // With unstable serialization, different payload should be accepted
-                vm.sys_state_get("my-key".to_owned(), PayloadOptions::unstable())
-                    .unwrap();
+                vm.sys_state_get(
+                    "my-key".to_owned(),
+                    PayloadOptions::unstable_serialization(),
+                )
+                .unwrap();
 
                 vm.sys_end().unwrap();
             });
@@ -678,7 +681,7 @@ mod journal_mismatch {
                     "my-prom".to_owned(),
                     // Different bytes than recorded, but marked as unstable.
                     NonEmptyValue::Success(Bytes::from_static(b"456")),
-                    PayloadOptions::unstable(),
+                    PayloadOptions::unstable_serialization(),
                 )
                 .unwrap();
 
@@ -712,7 +715,7 @@ mod journal_mismatch {
                     "awk-123".to_owned(),
                     // Different bytes than recorded, but marked as unstable.
                     NonEmptyValue::Success(Bytes::from_static(b"456")),
-                    PayloadOptions::unstable(),
+                    PayloadOptions::unstable_serialization(),
                 )
                 .unwrap();
 
@@ -744,7 +747,7 @@ mod journal_mismatch {
                 vm.sys_write_output(
                     // Different bytes than recorded, but marked as unstable.
                     NonEmptyValue::Success(Bytes::from_static(b"456")),
-                    PayloadOptions::unstable(),
+                    PayloadOptions::unstable_serialization(),
                 )
                 .unwrap();
 

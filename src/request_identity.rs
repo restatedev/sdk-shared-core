@@ -20,7 +20,11 @@ const SIGNATURE_JWT_V1_HEADER: &str = "x-restate-jwt-v1";
 const IDENTITY_V1_PREFIX: &str = "publickeyv1_";
 
 #[derive(Debug, thiserror::Error)]
-pub enum KeyError {
+#[error(transparent)]
+pub struct KeyError(#[from] KeyErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+enum KeyErrorKind {
     #[error("identity v1 jwt public keys are expected to start with {IDENTITY_V1_PREFIX}")]
     MissingPrefix,
     #[error("cannot decode the public key with base58: {0}")]
@@ -30,7 +34,11 @@ pub enum KeyError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum VerifyError {
+#[error(transparent)]
+pub struct VerifyError(#[from] VerifyErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+enum VerifyErrorKind {
     #[error("cannot read header {0}: {1}")]
     ExtractHeader(
         &'static str,
@@ -89,20 +97,20 @@ impl IdentityVerifier {
         })
     }
 
-    fn parse_key(key: &str) -> Result<DecodingKey, KeyError> {
+    fn parse_key(key: &str) -> Result<DecodingKey, KeyErrorKind> {
         if !key.starts_with(IDENTITY_V1_PREFIX) {
-            return Err(KeyError::MissingPrefix);
+            return Err(KeyErrorKind::MissingPrefix);
         }
 
         let decoded_key = bs58::decode(key.split_at(IDENTITY_V1_PREFIX.len()).1).into_vec()?;
         if decoded_key.len() != 32 {
-            return Err(KeyError::BadLength(decoded_key.len()));
+            return Err(KeyErrorKind::BadLength(decoded_key.len()));
         }
 
         Ok(DecodingKey::from_ed_der(&decoded_key))
     }
 
-    fn check_v1_keys(&self, jwt_token: &str, path: &str) -> Result<(), VerifyError> {
+    fn check_v1_keys(&self, jwt_token: &str, path: &str) -> Result<(), VerifyErrorKind> {
         let mut validation = self.validation.clone();
         validation.set_audience(&[path]);
         let mut res = Ok(());
@@ -113,7 +121,7 @@ impl IdentityVerifier {
                 return Ok(());
             }
         }
-        res.map_err(VerifyError::InvalidJWT)
+        res.map_err(VerifyErrorKind::InvalidJWT)
     }
 
     pub fn verify_identity<I>(&self, hm: &I, path: &str) -> Result<(), VerifyError>
@@ -127,20 +135,22 @@ impl IdentityVerifier {
 
         let scheme_header = hm
             .extract(SIGNATURE_SCHEME_HEADER)
-            .map_err(|e| VerifyError::ExtractHeader(SIGNATURE_SCHEME_HEADER, Box::new(e)))?
-            .ok_or(VerifyError::MissingHeader(SIGNATURE_SCHEME_HEADER))?;
+            .map_err(|e| VerifyErrorKind::ExtractHeader(SIGNATURE_SCHEME_HEADER, Box::new(e)))?
+            .ok_or(VerifyErrorKind::MissingHeader(SIGNATURE_SCHEME_HEADER))?;
 
         match scheme_header {
             SIGNATURE_SCHEME_V1 => {
                 let jwt = hm
                     .extract(SIGNATURE_JWT_V1_HEADER)
-                    .map_err(|e| VerifyError::ExtractHeader(SIGNATURE_JWT_V1_HEADER, Box::new(e)))?
-                    .ok_or(VerifyError::MissingHeader(SIGNATURE_JWT_V1_HEADER))?;
+                    .map_err(|e| {
+                        VerifyErrorKind::ExtractHeader(SIGNATURE_JWT_V1_HEADER, Box::new(e))
+                    })?
+                    .ok_or(VerifyErrorKind::MissingHeader(SIGNATURE_JWT_V1_HEADER))?;
 
-                self.check_v1_keys(jwt, Self::normalise_path(path))
+                Ok(self.check_v1_keys(jwt, Self::normalise_path(path))?)
             }
-            SIGNATURE_SCHEME_UNSIGNED => Err(VerifyError::UnsignedRequest),
-            scheme => Err(VerifyError::BadSchemeHeader(scheme.to_owned())),
+            SIGNATURE_SCHEME_UNSIGNED => Err(VerifyErrorKind::UnsignedRequest.into()),
+            scheme => Err(VerifyErrorKind::BadSchemeHeader(scheme.to_owned()).into()),
         }
     }
 

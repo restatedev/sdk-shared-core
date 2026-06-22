@@ -2,7 +2,7 @@ use crate::service_protocol::messages::{EndMessage, SuspensionMessage};
 use crate::vm::context::Context;
 use crate::vm::transitions::Transition;
 use crate::vm::State;
-use crate::{fmt, Error, UnresolvedFuture};
+use crate::{Error, UnresolvedFuture};
 
 pub(crate) struct HitError(pub(crate) Error);
 
@@ -57,7 +57,7 @@ impl Transition<Context, SysEnd> for State {
                 // Tolerate the case where the state machine is already ended/suspended
                 Ok(s)
             }
-            s => Err(s.as_unexpected_state(fmt::format_sys_end())),
+            s => Err(s.as_unexpected_state("end invocation")),
         }
     }
 }

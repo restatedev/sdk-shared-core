@@ -1,52 +1,21 @@
-use crate::CommandType;
 use std::fmt;
 use std::sync::OnceLock;
 
 pub trait ErrorFormatter: Send + Sync + fmt::Debug + 'static {
-    fn format_command_ty(&self, ty: CommandType) -> &'static str {
-        match ty {
-            CommandType::Input => "handler input",
-            CommandType::Output => "handler return",
-            CommandType::GetState => "get state",
-            CommandType::GetStateKeys => "get state keys",
-            CommandType::SetState => "set state",
-            CommandType::ClearState => "clear state",
-            CommandType::ClearAllState => "clear all state",
-            CommandType::GetPromise => "get promise",
-            CommandType::PeekPromise => "peek promise",
-            CommandType::CompletePromise => "complete promise",
-            CommandType::Sleep => "sleep",
-            CommandType::Call => "call",
-            CommandType::OneWayCall => "one way call/send",
-            CommandType::SendSignal => "send signal",
-            CommandType::Run => "run",
-            CommandType::AttachInvocation => "attach invocation",
-            CommandType::GetInvocationOutput => "get invocation output",
-            CommandType::CompleteAwakeable => "complete awakeable",
-            CommandType::CancelInvocation => "cancel invocation",
-        }
-    }
-
     fn display_closed_error(&self, f: &mut fmt::Formatter<'_>, event: &str) -> fmt::Result {
         write!(f, "State machine was closed when invoking '{event}'")
-    }
-
-    fn format_do_progress(&self) -> &'static str {
-        "await"
-    }
-
-    fn format_sys_end(&self) -> &'static str {
-        "end invocation"
     }
 }
 
 static GLOBAL_ERROR_FORMATTER: OnceLock<Box<dyn ErrorFormatter>> = OnceLock::new();
 
-// Public function for the crate user to set the formatter
-pub fn set_error_formatter(formatter: impl ErrorFormatter + 'static) {
-    GLOBAL_ERROR_FORMATTER
-        .set(Box::new(formatter))
-        .expect("Error formatter already set! It can only be set once.");
+/// Set the global error formatter.
+///
+/// The formatter can only be installed once: the first call wins and any
+/// subsequent call is a no-op. Returns `true` if this call
+/// installed the formatter, `false` if one was already set.
+pub fn set_error_formatter(formatter: impl ErrorFormatter + 'static) -> bool {
+    GLOBAL_ERROR_FORMATTER.set(Box::new(formatter)).is_ok()
 }
 
 #[derive(Debug)]
@@ -66,10 +35,7 @@ macro_rules! delegate_to_formatter {
     };
 }
 
-delegate_to_formatter!(format_command_ty(command_type: CommandType) -> &'static str);
 delegate_to_formatter!(display_closed_error(f: &mut fmt::Formatter<'_>, event: &str) -> fmt::Result);
-delegate_to_formatter!(format_do_progress() -> &'static str);
-delegate_to_formatter!(format_sys_end() -> &'static str);
 
 pub(crate) struct DiffFormatter<'a, 'b> {
     fmt: &'a mut fmt::Formatter<'b>,

@@ -1,5 +1,5 @@
 use crate::error::NotificationMetadata;
-use crate::fmt::{display_closed_error, format_do_progress, DiffFormatter};
+use crate::fmt::{display_closed_error, DiffFormatter};
 use crate::service_protocol::messages::{CommandMessageHeaderDiff, ErrorBehavior, RestateMessage};
 use crate::service_protocol::{
     CompletionId, ContentTypeError, DecodingError, MessageType, NotificationId,
@@ -301,10 +301,8 @@ impl fmt::Display for UncompletedDoProgressDuringReplay {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f,
 "Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.
-'{}' could not be replayed. This usually means the code was mutated adding an 'await' without registering a new service revision.
-Notifications awaited on this {} point:",
-               format_do_progress(),
-               format_do_progress(),
+'await' could not be replayed. This usually means the code was mutated adding an 'await' without registering a new service revision.
+Notifications awaited on this await point:",
         )?;
 
         for notification_id in &self.notification_ids {
