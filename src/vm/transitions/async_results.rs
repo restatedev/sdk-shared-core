@@ -170,7 +170,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                     }),
                 ))
             }
-            s => Err(s.as_unexpected_state(crate::fmt::format_do_progress())),
+            s => Err(s.as_unexpected_state("await")),
         }
     }
 }

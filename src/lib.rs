@@ -22,9 +22,8 @@ pub use service_protocol::Version;
 pub use vm::CoreVM;
 
 /// Options for syscalls that involve payload serialization.
-/// Use this to indicate when payload bytes may differ between executions
-/// (e.g., when using non-deterministic serialization like protojson).
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct PayloadOptions {
     /// If true, skip payload byte equality checks during replay.
     /// Use this when the serialization format is non-deterministic.
@@ -33,7 +32,7 @@ pub struct PayloadOptions {
 
 impl PayloadOptions {
     /// Create options indicating stable (deterministic) serialization (default).
-    pub fn stable() -> Self {
+    pub fn stable_serialization() -> Self {
         Self {
             unstable_serialization: false,
         }
@@ -41,7 +40,7 @@ impl PayloadOptions {
 
     /// Create options indicating unstable (non-deterministic) serialization.
     /// Payload byte equality will be skipped during replay.
-    pub fn unstable() -> Self {
+    pub fn unstable_serialization() -> Self {
         Self {
             unstable_serialization: true,
         }
@@ -55,6 +54,7 @@ pub struct Header {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ResponseHead {
     pub status_code: u16,
     pub headers: Vec<Header>,
@@ -62,6 +62,7 @@ pub struct ResponseHead {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct Input {
     pub invocation_id: String,
     pub random_seed: u64,
@@ -77,6 +78,7 @@ pub struct Input {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum CommandType {
     Input,
     Output,
@@ -101,7 +103,27 @@ pub enum CommandType {
 
 impl std::fmt::Display for CommandType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", fmt::format_command_ty(*self))
+        f.write_str(match self {
+            CommandType::Input => "handler input",
+            CommandType::Output => "handler return",
+            CommandType::GetState => "get state",
+            CommandType::GetStateKeys => "get state keys",
+            CommandType::SetState => "set state",
+            CommandType::ClearState => "clear state",
+            CommandType::ClearAllState => "clear all state",
+            CommandType::GetPromise => "get promise",
+            CommandType::PeekPromise => "peek promise",
+            CommandType::CompletePromise => "complete promise",
+            CommandType::Sleep => "sleep",
+            CommandType::Call => "call",
+            CommandType::OneWayCall => "one way call/send",
+            CommandType::SendSignal => "send signal",
+            CommandType::Run => "run",
+            CommandType::AttachInvocation => "attach invocation",
+            CommandType::GetInvocationOutput => "get invocation output",
+            CommandType::CompleteAwakeable => "complete awakeable",
+            CommandType::CancelInvocation => "cancel invocation",
+        })
     }
 }
 
@@ -161,7 +183,7 @@ pub struct SendHandle {
     pub invocation_id_notification_handle: NotificationHandle,
 }
 
-#[derive(Debug, Eq, PartialEq, strum::IntoStaticStr)]
+#[derive(Debug, Eq, PartialEq, Clone, strum::IntoStaticStr)]
 pub enum Value {
     /// a void/None/undefined success
     Void,
@@ -304,6 +326,7 @@ impl Default for VMOptions {
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
+#[non_exhaustive]
 pub enum UnresolvedFuture {
     /// Waiting only this handle.
     Single(NotificationHandle),
