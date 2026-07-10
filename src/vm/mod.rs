@@ -710,6 +710,13 @@ impl super::VM for CoreVM {
 
         self.do_transition(SysSimpleCompletableEntry(
             SleepCommandMessage {
+                // Audit note: this is a *checked* conversion (`try_from`), so it
+                // cannot silently wrap like the `next_retry_delay` cast did. It
+                // only panics if the wake-up instant exceeds u64::MAX millis
+                // since the Unix epoch (~year 584 million), which no realistic
+                // sleep target reaches; the loud, clearly-messaged panic is the
+                // intended assertion. (Switch to `.unwrap_or(u64::MAX)` if
+                // saturation is ever preferred over asserting the invariant.)
                 wake_up_time: u64::try_from(wake_up_time_since_unix_epoch.as_millis())
                     .expect("millis since Unix epoch should fit in u64"),
                 result_completion_id: completion_id,
@@ -879,10 +886,12 @@ impl super::VM for CoreVM {
                     .map(crate::service_protocol::messages::Header::from)
                     .collect(),
                 parameter: input,
+                // Audit note: checked conversion (see the matching note in
+                // `sys_sleep`). Panics only for a delay exceeding u64::MAX millis
+                // (~584 million years), never for a realistic delayed call.
                 invoke_time: delay
                     .map(|d| {
-                        u64::try_from(d.as_millis())
-                            .expect("millis since Unix epoch should fit in u64")
+                        u64::try_from(d.as_millis()).expect("delay in millis should fit in u64")
                     })
                     .unwrap_or_default(),
                 invocation_id_notification_idx: call_invocation_id_completion_id,
