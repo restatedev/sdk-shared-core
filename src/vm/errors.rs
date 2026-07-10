@@ -378,6 +378,13 @@ impl BadProposeRunCompletionAck {
     }
 }
 
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("The provided duration for '{0}' is out of bounds: {1:?}")]
+pub struct OutOfBoundsDuration(
+    pub(crate) &'static str,
+    pub(crate) std::num::TryFromIntError,
+);
+
 // Conversions to VMError
 
 trait WithInvocationErrorCode {
@@ -424,3 +431,4 @@ impl<M: RestateMessage + CommandMessageHeaderDiff> WithInvocationErrorCode
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(UnsupportedFeatureForNegotiatedVersion, UNSUPPORTED_FEATURE);
 impl_error_code!(BadProposeRunCompletionAck, PROTOCOL_VIOLATION);
+impl_error_code!(OutOfBoundsDuration, INTERNAL);

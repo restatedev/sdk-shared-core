@@ -1024,9 +1024,15 @@ mod retry_policy {
                 retry_count_since_last_stored_entry,
                 duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis()
                     as u64,
-                ..start_message(1)
+                ..start_message(2)
             })
             .input(input_entry_message(b"my-data"))
+            // Replay the RunCommand as a known entry so that `infer_entry_retry_info`
+            // is used and the policy sees `retry_count_since_last_stored_entry + 1`.
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_string(),
+            })
             .run(|vm| {
                 vm.sys_input().unwrap();
                 let RunHandle { replayed, handle } =
@@ -1045,22 +1051,33 @@ mod retry_policy {
             });
 
         assert_that!(
-            output.next_decoded::<RunCommandMessage>().unwrap(),
-            eq(RunCommandMessage {
-                result_completion_id: 1,
-                name: "my-side-effect".to_owned(),
-            })
-        );
-        assert_that!(
             output.next_decoded::<ErrorMessage>().unwrap(),
             pat!(ErrorMessage {
                 code: eq(500),
                 message: eq("my-error".to_string()),
-                next_retry_delay: eq(next_retry_interval.map(|d| d.as_millis() as u64)),
+                next_retry_delay: eq(
+                    next_retry_interval.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                ),
                 stacktrace: eq("my-stacktrace".to_string()),
             })
         );
         assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn exit_with_retryable_error_saturates_out_of_bounds_next_retry_delay() {
+        test_should_continue_retrying(
+            0,
+            Duration::ZERO,
+            Duration::ZERO,
+            RetryPolicy::FixedDelay {
+                interval: Some(Duration::MAX),
+                max_attempts: None,
+                max_duration: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
+            },
+            Some(Duration::MAX),
+        );
     }
 
     #[test]
@@ -1411,6 +1428,46 @@ mod retry_policy {
         assert_eq!(
             err.code,
             crate::vm::errors::codes::UNSUPPORTED_FEATURE.code()
+        );
+    }
+
+    #[test]
+    fn exit_with_retryable_error_exponential_overflow_saturates() {
+        // Policy sees retry_count = 70 + 1 = 71 => 1s * 2^70, well past the ~2^64
+        // overflow boundary, so the policy saturates to Duration::MAX, whose millis
+        // saturate to u64::MAX in the emitted ErrorMessage.
+        test_should_continue_retrying(
+            70,
+            Duration::ZERO,
+            Duration::ZERO,
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 2.0,
+                max_attempts: None,
+                max_duration: None,
+                max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
+            },
+            Some(Duration::MAX),
+        );
+    }
+
+    #[test]
+    fn exit_with_retryable_error_exponential_millis_do_not_wrap_to_zero() {
+        // Policy sees retry_count = 62 + 1 = 63 => 1s * 2^62.
+        test_should_continue_retrying(
+            62,
+            Duration::ZERO,
+            Duration::ZERO,
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 2.0,
+                max_attempts: None,
+                max_duration: None,
+                max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
+            },
+            Some(Duration::from_secs(1u64 << 62)),
         );
     }
 }

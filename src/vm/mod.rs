@@ -11,7 +11,7 @@ use crate::service_protocol::messages::{
 };
 use crate::service_protocol::{Decoder, NotificationId, RawMessage, Version, CANCEL_SIGNAL_ID};
 use crate::vm::errors::{
-    ClosedError, UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion,
+    ClosedError, OutOfBoundsDuration, UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion,
     EMPTY_IDEMPOTENCY_KEY, EMPTY_LIMIT_KEY, EMPTY_SCOPE, SUSPENDED,
 };
 use crate::vm::run_state::RunState;
@@ -686,13 +686,13 @@ impl super::VM for CoreVM {
                 (name, Some(now_since_unix_epoch)) if name.is_empty() => {
                     debug!(
                         "Executing 'Timer with duration {:?}'",
-                        wake_up_time_since_unix_epoch - now_since_unix_epoch
+                        wake_up_time_since_unix_epoch.saturating_sub(now_since_unix_epoch)
                     );
                 }
                 (name, Some(now_since_unix_epoch)) => {
                     debug!(
                         "Executing 'Timer {name} with duration {:?}'",
-                        wake_up_time_since_unix_epoch - now_since_unix_epoch
+                        wake_up_time_since_unix_epoch.saturating_sub(now_since_unix_epoch)
                     );
                 }
                 (name, None) if name.is_empty() => {
@@ -703,13 +703,18 @@ impl super::VM for CoreVM {
                 }
             }
         }
-
+        let wake_up_time = match u64::try_from(wake_up_time_since_unix_epoch.as_millis()) {
+            Ok(d) => d,
+            Err(e) => {
+                self.do_transition(HitError(OutOfBoundsDuration("sleep duration", e).into()))?;
+                unreachable!();
+            }
+        };
         let completion_id = self.context.journal.next_completion_notification_id();
 
         self.do_transition(SysSimpleCompletableEntry(
             SleepCommandMessage {
-                wake_up_time: u64::try_from(wake_up_time_since_unix_epoch.as_millis())
-                    .expect("millis since Unix epoch should fit in u64"),
+                wake_up_time,
                 result_completion_id: completion_id,
                 name,
             },
@@ -861,6 +866,13 @@ impl super::VM for CoreVM {
         if target.limit_key.is_some() {
             self.verify_feature_support("limit key", Version::V7)?;
         }
+        let invoke_time = match u64::try_from(delay.unwrap_or_default().as_millis()) {
+            Ok(d) => d,
+            Err(e) => {
+                self.do_transition(HitError(OutOfBoundsDuration("send delay", e).into()))?;
+                unreachable!();
+            }
+        };
         let call_invocation_id_completion_id =
             self.context.journal.next_completion_notification_id();
         let invocation_id_notification_handle = self.do_transition(SysSimpleCompletableEntry(
@@ -877,12 +889,7 @@ impl super::VM for CoreVM {
                     .map(crate::service_protocol::messages::Header::from)
                     .collect(),
                 parameter: input,
-                invoke_time: delay
-                    .map(|d| {
-                        u64::try_from(d.as_millis())
-                            .expect("millis since Unix epoch should fit in u64")
-                    })
-                    .unwrap_or_default(),
+                invoke_time,
                 invocation_id_notification_idx: call_invocation_id_completion_id,
                 name: name.unwrap_or_default(),
             },

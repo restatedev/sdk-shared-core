@@ -114,7 +114,9 @@ impl Error {
                 .related_command
                 .as_ref()
                 .map(|cmd| u16::from(cmd.ty).into()),
-            next_retry_delay: self.next_retry_delay.map(|d| d.as_millis() as u64),
+            next_retry_delay: self.next_retry_delay.map(|d|
+                    // Saturate if duration is too large
+                    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
             behavior: i32::from(self.behavior),
         }
     }

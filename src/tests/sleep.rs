@@ -112,3 +112,36 @@ fn sleep_still_sleeping() {
     );
     assert_eq!(output.next(), None);
 }
+
+#[test]
+fn sleep_with_out_of_bounds_duration_fails() {
+    let mut output = VMTestCase::new()
+        .input(StartMessage {
+            id: Bytes::from_static(b"abc"),
+            debug_id: "abc".to_owned(),
+            known_entries: 1,
+            partial_state: true,
+            ..Default::default()
+        })
+        .input(input_entry_message(b"Till"))
+        .run(|vm| {
+            vm.sys_input().unwrap();
+            // A wake-up instant whose milliseconds overflow u64 must surface as a
+            // clean error rather than panicking on the checked conversion.
+            assert!(vm
+                .sys_sleep(String::default(), Duration::MAX, None)
+                .is_err());
+        });
+
+    assert_that!(
+        output.next_decoded::<ErrorMessage>().unwrap(),
+        error_message_as_error(
+            vm::errors::OutOfBoundsDuration(
+                "sleep duration",
+                u64::try_from(u128::MAX).unwrap_err(),
+            )
+            .into()
+        )
+    );
+    assert_eq!(output.next(), None);
+}

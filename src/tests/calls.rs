@@ -231,6 +231,42 @@ fn send_with_scope_and_limit_key_propagates_to_message() {
 }
 
 #[test]
+fn send_with_out_of_bounds_delay_fails() {
+    let mut output = VMTestCase::new()
+        .input(start_message(1))
+        .input(input_entry_message(b"my-data"))
+        .run(|vm| {
+            vm.sys_input().unwrap();
+            assert!(vm
+                .sys_send(
+                    Target {
+                        service: "MySvc".to_string(),
+                        handler: "MyHandler".to_string(),
+                        key: None,
+                        idempotency_key: None,
+                        scope: None,
+                        limit_key: None,
+                        headers: Vec::new(),
+                    },
+                    Bytes::new(),
+                    Some(Duration::MAX),
+                    None,
+                    PayloadOptions::default(),
+                )
+                .is_err());
+        });
+
+    assert_that!(
+        output.next_decoded::<ErrorMessage>().unwrap(),
+        error_message_as_error(
+            vm::errors::OutOfBoundsDuration("send delay", u64::try_from(u128::MAX).unwrap_err())
+                .into()
+        )
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
 fn call_with_empty_scope_errors() {
     let mut vm = CoreVM::mock_init(Version::maximum_supported_version());
     let encoder = Encoder::new(Version::maximum_supported_version());

@@ -189,10 +189,21 @@ impl RetryPolicy {
                     };
                 }
 
-                NextRetry::Retry(Some(cmp::min(
-                    max_interval.unwrap_or(Duration::MAX),
-                    initial_interval.mul_f32(factor.powi((retry_info.retry_count - 1) as i32)),
-                )))
+                let max_interval = max_interval.unwrap_or(Duration::MAX);
+
+                // Next interval in the backoff sequence:
+                // initial_interval * factor^(retry_count - 1)
+                // Uses saturating and try to avoid overflows.
+                let exponent =
+                    i32::try_from(retry_info.retry_count.saturating_sub(1)).unwrap_or(i32::MAX);
+                let Ok(next_interval) = Duration::try_from_secs_f32(
+                    initial_interval.as_secs_f32() * factor.powi(exponent),
+                ) else {
+                    // Overflow, return max_interval instead.
+                    return NextRetry::Retry(Some(max_interval));
+                };
+
+                NextRetry::Retry(Some(cmp::min(max_interval, next_interval)))
             }
         }
     }
@@ -201,6 +212,117 @@ impl RetryPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use googletest::prelude::*;
+    use rstest::rstest;
+
+    // No max_attempts / max_duration / max_interval => always growing retries.
+    #[test]
+    fn exponential_policy_does_not_panic_on_overflow() {
+        let policy = RetryPolicy::Exponential {
+            initial_interval: Duration::from_secs(1),
+            factor: 2.0,
+            max_interval: None,
+            max_attempts: None,
+            max_duration: None,
+            on_max_attempts: OnMaxAttempts::FailAsTerminal,
+        };
+
+        // Iterate well past the overflow boundary (~retry_count 65): every retry must
+        // stay within Duration::MAX and never panic.
+        for retry_count in 1..=200 {
+            assert_that!(
+                policy.next_retry(EntryRetryInfo {
+                    retry_count,
+                    retry_loop_duration: Duration::ZERO,
+                }),
+                pat!(NextRetry::Retry(some(le(Duration::MAX)))),
+                "retry_count={retry_count}"
+            );
+        }
+    }
+
+    #[rstest]
+    // factor^0 == 1: the first retry uses the initial interval.
+    #[case::first_retry_uses_initial(Duration::from_secs(1), 2.0, None, 1, Duration::from_secs(1))]
+    // In-range value stays bit-for-bit identical to mul_f32 (factor^2 == 4).
+    #[case::in_range_matches_mul_f32(
+        Duration::from_millis(100), 2.0, None, 3, Duration::from_millis(100).mul_f32(4.0)
+    )]
+    // Unbounded saturates to Duration::MAX rather than panicking, at and past the boundary.
+    #[case::overflow_boundary_unbounded(Duration::from_secs(1), 2.0, None, 70, Duration::MAX)]
+    #[case::large_retry_count_unbounded(Duration::from_secs(1), 2.0, None, 128, Duration::MAX)]
+    #[case::max_retry_count_unbounded(Duration::from_secs(1), 2.0, None, u32::MAX, Duration::MAX)]
+    // Bounded saturates to max_interval, at and past the boundary.
+    #[case::overflow_boundary_bounded(
+        Duration::from_secs(1),
+        2.0,
+        Some(Duration::from_secs(30)),
+        70,
+        Duration::from_secs(30)
+    )]
+    #[case::large_retry_count_bounded(
+        Duration::from_secs(1),
+        2.0,
+        Some(Duration::from_secs(30)),
+        128,
+        Duration::from_secs(30)
+    )]
+    #[case::max_retry_count_bounded(
+        Duration::from_secs(1),
+        2.0,
+        Some(Duration::from_secs(30)),
+        u32::MAX,
+        Duration::from_secs(30)
+    )]
+    // factor == 1 never grows.
+    #[case::factor_one_never_grows(Duration::from_secs(2), 1.0, None, 1000, Duration::from_secs(2))]
+    // Extreme / non-finite factors saturate to the ceiling.
+    #[case::huge_factor_bounded(
+        Duration::from_secs(1),
+        1e30,
+        Some(Duration::from_secs(30)),
+        5,
+        Duration::from_secs(30)
+    )]
+    #[case::huge_factor_unbounded(Duration::from_secs(1), 1e30, None, 5, Duration::MAX)]
+    #[case::nan_factor_bounded(
+        Duration::from_secs(1),
+        f32::NAN,
+        Some(Duration::from_secs(30)),
+        5,
+        Duration::from_secs(30)
+    )]
+    #[case::infinite_factor_unbounded(
+        Duration::from_secs(1),
+        f32::INFINITY,
+        None,
+        5,
+        Duration::MAX
+    )]
+    fn exponential_policy_saturation(
+        #[case] initial_interval: Duration,
+        #[case] factor: f32,
+        #[case] max_interval: Option<Duration>,
+        #[case] retry_count: u32,
+        #[case] expected: Duration,
+    ) {
+        let policy = RetryPolicy::Exponential {
+            initial_interval,
+            factor,
+            max_interval,
+            max_attempts: None,
+            max_duration: None,
+            on_max_attempts: OnMaxAttempts::FailAsTerminal,
+        };
+
+        assert_eq!(
+            policy.next_retry(EntryRetryInfo {
+                retry_count,
+                retry_loop_duration: Duration::ZERO,
+            }),
+            NextRetry::Retry(Some(expected))
+        );
+    }
 
     #[test]
     fn test_exponential_policy() {
