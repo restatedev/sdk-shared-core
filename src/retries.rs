@@ -194,22 +194,23 @@ impl RetryPolicy {
                 let ceiling = max_interval.unwrap_or(Duration::MAX);
 
                 // Compute `initial_interval * factor^(retry_count - 1)` WITHOUT
-                // panicking, clamping to `ceiling` *before* the fallible float
-                // conversion so overflow can never escape as a panic.
+                // panicking. The historical computation was
+                // `initial_interval.mul_f32(factor.powi(..))`; `mul_f32` panics
+                // ("cannot convert float seconds to Duration: value is either
+                // too big or NaN") once the scaled value overflows `Duration`'s
+                // range or is non-finite (e.g. `factor` is inf/NaN, or `powi`
+                // overflowed to `inf`), and it did so *before* the `min` clamp
+                // could apply.
                 //
-                // The exponentiation stays in `f32` so the produced delays are
-                // bit-for-bit identical to the historical
-                // `initial_interval.mul_f32(factor.powi(..))` computation for
-                // every in-range input. `mul_f32` internally calls
-                // `Duration::from_secs_f32`, which panics ("cannot convert float
-                // seconds to Duration: value is either too big or NaN") once the
-                // intermediate value overflows `Duration`'s range or is
-                // non-finite (e.g. `factor` is inf/NaN, or `powi` overflowed to
-                // `inf`) -- and it did so *before* this `min` clamp could apply.
-                // `try_from_secs_f32` yields the same value as `mul_f32` when in
-                // range but returns `Err` instead of panicking, so any failure
-                // means we've exceeded the representable range and we fall back
-                // to the ceiling.
+                // `Duration::try_from_secs_f64` is the non-panicking counterpart:
+                // it returns `Err` (instead of panicking) on overflow, negative,
+                // or NaN, so any failure means we've exceeded the representable
+                // range and we fall back to the `ceiling`. `mul_f32` scales
+                // through `f64` internally, so `try_from_secs_f64(f64::from(m) *
+                // initial_interval.as_secs_f64())` reproduces its result
+                // bit-for-bit for every in-range input -- this is purely a
+                // saturation fix at the overflow boundary, delays are unchanged
+                // otherwise.
                 //
                 // `retry_count` is >= 1 on the production path (it is incremented
                 // before `next_retry` is called); `saturating_sub`/`try_from`
@@ -218,8 +219,8 @@ impl RetryPolicy {
                 // `ceiling`.
                 let exponent =
                     i32::try_from(retry_info.retry_count.saturating_sub(1)).unwrap_or(i32::MAX);
-                let next_interval = Duration::try_from_secs_f32(
-                    factor.powi(exponent) * initial_interval.as_secs_f32(),
+                let next_interval = Duration::try_from_secs_f64(
+                    f64::from(factor.powi(exponent)) * initial_interval.as_secs_f64(),
                 )
                 .unwrap_or(ceiling);
 

@@ -974,7 +974,7 @@ impl fmt::Display for Value {
         if let Ok(content) = std::str::from_utf8(&self.content) {
             write!(f, "'{content}'")
         } else {
-            write!(f, "{:?}", &self.content)
+            write!(f, "{:?}", self.content)
         }
     }
 }

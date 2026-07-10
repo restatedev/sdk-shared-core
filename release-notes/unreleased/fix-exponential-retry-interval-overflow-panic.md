@@ -21,12 +21,13 @@ The interval is now computed so it can **never panic**:
 
 - The clamp against the ceiling (`max_interval`, or `Duration::MAX` when
   unbounded) is applied *before* the fallible float→`Duration` conversion.
-- `Duration::try_from_secs_f32` is used instead of the panicking `mul_f32`; any
+- `Duration::try_from_secs_f64` is used instead of the panicking `mul_f32`; any
   `Err` (overflow, negative, or NaN — e.g. a non-finite `factor`, or `powi`
   overflowing to `inf`) falls back to the ceiling.
 - For every in-range input the produced delays are **bit-for-bit identical** to
-  the previous behavior — this is purely a saturation fix at the overflow
-  boundary.
+  the previous behavior — `mul_f32` scales through `f64` internally, so
+  `try_from_secs_f64(f64::from(m) * initial.as_secs_f64())` reproduces its
+  result exactly. This is purely a saturation fix at the overflow boundary.
 
 Two related unclamped-arithmetic hazards found while auditing were also fixed:
 
