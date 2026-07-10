@@ -244,10 +244,7 @@ mod tests {
     #[rstest]
     // factor^0 == 1: the first retry uses the initial interval.
     #[case::first_retry_uses_initial(Duration::from_secs(1), 2.0, None, 1, Duration::from_secs(1))]
-    // In-range value stays bit-for-bit identical to mul_f32 (factor^2 == 4).
-    #[case::in_range_matches_mul_f32(
-        Duration::from_millis(100), 2.0, None, 3, Duration::from_millis(100).mul_f32(4.0)
-    )]
+    #[case::in_range_grows_by_factor(Duration::from_secs(1), 2.0, None, 3, Duration::from_secs(4))]
     // Unbounded saturates to Duration::MAX rather than panicking, at and past the boundary.
     #[case::overflow_boundary_unbounded(Duration::from_secs(1), 2.0, None, 70, Duration::MAX)]
     #[case::large_retry_count_unbounded(Duration::from_secs(1), 2.0, None, 128, Duration::MAX)]
@@ -326,35 +323,40 @@ mod tests {
 
     #[test]
     fn test_exponential_policy() {
+        // Intervals are computed in f32, so use f32-exact powers of two
+        // (125ms * 2^n) to compare exactly rather than depending on rounding.
         let policy = RetryPolicy::Exponential {
-            initial_interval: Duration::from_millis(100),
+            initial_interval: Duration::from_millis(125),
             factor: 2.0,
-            max_interval: Some(Duration::from_millis(500)),
+            max_interval: Some(Duration::from_millis(750)),
             max_attempts: None,
             max_duration: Some(Duration::from_secs(10)),
             on_max_attempts: OnMaxAttempts::FailAsTerminal,
         };
 
+        // 125ms * 2^1
         assert_eq!(
             policy.next_retry(EntryRetryInfo {
                 retry_count: 2,
                 retry_loop_duration: Duration::from_secs(1)
             }),
-            NextRetry::Retry(Some(Duration::from_millis(100).mul_f32(2.0)))
+            NextRetry::Retry(Some(Duration::from_millis(250)))
         );
+        // 125ms * 2^2, still below max_interval
         assert_eq!(
             policy.next_retry(EntryRetryInfo {
                 retry_count: 3,
                 retry_loop_duration: Duration::from_secs(1)
             }),
-            NextRetry::Retry(Some(Duration::from_millis(100).mul_f32(4.0)))
+            NextRetry::Retry(Some(Duration::from_millis(500)))
         );
+        // 125ms * 2^3 == 1s, clamped to max_interval
         assert_eq!(
             policy.next_retry(EntryRetryInfo {
                 retry_count: 4,
                 retry_loop_duration: Duration::from_secs(1)
             }),
-            NextRetry::Retry(Some(Duration::from_millis(500)))
+            NextRetry::Retry(Some(Duration::from_millis(750)))
         );
         assert_eq!(
             policy.next_retry(EntryRetryInfo {
