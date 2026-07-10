@@ -776,8 +776,15 @@ impl Transition<Context, ProposeRunCompletion> for State {
                         } else {
                             EntryRetryInfo::default()
                         };
-                        retry_info.retry_count += 1;
-                        retry_info.retry_loop_duration += attempt_duration;
+                        // Saturate both accumulators: `retry_count` originates
+                        // from the runtime (StartMessage) and `attempt_duration`
+                        // from the SDK, so neither is trusted not to be at the
+                        // extreme of its range. `+`/`+=` on `u32`/`Duration`
+                        // panic on overflow, so use the saturating variants.
+                        retry_info.retry_count = retry_info.retry_count.saturating_add(1);
+                        retry_info.retry_loop_duration = retry_info
+                            .retry_loop_duration
+                            .saturating_add(attempt_duration);
 
                         match retry_policy.next_retry(retry_info) {
                             NextRetry::Retry(next_retry_interval) => {

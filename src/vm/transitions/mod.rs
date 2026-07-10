@@ -114,7 +114,15 @@ impl Error {
                 .related_command
                 .as_ref()
                 .map(|cmd| u16::from(cmd.ty).into()),
-            next_retry_delay: self.next_retry_delay.map(|d| d.as_millis() as u64),
+            // Saturate rather than truncate: `as u64` on the u128 returned by
+            // `as_millis()` wraps for very large delays (e.g. the exponential
+            // retry policy can legitimately produce delays of ~2^62s before it
+            // even overflows `Duration`, whose millis exceed `u64::MAX` and
+            // truncate to a small value -- 2^62s and 2^63s both truncate to 0,
+            // which would tell the runtime to retry immediately, a tight loop).
+            next_retry_delay: self
+                .next_retry_delay
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
             behavior: i32::from(self.behavior),
         }
     }

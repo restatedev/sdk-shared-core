@@ -1413,4 +1413,96 @@ mod retry_policy {
             crate::vm::errors::codes::UNSUPPORTED_FEATURE.code()
         );
     }
+
+    /// Drives a retryable run failure through the full VM path
+    /// (`propose_run_completion` -> journal transition -> `ErrorMessage`) and
+    /// returns the emitted `next_retry_delay` in millis. The `RunCommandMessage`
+    /// is replayed (a known entry) so that `infer_entry_retry_info` is used and
+    /// the retry policy sees `retry_count_since_last_stored_entry + 1`.
+    fn run_retryable_failure_next_retry_delay(
+        retry_count_since_last_stored_entry: u32,
+        retry_policy: RetryPolicy,
+    ) -> Option<u64> {
+        let output = VMTestCase::new()
+            .input(StartMessage {
+                retry_count_since_last_stored_entry,
+                ..start_message(2)
+            })
+            .input(input_entry_message(b"my-data"))
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_string(),
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
+                // A retryable failure that continues retrying returns Err and is
+                // surfaced as an ErrorMessage carrying next_retry_delay.
+                assert!(vm
+                    .propose_run_completion(
+                        handle,
+                        RunExitResult::RetryableFailure {
+                            error: Error::internal("my-error").with_stacktrace("my-stacktrace"),
+                            attempt_duration: Duration::ZERO,
+                        },
+                        retry_policy,
+                    )
+                    .is_err());
+            });
+
+        let last = output.last().expect("at least one output message");
+        let error = last.decode_to::<ErrorMessage>(0).unwrap();
+        assert_eq!(error.code, 500, "expected the emitted retry ErrorMessage");
+        error.next_retry_delay
+    }
+
+    // Reproduces the production retry-storm panic through the full VM path
+    // (`WasmVM::propose_run_completion_failure_transient` -> this crate). With an
+    // unbounded exponential policy (initial=1s, factor=2), a high retry_count
+    // computes `1s * 2^n` which overflows `Duration` and used to panic inside
+    // `propose_run_completion` ("cannot convert float seconds to Duration").
+    // It must now saturate instead of panicking.
+    #[test]
+    fn exit_with_retryable_error_exponential_overflow_saturates() {
+        // Policy sees retry_count = 70 + 1 = 71 => 1s * 2^70, well past the
+        // ~2^64 overflow boundary.
+        let delay = run_retryable_failure_next_retry_delay(
+            70,
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 2.0,
+                max_attempts: None,
+                max_duration: None,
+                max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
+            },
+        );
+        // Saturates to Duration::MAX, whose millis saturate to u64::MAX.
+        assert_eq!(delay, Some(u64::MAX));
+    }
+
+    // A delay that is a valid `Duration` but whose millis exceed `u64::MAX` must
+    // saturate, not wrap. `1s * 2^62` (~146 billion years) is a representable
+    // Duration, but `2^62s` truncates to 0 millis under `as u64`, which would
+    // tell the runtime to retry immediately (a tight loop). This is reachable
+    // *before* the overflow panic in an unbounded exponential policy.
+    #[test]
+    fn exit_with_retryable_error_exponential_millis_do_not_wrap_to_zero() {
+        // Policy sees retry_count = 62 + 1 = 63 => 1s * 2^62.
+        let delay = run_retryable_failure_next_retry_delay(
+            62,
+            RetryPolicy::Exponential {
+                initial_interval: Duration::from_secs(1),
+                factor: 2.0,
+                max_attempts: None,
+                max_duration: None,
+                max_interval: None,
+                on_max_attempts: OnMaxAttempts::FailAsTerminal,
+            },
+        );
+        assert_ne!(delay, Some(0), "millis must not wrap to zero");
+        assert_eq!(delay, Some(u64::MAX));
+    }
 }

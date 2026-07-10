@@ -686,13 +686,15 @@ impl super::VM for CoreVM {
                 (name, Some(now_since_unix_epoch)) if name.is_empty() => {
                     debug!(
                         "Executing 'Timer with duration {:?}'",
-                        wake_up_time_since_unix_epoch - now_since_unix_epoch
+                        // `saturating_sub`: a wake-up time in the past would make
+                        // plain `Duration - Duration` panic on underflow.
+                        wake_up_time_since_unix_epoch.saturating_sub(now_since_unix_epoch)
                     );
                 }
                 (name, Some(now_since_unix_epoch)) => {
                     debug!(
                         "Executing 'Timer {name} with duration {:?}'",
-                        wake_up_time_since_unix_epoch - now_since_unix_epoch
+                        wake_up_time_since_unix_epoch.saturating_sub(now_since_unix_epoch)
                     );
                 }
                 (name, None) if name.is_empty() => {
