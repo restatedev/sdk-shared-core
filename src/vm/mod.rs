@@ -3,11 +3,10 @@ use crate::service_protocol::messages::{
     attach_invocation_command_message, complete_awakeable_command_message,
     complete_promise_command_message, get_invocation_output_command_message,
     output_command_message, send_signal_command_message, AttachInvocationCommandMessage,
-    CallCommandMessage, ClearAllStateCommandMessage, ClearStateCommandMessage,
-    CompleteAwakeableCommandMessage, CompletePromiseCommandMessage, ErrorBehavior,
-    GetInvocationOutputCommandMessage, GetPromiseCommandMessage, IdempotentRequestTarget,
-    OneWayCallCommandMessage, OutputCommandMessage, PeekPromiseCommandMessage,
-    SendSignalCommandMessage, SetStateCommandMessage, SleepCommandMessage, WorkflowTarget,
+    CallCommandMessage, CompleteAwakeableCommandMessage, CompletePromiseCommandMessage,
+    ErrorBehavior, GetInvocationOutputCommandMessage, GetPromiseCommandMessage,
+    IdempotentRequestTarget, OneWayCallCommandMessage, OutputCommandMessage,
+    PeekPromiseCommandMessage, SendSignalCommandMessage, SleepCommandMessage, WorkflowTarget,
 };
 use crate::service_protocol::{Decoder, NotificationId, RawMessage, Version, CANCEL_SIGNAL_ID};
 use crate::vm::errors::{
@@ -27,7 +26,7 @@ use async_results_state::AsyncResultsState;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use context::{Context, Output};
+use context::{Context, EagerState, Output};
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
@@ -51,16 +50,19 @@ pub(crate) enum State {
         received_entries: u32,
         commands: VecDeque<RawMessage>,
         async_results: AsyncResultsState,
+        eager_state: EagerState,
     },
     Replaying {
         commands: VecDeque<RawMessage>,
         run_state: RunState,
         async_results: AsyncResultsState,
+        eager_state: EagerState,
     },
     Processing {
         processing_first_entry: bool,
         run_state: RunState,
         async_results: AsyncResultsState,
+        eager_state: EagerState,
     },
     Closed,
 }
@@ -71,6 +73,35 @@ impl State {
             return ClosedError::new(event.to_string()).into();
         }
         UnexpectedStateError::new(self.into(), event.to_string()).into()
+    }
+
+    /// Tries to transition to Processing when the condition is met, in all the other cases returns the current state.
+    #[inline]
+    fn try_transition_to_processing(self) -> Self {
+        match self {
+            State::Replaying {
+                commands,
+                async_results,
+                eager_state,
+                run_state,
+            } if commands.is_empty() => State::Processing {
+                processing_first_entry: true,
+                run_state,
+                async_results,
+                eager_state,
+            },
+            s => s,
+        }
+    }
+
+    #[inline]
+    fn eager_state_mut(&mut self) -> Option<&mut EagerState> {
+        match self {
+            State::WaitingReplayEntries { eager_state, .. }
+            | State::Replaying { eager_state, .. }
+            | State::Processing { eager_state, .. } => Some(eager_state),
+            _ => None,
+        }
     }
 }
 
@@ -259,7 +290,6 @@ impl super::VM for CoreVM {
                 output: Output::new(version),
                 start_info: None,
                 journal: Default::default(),
-                eager_state: Default::default(),
                 non_deterministic_checks_ignore_payload_equality,
                 negotiated_protocol_version: version,
                 awaiting_on_policy,
@@ -610,15 +640,7 @@ impl super::VM for CoreVM {
         options: PayloadOptions,
     ) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Set state {key}'");
-        self.context.eager_state.set(key.clone(), value.clone());
-        self.do_transition(SysNonCompletableEntry(
-            SetStateCommandMessage {
-                key: Bytes::from(key.into_bytes()),
-                value: Some(value.into()),
-                ..SetStateCommandMessage::default()
-            },
-            options,
-        ))
+        self.do_transition(SysStateSet(key, value, options))
     }
 
     #[instrument(
@@ -634,14 +656,7 @@ impl super::VM for CoreVM {
     )]
     fn sys_state_clear(&mut self, key: String) -> Result<(), Error> {
         invocation_debug_logs!(self, "Executing 'Clear state {key}'");
-        self.context.eager_state.clear(key.clone());
-        self.do_transition(SysNonCompletableEntry(
-            ClearStateCommandMessage {
-                key: Bytes::from(key.into_bytes()),
-                ..ClearStateCommandMessage::default()
-            },
-            PayloadOptions::default(),
-        ))
+        self.do_transition(SysStateClear(key))
     }
 
     #[instrument(
@@ -657,11 +672,7 @@ impl super::VM for CoreVM {
     )]
     fn sys_state_clear_all(&mut self) -> Result<(), Error> {
         invocation_debug_logs!(self, "Executing 'Clear all state'");
-        self.context.eager_state.clear_all();
-        self.do_transition(SysNonCompletableEntry(
-            ClearAllStateCommandMessage::default(),
-            PayloadOptions::default(),
-        ))
+        self.do_transition(SysStateClearAll)
     }
 
     #[instrument(

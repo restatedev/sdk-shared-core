@@ -155,6 +155,7 @@ pub(crate) enum EagerGetStateKeys {
     Keys(Vec<String>),
 }
 
+#[derive(Debug)]
 pub(crate) struct EagerState {
     is_partial: bool,
     // None means Void, Value means value
@@ -230,7 +231,6 @@ pub(crate) struct Context {
 
     pub(crate) input_is_closed: bool,
     pub(crate) output: Output,
-    pub(crate) eager_state: EagerState,
     pub(crate) non_deterministic_checks_ignore_payload_equality: bool,
     pub(crate) awaiting_on_policy: AwaitingOnPolicy,
 }

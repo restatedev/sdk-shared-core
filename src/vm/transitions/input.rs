@@ -54,7 +54,7 @@ impl Transition<Context, NewStartMessage> for State {
             limit_key: if is_v7 { msg.limit_key } else { None },
             idempotency_key: if is_v7 { msg.idempotency_key } else { None },
         });
-        context.eager_state = EagerState::new(
+        let eager_state = EagerState::new(
             msg.partial_state,
             msg.state_map
                 .into_iter()
@@ -77,6 +77,7 @@ impl Transition<Context, NewStartMessage> for State {
             received_entries: 0,
             commands: Default::default(),
             async_results: Default::default(),
+            eager_state,
         })
     }
 }
@@ -155,6 +156,7 @@ impl Transition<Context, PostReceiveEntry> for State {
                 mut received_entries,
                 commands,
                 async_results,
+                eager_state,
             } => {
                 received_entries += 1;
                 if context.expect_start_info().entries_to_replay == received_entries {
@@ -162,12 +164,14 @@ impl Transition<Context, PostReceiveEntry> for State {
                         commands,
                         run_state: Default::default(),
                         async_results,
+                        eager_state,
                     })
                 } else {
                     Ok(State::WaitingReplayEntries {
                         received_entries,
                         commands,
                         async_results,
+                        eager_state,
                     })
                 }
             }
