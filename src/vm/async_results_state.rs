@@ -308,7 +308,7 @@ impl AsyncResultsState {
     pub(crate) fn is_handle_completed(&self, handle: NotificationHandle) -> bool {
         self.handle_mapping
             .get(&handle)
-            .is_none_or(|id| self.ready.contains_key(id))
+            .is_some_and(|id| self.ready.contains_key(id))
     }
 
     fn resolve_handle_state(&self, handle: NotificationHandle) -> HandleState {
@@ -417,7 +417,11 @@ impl AsyncResultsState {
     pub(crate) fn take_handle(&mut self, handle: NotificationHandle) -> Option<NotificationResult> {
         let id = self.handle_mapping.get(&handle)?;
         if let Some(res) = self.ready.remove(id) {
-            self.handle_mapping.remove(&handle);
+            if handle != CANCEL_NOTIFICATION_HANDLE {
+                self.handle_mapping.remove(&handle);
+                // Don't remove the CANCEL handle mapping
+                // TODO improve the code here around handling built-in signals handles
+            }
             Some(res)
         } else {
             None
