@@ -1,6 +1,6 @@
 [package]
 name = "restate-sdk-shared-core"
-version = "7.0.2"
+version = "7.0.3"
 edition = "2021"
 description = "SDK Shared core"
 license = "MIT"
