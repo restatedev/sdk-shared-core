@@ -217,6 +217,51 @@ mod journal_mismatch {
         );
     }
 
+    /// Replays a journal whose next recorded command has a different type than the one the
+    /// handler issues. The message must name the recorded command as what the previous
+    /// execution recorded, and the handler's command as what this execution attempts.
+    #[test]
+    fn command_type_mismatch_names_recorded_and_attempted_commands() {
+        let mut output = VMTestCase::new()
+            .input(start_message(2))
+            .input(input_entry_message(b"my-data"))
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_owned(),
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+
+                // The journal recorded a run at index 1, but the handler returns instead
+                let error = vm
+                    .sys_write_output(
+                        NonEmptyValue::Success(Bytes::from_static(b"done")),
+                        PayloadOptions::default(),
+                    )
+                    .unwrap_err();
+                assert_eq!(error.code(), vm::errors::codes::JOURNAL_MISMATCH.code());
+            });
+
+        let error_message = output.next_decoded::<ErrorMessage>().unwrap();
+        assert_eq!(
+            error_message.code,
+            vm::errors::codes::JOURNAL_MISMATCH.code() as u32
+        );
+        assert_that!(
+            error_message.message,
+            contains_substring(
+                "The previous execution ran and recorded the following: 'run' (index '1')"
+            )
+        );
+        assert_that!(
+            error_message.message,
+            contains_substring(
+                "The current execution attempts to perform the following: 'handler return'"
+            )
+        );
+        assert_eq!(output.next(), None);
+    }
+
     fn expect_mismatch_on_replay<
         M: RestateMessage + RestateEncodableMessage + CommandMessageHeaderDiff + Clone,
         T: fmt::Debug,
