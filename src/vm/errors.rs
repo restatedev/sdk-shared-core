@@ -179,8 +179,10 @@ impl std::error::Error for ClosedError {}
 
 #[derive(Debug)]
 pub struct CommandTypeMismatchError {
+    /// Type of the command recorded in the journal at `command_index`.
     actual: MessageType,
     command_index: i64,
+    /// Type of the command the handler issues now, during replay.
     expected: MessageType,
 }
 
@@ -205,9 +207,9 @@ impl fmt::Display for CommandTypeMismatchError {
 This typically happens when some parts of the code are non-deterministic.
  - The previous execution ran and recorded the following: '{}' (index '{}')
  - The current execution attempts to perform the following: '{}'",
-               self.expected,
-            self.command_index,
                self.actual,
+            self.command_index,
+               self.expected,
         )
     }
 }
