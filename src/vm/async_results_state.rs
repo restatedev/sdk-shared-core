@@ -110,6 +110,18 @@ impl AsyncResultsState {
         self.ready.insert(notification.id, notification.result);
     }
 
+    /// Makes all the enqueued notifications ready at once, regardless of their order.
+    /// Used by [`crate::JournalMode::Storage`], where the order of notifications doesn't matter.
+    pub(crate) fn drain_to_ready(&mut self) {
+        for notification in self.to_process.drain(..) {
+            self.ready.insert(notification.id, notification.result);
+        }
+    }
+
+    pub(crate) fn get_ready(&self, id: &NotificationId) -> Option<&NotificationResult> {
+        self.ready.get(id)
+    }
+
     pub(crate) fn create_handle_mapping(
         &mut self,
         notification_id: NotificationId,

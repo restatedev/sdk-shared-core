@@ -302,12 +302,34 @@ pub enum JournalMismatchRetryBehavior {
     FollowRetryPolicy,
 }
 
+/// How the journal is used across attempts.
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+pub enum JournalMode {
+    /// The journal is replayed: the handler must execute the same operations in the same order on every attempt,
+    /// and the VM checks it.
+    #[default]
+    Replay,
+    /// The journal is used as a durable store of results, looked up by entry name.
+    ///
+    /// On every attempt the handler runs from the beginning as regular code, which doesn't need to be deterministic:
+    /// runs, steps, calls, one way calls and sleeps are identified by their name (`name#n` for the n-th occurrence
+    /// of a name in the same attempt), and the ones already in the journal are not executed again.
+    /// No determinism check is performed.
+    ///
+    /// State reads are not journaled, and multiple commit points are expressed with transactional steps,
+    /// see [`VM::sys_step_begin`]. Awakeables are not supported, because their ids are positional: use named signals instead.
+    ///
+    /// The SDK must call [`VM::sys_restore`] right after [`VM::sys_input`].
+    Storage,
+}
+
 #[derive(Debug)]
 pub struct VMOptions {
     pub implicit_cancellation: ImplicitCancellationOption,
     pub non_determinism_checks: NonDeterministicChecksOption,
     pub awaiting_on_policy: AwaitingOnPolicy,
     pub journal_mismatch_retry_behavior: JournalMismatchRetryBehavior,
+    pub journal_mode: JournalMode,
 }
 
 impl Default for VMOptions {
@@ -320,6 +342,7 @@ impl Default for VMOptions {
             non_determinism_checks: Default::default(),
             awaiting_on_policy: Default::default(),
             journal_mismatch_retry_behavior: Default::default(),
+            journal_mode: Default::default(),
         }
     }
 }
@@ -425,6 +448,25 @@ pub struct RunHandle {
     /// If true, the run result will be replayed, meaning the SDK don't need to schedule the closure for execution.
     pub replayed: bool,
     pub handle: NotificationHandle,
+}
+
+/// Result of [`VM::sys_restore`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum Restore {
+    /// The SDK must execute the handler.
+    Execute,
+    /// The invocation output is already in the journal: the invocation was ended, and the handler must not be executed.
+    Completed,
+}
+
+/// Result of [`VM::sys_step_begin`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum StepBegin {
+    /// The step is not in the journal: the SDK must execute the step body, then call [`VM::sys_step_commit`].
+    Execute,
+    /// The step was committed by a previous attempt: the SDK must NOT execute the step body,
+    /// and takes the result with [`VM::sys_step_take_result`].
+    Committed(NotificationHandle),
 }
 
 /// Result of [`VM::sys_tx_begin`].
@@ -641,6 +683,35 @@ pub trait VM: Sized {
     ///
     /// Returns the committed output.
     fn sys_tx_end(&mut self) -> VMResult<NonEmptyValue>;
+
+    // --- Storage journal mode, see [`JournalMode::Storage`]
+
+    /// Indexes the journal of the previous attempts instead of replaying it.
+    /// Must be called right after [`VM::sys_input`], in [`JournalMode::Storage`].
+    ///
+    /// If the previous attempt died while applying a committed step, the remaining commands of the step are written.
+    fn sys_restore(&mut self) -> VMResult<Restore>;
+
+    /// Starts a transactional step: a commit point identified by `name`.
+    ///
+    /// The step body uses [`VM::tx_state_get`], [`VM::tx_state_set`], [`VM::tx_send`] and the other transactional methods,
+    /// and it must not await other Restate operations.
+    /// Its state mutations, one way calls and result are committed atomically by [`VM::sys_step_commit`].
+    /// Only one step can execute at a time.
+    fn sys_step_begin(&mut self, name: String) -> VMResult<StepBegin>;
+
+    /// Commits the executing step with its `result`. If `result` is a failure,
+    /// the buffered state mutations and one way calls are discarded, and only the failure is committed.
+    ///
+    /// The commit and its state mutations and one way calls are written right away, and are durable together.
+    /// The SDK awaits the returned handle to know when the step is durable, and then takes the result with [`VM::sys_step_take_result`].
+    fn sys_step_commit(&mut self, result: NonEmptyValue) -> VMResult<NotificationHandle>;
+
+    /// Takes the result of a step, returns `None` if the step is not durable yet.
+    fn sys_step_take_result(
+        &mut self,
+        handle: NotificationHandle,
+    ) -> VMResult<Option<NonEmptyValue>>;
 
     /// Returns the current state of the state machine.
     fn state(&self) -> State;

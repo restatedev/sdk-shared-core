@@ -7,6 +7,7 @@ mod promise;
 mod run;
 mod sleep;
 mod state;
+mod storage;
 mod suspensions;
 mod tx;
 

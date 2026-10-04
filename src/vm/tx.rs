@@ -187,6 +187,8 @@ pub(crate) enum TxState {
         commit_run_handle: Option<NotificationHandle>,
         write_set: WriteSet,
         sends: Vec<OneWayCallCommandMessage>,
+        /// Set if this is a step of the storage journal mode, with the step `RunCommand` name.
+        step_key: Option<String>,
     },
     /// The commit record was proposed in this attempt, or was found in the replayed journal.
     Committed {
@@ -227,6 +229,22 @@ pub(crate) fn new_commit_record(
     }
 }
 
-pub(crate) fn check_record_version(record: &TxCommitRecord) -> bool {
-    record.version == TX_COMMIT_RECORD_VERSION
+pub(crate) fn decode_commit_record(bytes: Bytes) -> Result<TxCommitRecord, crate::Error> {
+    use crate::vm::errors::codes::PROTOCOL_VIOLATION;
+    let record = <TxCommitRecord as prost::Message>::decode(bytes).map_err(|e| {
+        crate::Error::new(
+            PROTOCOL_VIOLATION,
+            format!("Cannot decode the transaction commit record: {e}"),
+        )
+    })?;
+    if record.version != TX_COMMIT_RECORD_VERSION {
+        return Err(crate::Error::new(
+            PROTOCOL_VIOLATION,
+            format!(
+                "Unsupported transaction commit record version {}",
+                record.version
+            ),
+        ));
+    }
+    Ok(record)
 }

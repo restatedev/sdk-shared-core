@@ -131,6 +131,13 @@ pub const EMPTY_SCOPE: Error = Error::new_const(
 
 pub const SUSPENDED: Error = Error::new_const(codes::SUSPENDED, "Suspended invocation");
 
+pub fn unsupported_in_storage_mode(feature: &'static str) -> Error {
+    Error::new(
+        codes::UNSUPPORTED_FEATURE,
+        format!("The storage journal mode doesn't support {feature}"),
+    )
+}
+
 pub const TX_PARTIAL_STATE: Error = Error::new_const(
     codes::INTERNAL,
     "Transactional handlers read state from the snapshot sent by the runtime, but the runtime sent a partial snapshot. \

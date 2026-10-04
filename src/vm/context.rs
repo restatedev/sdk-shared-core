@@ -58,6 +58,12 @@ impl Journal {
         next
     }
 
+    /// Skips the replayed journal, see [`crate::JournalMode::Storage`].
+    pub(crate) fn fast_forward(&mut self, commands: u32, next_completion_id: u32) {
+        self.command_index = commands.checked_sub(1);
+        self.completion_index = self.completion_index.max(next_completion_id);
+    }
+
     pub(crate) fn next_signal_notification_id(&mut self) -> u32 {
         let next = self.signal_index;
         self.signal_index += 1;
