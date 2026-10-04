@@ -707,6 +707,20 @@ pub trait VM: Sized {
     /// The SDK awaits the returned handle to know when the step is durable, and then takes the result with [`VM::sys_step_take_result`].
     fn sys_step_commit(&mut self, result: NonEmptyValue) -> VMResult<NotificationHandle>;
 
+    /// Marks the next run, call, one way call or sleep as fresh: it's not looked up in the journal,
+    /// so it's executed in this attempt even if a previous attempt executed it already.
+    /// Use it for operations that must observe the current state, such as reads, or progress reports.
+    fn sys_storage_fresh(&mut self) -> VMResult<()>;
+
+    /// Makes `key` available to [`VM::tx_state_get`] when the state snapshot doesn't contain it,
+    /// fetching it from the runtime. Available in [`JournalMode::Storage`], inside and outside steps.
+    ///
+    /// Returns `None` if the key can already be read, otherwise the handle to await, before calling [`VM::tx_state_take_loaded`].
+    fn tx_state_load(&mut self, key: String) -> VMResult<Option<NotificationHandle>>;
+
+    /// Adds the value fetched by [`VM::tx_state_load`] to the state snapshot. Returns false if it's not available yet.
+    fn tx_state_take_loaded(&mut self, handle: NotificationHandle) -> VMResult<bool>;
+
     /// Takes the result of a step, returns `None` if the step is not durable yet.
     fn sys_step_take_result(
         &mut self,

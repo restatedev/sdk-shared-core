@@ -50,25 +50,33 @@ pub(crate) struct StorageJournal {
     pub(crate) sleeps: HashMap<String, CompletionId>,
     /// Occurrences of each entry name in this attempt.
     occurrences: HashMap<(EntryKind, String), u32>,
+    /// The next entry must not be looked up, see [`crate::VM::sys_storage_fresh`].
+    pub(crate) fresh_next: bool,
 }
 
 impl StorageJournal {
-    /// Returns the key of the next entry of the given kind and name:
+    /// Returns the key of the next entry of the given kind and name, and whether it must be looked up in the journal:
     /// the name for the first occurrence in this attempt, `name#n` for the n-th one.
-    pub(crate) fn next_key(&mut self, kind: EntryKind, name: &str) -> String {
-        let occurrence = self
-            .occurrences
-            .entry((kind, name.to_owned()))
-            .and_modify(|o| *o += 1)
-            .or_insert(1);
-        let key = if *occurrence == 1 {
-            name.to_owned()
+    ///
+    /// If the entry was marked fresh, it's never looked up, and its key is made unique across attempts with `unique`.
+    pub(crate) fn next_key(&mut self, kind: EntryKind, name: &str, unique: i64) -> (String, bool) {
+        let (key, lookup) = if std::mem::take(&mut self.fresh_next) {
+            (format!("{name}@{unique}"), false)
         } else {
-            format!("{name}#{occurrence}")
+            let occurrence = self
+                .occurrences
+                .entry((kind, name.to_owned()))
+                .and_modify(|o| *o += 1)
+                .or_insert(1);
+            if *occurrence == 1 {
+                (name.to_owned(), true)
+            } else {
+                (format!("{name}#{occurrence}"), true)
+            }
         };
         match kind {
-            EntryKind::Step => format!("{STEP_RUN_NAME_PREFIX}{key}"),
-            _ => key,
+            EntryKind::Step => (format!("{STEP_RUN_NAME_PREFIX}{key}"), lookup),
+            _ => (key, lookup),
         }
     }
 }

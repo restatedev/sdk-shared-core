@@ -1,12 +1,13 @@
 use super::*;
 
 use crate::service_protocol::messages::{
-    call_completion_notification_message, run_completion_notification_message, start_message,
-    CallCommandMessage, CallCompletionNotificationMessage,
-    CallInvocationIdCompletionNotificationMessage, ClearStateCommandMessage, EndMessage,
-    GetLazyStateCommandMessage, ProposeRunCompletionAckMessage, ProposeRunCompletionMessage,
-    RunCommandMessage, RunCompletionNotificationMessage, SetStateCommandMessage,
-    SleepCommandMessage,
+    call_completion_notification_message, get_lazy_state_completion_notification_message,
+    run_completion_notification_message, start_message, CallCommandMessage,
+    CallCompletionNotificationMessage, CallInvocationIdCompletionNotificationMessage,
+    ClearStateCommandMessage, EndMessage, GetLazyStateCommandMessage,
+    GetLazyStateCompletionNotificationMessage, ProposeRunCompletionAckMessage,
+    ProposeRunCompletionMessage, RunCommandMessage, RunCompletionNotificationMessage,
+    SetStateCommandMessage, SleepCommandMessage,
 };
 use crate::vm::tx::{tx_commit_record, TxCommitRecord, TxStateMutation};
 use crate::{
@@ -595,4 +596,164 @@ fn restore_is_required() {
                 }))
             );
         });
+}
+
+#[test]
+fn fresh_call_is_issued_again() {
+    let mut output = storage_mode()
+        .input(start(4, &[]))
+        .input(input_entry_message(b""))
+        .input(CallCommandMessage {
+            service_name: "Session".to_owned(),
+            handler_name: "task".to_owned(),
+            invocation_id_notification_idx: 1,
+            result_completion_id: 2,
+            name: "load".to_owned(),
+            ..Default::default()
+        })
+        .input(CallInvocationIdCompletionNotificationMessage {
+            completion_id: 1,
+            invocation_id: "inv_1".to_owned(),
+        })
+        .input(CallCompletionNotificationMessage {
+            completion_id: 2,
+            result: Some(call_completion_notification_message::Result::Value(
+                Bytes::from_static(b"old checkpoint").into(),
+            )),
+        })
+        .run(|vm| {
+            vm.sys_input().unwrap();
+            vm.sys_restore().unwrap();
+
+            // A fresh call is issued again, with a key that is never looked up
+            vm.sys_storage_fresh().unwrap();
+            let session = || Target {
+                service: "Session".to_string(),
+                handler: "task".to_string(),
+                ..shipping_target()
+            };
+            vm.sys_call(
+                session(),
+                Bytes::new(),
+                Some("load".to_owned()),
+                PayloadOptions::default(),
+            )
+            .unwrap();
+
+            // The next call is not fresh, and finds the stored one
+            let stored = vm
+                .sys_call(
+                    session(),
+                    Bytes::new(),
+                    Some("load".to_owned()),
+                    PayloadOptions::default(),
+                )
+                .unwrap();
+            await_handle(vm, stored.call_notification_handle);
+            assert_eq!(
+                vm.take_notification(stored.call_notification_handle)
+                    .unwrap(),
+                Some(Value::Success(Bytes::from_static(b"old checkpoint")))
+            );
+        });
+
+    assert_that!(
+        output.next_decoded::<CallCommandMessage>().unwrap(),
+        pat!(CallCommandMessage {
+            name: eq("load@2"),
+            invocation_id_notification_idx: eq(3),
+            result_completion_id: eq(4),
+        })
+    );
+    assert_eq!(output.next(), None);
+}
+
+#[test]
+fn lazy_load_in_step() {
+    let mut output =
+        storage_mode()
+            .input(StartMessage {
+                partial_state: true,
+                ..start(1, &[("a", "1")])
+            })
+            .input(input_entry_message(b""))
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+                vm.sys_restore().unwrap();
+
+                assert_eq!(
+                    vm.sys_step_begin("update".to_owned()).unwrap(),
+                    StepBegin::Execute
+                );
+                // In the snapshot already
+                assert_eq!(vm.tx_state_load("a".to_owned()).unwrap(), None);
+                // Not in the snapshot: fetched from the runtime
+                let b = vm.tx_state_load("b".to_owned()).unwrap().unwrap();
+                let missing = vm.tx_state_load("missing".to_owned()).unwrap().unwrap();
+                vm.notify_input(encoder.encode(&GetLazyStateCompletionNotificationMessage {
+                    completion_id: 1,
+                    result: Some(
+                        get_lazy_state_completion_notification_message::Result::Value(
+                            Bytes::from_static(b"2").into(),
+                        ),
+                    ),
+                }));
+                vm.notify_input(encoder.encode(&GetLazyStateCompletionNotificationMessage {
+                    completion_id: 2,
+                    result: Some(
+                        get_lazy_state_completion_notification_message::Result::Void(
+                            Default::default(),
+                        ),
+                    ),
+                }));
+                await_handle(vm, b);
+                assert!(vm.tx_state_take_loaded(b).unwrap());
+                await_handle(vm, missing);
+                assert!(vm.tx_state_take_loaded(missing).unwrap());
+                assert_eq!(get_str(vm, "b"), Some("2".to_owned()));
+                assert_eq!(get_str(vm, "missing"), None);
+
+                // The fetched values take part in the dirty checks
+                vm.tx_state_set("b".to_owned(), Bytes::from_static(b"2"))
+                    .unwrap();
+                vm.tx_state_clear("missing".to_owned()).unwrap();
+                vm.tx_state_set("a".to_owned(), Bytes::from_static(b"10"))
+                    .unwrap();
+                // Written in the transaction: no need to load
+                assert_eq!(vm.tx_state_load("a".to_owned()).unwrap(), None);
+                vm.sys_step_commit(NonEmptyValue::Success(Bytes::new()))
+                    .unwrap();
+            });
+
+    assert_that!(
+        output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+        pat!(GetLazyStateCommandMessage {
+            key: eq(Bytes::from_static(b"b")),
+            result_completion_id: eq(1),
+        })
+    );
+    assert_that!(
+        output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+        pat!(GetLazyStateCommandMessage {
+            key: eq(Bytes::from_static(b"missing")),
+            result_completion_id: eq(2),
+        })
+    );
+    output.next_decoded::<RunCommandMessage>().unwrap();
+    let proposal = output
+        .next_decoded::<ProposeRunCompletionMessage>()
+        .unwrap();
+    let Some(crate::service_protocol::messages::propose_run_completion_message::Result::Value(r)) =
+        proposal.result
+    else {
+        panic!("Expected a value")
+    };
+    // Only "a" changed
+    assert_that!(
+        TxCommitRecord::decode(r).unwrap().state_mutations,
+        eq(vec![TxStateMutation {
+            key: "a".to_owned(),
+            value: Some(Bytes::from_static(b"10")),
+        }])
+    );
 }

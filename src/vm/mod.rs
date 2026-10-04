@@ -165,6 +165,9 @@ pub struct CoreVM {
 
     // Index of the journal, in JournalMode::Storage, set by sys_restore
     storage: Option<StorageJournal>,
+
+    // State keys being fetched by tx_state_load
+    pending_loads: HashMap<NotificationHandle, String>,
 }
 
 impl CoreVM {
@@ -563,6 +566,7 @@ impl super::VM for CoreVM {
             sys_run_names: HashMap::with_capacity(0),
             tx: TxState::default(),
             storage: None,
+            pending_loads: HashMap::new(),
         })
     }
 
@@ -1009,12 +1013,14 @@ impl super::VM for CoreVM {
         };
         let mut name = name;
         if self.verify_storage_restored()? {
+            let unique = self.context.journal.command_index() + 1;
             let storage = self.storage.as_mut().expect("storage mode is restored");
-            let key = storage.next_key(
+            let (key, lookup) = storage.next_key(
                 EntryKind::Sleep,
                 if name.is_empty() { "sleep" } else { &name },
+                unique,
             );
-            if let Some(completion_id) = storage.sleeps.get(&key).copied() {
+            if let Some(completion_id) = storage.sleeps.get(&key).copied().filter(|_| lookup) {
                 return Ok(self.storage_map_handles(&[completion_id])?[0]);
             }
             name = key;
@@ -1060,16 +1066,18 @@ impl super::VM for CoreVM {
 
         let mut name = name;
         if self.verify_storage_restored()? {
+            let unique = self.context.journal.command_index() + 1;
             let storage = self.storage.as_mut().expect("storage mode is restored");
-            let key = storage.next_key(
+            let (key, lookup) = storage.next_key(
                 EntryKind::Call,
                 &name
                     .take()
                     .filter(|n| !n.is_empty())
                     .unwrap_or_else(|| format!("{}/{}", target.service, target.handler)),
+                unique,
             );
             if let Some((invocation_id_completion_id, result_completion_id)) =
-                storage.calls.get(&key).copied()
+                storage.calls.get(&key).copied().filter(|_| lookup)
             {
                 // Already issued by a previous attempt, just await its result
                 let handles =
@@ -1152,15 +1160,19 @@ impl super::VM for CoreVM {
         };
         let mut name = name;
         if self.verify_storage_restored()? {
+            let unique = self.context.journal.command_index() + 1;
             let storage = self.storage.as_mut().expect("storage mode is restored");
-            let key = storage.next_key(
+            let (key, lookup) = storage.next_key(
                 EntryKind::Send,
                 &name
                     .take()
                     .filter(|n| !n.is_empty())
                     .unwrap_or_else(|| format!("{}/{}", target.service, target.handler)),
+                unique,
             );
-            if let Some(invocation_id_completion_id) = storage.sends.get(&key).copied() {
+            if let Some(invocation_id_completion_id) =
+                storage.sends.get(&key).copied().filter(|_| lookup)
+            {
                 // Already sent by a previous attempt
                 return Ok(SendHandle {
                     invocation_id_notification_handle: self
@@ -1444,9 +1456,16 @@ impl super::VM for CoreVM {
     fn sys_run(&mut self, name: String) -> VMResult<RunHandle> {
         let mut name = name;
         if self.verify_storage_restored()? {
+            let unique = self.context.journal.command_index() + 1;
             let storage = self.storage.as_mut().expect("storage mode is restored");
-            let key = storage.next_key(EntryKind::Run, if name.is_empty() { "run" } else { &name });
-            if let Some(completion_id) = storage.completed_runs.get(&key).copied() {
+            let (key, lookup) = storage.next_key(
+                EntryKind::Run,
+                if name.is_empty() { "run" } else { &name },
+                unique,
+            );
+            if let Some(completion_id) =
+                storage.completed_runs.get(&key).copied().filter(|_| lookup)
+            {
                 return Ok(RunHandle {
                     replayed: true,
                     handle: self.storage_map_handles(&[completion_id])?[0],
@@ -2043,9 +2062,10 @@ impl super::VM for CoreVM {
             self.do_transition(HitError(e))?;
             unreachable!();
         }
+        let unique = self.context.journal.command_index() + 1;
         let storage = self.storage.as_mut().expect("storage mode is restored");
-        let key = storage.next_key(EntryKind::Step, &name);
-        if let Some(completion_id) = storage.completed_runs.get(&key).copied() {
+        let (key, lookup) = storage.next_key(EntryKind::Step, &name, unique);
+        if let Some(completion_id) = storage.completed_runs.get(&key).copied().filter(|_| lookup) {
             invocation_debug_logs!(self, "Step '{key}' already committed");
             return Ok(StepBegin::Committed(
                 self.storage_map_handles(&[completion_id])?[0],
@@ -2129,6 +2149,84 @@ impl super::VM for CoreVM {
         )?;
         self.emit_apply_commands(storage::apply_commands(record))?;
         Ok(handle)
+    }
+
+    fn sys_storage_fresh(&mut self) -> VMResult<()> {
+        if !self.verify_storage_restored()? {
+            self.do_transition(HitError(errors::unsupported_in_storage_mode(
+                "fresh entries outside the storage journal mode",
+            )))?;
+            unreachable!();
+        }
+        self.storage
+            .as_mut()
+            .expect("storage mode is restored")
+            .fresh_next = true;
+        Ok(())
+    }
+
+    fn tx_state_load(&mut self, key: String) -> VMResult<Option<NotificationHandle>> {
+        if !self.verify_storage_restored()? {
+            self.do_transition(HitError(errors::unsupported_in_storage_mode(
+                "lazy transactional reads outside the storage journal mode",
+            )))?;
+            unreachable!();
+        }
+        let known = match (
+            &self.tx,
+            self.last_transition
+                .as_ref()
+                .ok()
+                .and_then(State::eager_state),
+        ) {
+            (TxState::Executing { write_set, .. }, Some(snapshot)) => {
+                write_set.get(&key, snapshot).is_ok()
+            }
+            (TxState::Inactive, Some(snapshot)) => tx::snapshot_get(&key, snapshot).is_ok(),
+            _ => false,
+        };
+        if known {
+            return Ok(None);
+        }
+        invocation_debug_logs!(self, "Loading state '{key}'");
+        let handle = self.do_transition(SysStateGet(key.clone(), PayloadOptions::default()))?;
+        self.pending_loads.insert(handle, key);
+        Ok(Some(handle))
+    }
+
+    fn tx_state_take_loaded(&mut self, handle: NotificationHandle) -> VMResult<bool> {
+        let Some(key) = self.pending_loads.get(&handle).cloned() else {
+            self.do_transition(HitError(Error::new(
+                errors::codes::INTERNAL,
+                "tx_state_take_loaded called with an handle not returned by tx_state_load. This is an SDK bug.",
+            )))?;
+            unreachable!();
+        };
+        let value = match self.take_notification(handle)? {
+            None => return Ok(false),
+            Some(Value::Void) => None,
+            Some(Value::Success(v)) => Some(v),
+            Some(v) => {
+                self.do_transition(HitError(Error::new(
+                    errors::codes::PROTOCOL_VIOLATION,
+                    format!("Unexpected state value variant {}", <&'static str>::from(v)),
+                )))?;
+                unreachable!();
+            }
+        };
+        self.pending_loads.remove(&handle);
+        if let Some(snapshot) = self
+            .last_transition
+            .as_mut()
+            .ok()
+            .and_then(State::eager_state_mut)
+        {
+            match value {
+                Some(v) => snapshot.set(key, v),
+                None => snapshot.clear(key),
+            }
+        }
+        Ok(true)
     }
 
     fn sys_step_take_result(
