@@ -218,8 +218,100 @@ because of the extra journal entries and because every write is stored twice: on
 * Write amplification: written values are stored twice, and every invocation adds the `Run` command and its completion.
 * The journal value codec isn't supported in the TypeScript SDK: decoding is async, while `ctx.kv` reads are synchronous.
 * Nothing is sent to the runtime until the commit, so long handler bodies run into the inactivity timeout.
+  The storage journal mode, below, lets long handlers commit along the way.
 * The commit record must fit in the message size limit.
 * The Restate UI shows the commit as a `Run` entry named `restate.tx.commit`.
+
+## Storage journal mode: multiple commit points without determinism
+
+Actor handlers have one commit point per invocation. To have several, and to await calls, sleeps and signals
+between them, without bringing back the determinism requirement, the VM has a second mode, `JournalMode::Storage`:
+the journal is used as a **durable store of results, looked up by name**, instead of a log to replay.
+
+On every attempt the handler runs from the beginning as regular code. Nothing is replayed and no determinism check is
+performed. `sys_restore`, called right after `sys_input`, indexes the journal of the previous attempts and moves
+straight to processing. From there:
+
+| Operation                         | Key (n-th occurrence in the attempt: `key#n`) | If the key is in the journal                    | Otherwise              |
+|-----------------------------------|-----------------------------------------------|-------------------------------------------------|------------------------|
+| transaction (step)                | `tx:<name>`                                   | returns the stored result, body not executed    | executes and commits   |
+| `ctx.run`                         | name, or `run`                                | returns the stored result, closure not executed | executes and appends   |
+| call                              | name, or `Service/handler`                    | awaits the result of the call already issued    | appends a new call     |
+| one-way call                      | name, or `Service/handler`                    | not sent again                                  | appends                |
+| sleep                             | name, or `sleep`                              | awaits the timer already set                    | appends                |
+| state read                        | (none)                                        | served from the eager state, **not journaled**  | lazy read if partial   |
+| output                            | (none)                                        | `sys_restore` ends the invocation right away    | written at the end     |
+
+A transaction (`sys_step_begin` / `sys_step_commit` / `sys_step_take_result`) is the commit record of the actor
+mode with a result instead of the invocation output. Its `Run` command, the proposal and the apply commands are
+written together, so that whatever prefix of the stream the runtime keeps, the apply commands are never durable
+without their commit, and only the last transaction can be partially applied. `sys_restore` checks it and writes
+the missing commands before handing over to the handler. A transaction without its result in the journal (the
+proposal was lost) is just executed again, with a new `Run` command.
+
+The new journal entries get completion ids after the largest one found in the journal. The runtime doesn't
+check that the SDK consumed the replayed commands: it appends the new ones after them.
+
+```ts
+order: handlers.object.exclusive({ journal: "storage" }, async (ctx: ObjectContext, order: Order) => {
+  // Non-deterministic code is fine: it runs again, for real, on every attempt
+  ctx.console.info(`Processing ${order.id} at ${new Date().toISOString()}`);
+
+  const left = await ctx.transaction("reserve", (tx) => {          // commit point 1
+    const stock = tx.kv.get<number>(`stock/${order.sku}`) ?? 0;
+    if (stock < order.quantity) throw new TerminalError("Out of stock");
+    tx.kv.set(`stock/${order.sku}`, stock - order.quantity);
+    return stock - order.quantity;
+  });
+  const label = await ctx.serviceClient(shipping).label(order.id, rpc.opts({ name: "label" }));
+  await ctx.transaction("ship", (tx) => {                          // commit point 2
+    tx.kv.set(`order/${order.id}`, `shipped with ${label}`);
+    tx.serviceSendClient(notifications).shipped(order.id);
+  });
+  return { label, left };
+})
+```
+
+The journal of that invocation:
+
+```
+Input, Run tx:reserve + result, SetState, SetState, Call label + results, Run tx:ship + result, SetState, OneWayCall, Output
+```
+
+### Semantics
+
+* Each transaction is atomic and executes at most once; the invocation as a whole is not atomic. A later
+  terminal failure doesn't undo earlier transactions: compensate explicitly if needed.
+* Code outside transactions and runs executes at least once per attempt, and in request/response mode every
+  resume after a suspension is a new attempt. That's CPU, not journal writes.
+* Data must cross a commit point through the transaction result, as with `ctx.run`.
+  Reads outside transactions see the latest committed state.
+* The key is the only identity of an operation. A stored result is returned even if the arguments changed,
+  as with idempotency keys. Operations whose relative order can change between attempts must be named, otherwise
+  `#n` keys can be swapped (e.g. two unnamed calls to the same handler with different arguments).
+* Awakeables aren't supported, since their ids are positional: use named signals.
+* Transactions execute one at a time. A retryable error in a transaction body fails the attempt.
+* `ctx.set` outside transactions is journaled right away, and executed again by every attempt.
+* The partial-apply recovery relies on the same runtime ordering as the pipelined commit.
+
+### What the prototype shows
+
+Against `restate-server` 1.7.13:
+
+* A handler running three transactions in a random order, and failing its first two attempts after them:
+  in storage mode the third attempt ran them in a different order, each body executed exactly once, and
+  the side effect `ctx.run` once. The same logic in replay mode failed attempts 2 and 3 with journal
+  mismatches (`name: c != a`), and completed only when the random order happened to match the journal.
+* Killing the process between two transactions: the next attempt restored the journal, didn't execute the
+  first transaction again, issued the call and committed the second transaction.
+* Request/response mode, where each await suspends: 5 attempts, each running the handler from the top with different
+  random values, each transaction body executed once, the call and the named sleep issued once.
+* State reads don't appear in the journal at all.
+
+### Relation to actor handlers
+
+An actor handler is a storage-mode handler with one implicit transaction whose result is the invocation output.
+The two could be unified: the single-commit mode is the special case where the output is part of the record.
 
 ## Where this could go with runtime support
 
