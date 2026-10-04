@@ -628,9 +628,17 @@ pub trait VM: Sized {
     /// Returns the handle to await to know when the commit is durable.
     fn sys_tx_commit(&mut self, output: NonEmptyValue) -> VMResult<NotificationHandle>;
 
-    /// Applies the durable commit record: writes the state mutations, the one-way calls and the output, then ends the invocation.
+    /// Applies the commit record: writes the state mutations, the one-way calls and the output, then ends the invocation.
     ///
-    /// Must be called once the handle returned by [`VM::sys_tx_begin`] or [`VM::sys_tx_commit`] is completed.
+    /// When the transaction was committed by a previous attempt, this must be called once the handle returned by
+    /// [`VM::sys_tx_begin`] is completed.
+    ///
+    /// When the transaction was committed in this attempt, the SDK should call this once the handle returned by
+    /// [`VM::sys_tx_commit`] is completed, that is once the commit record is durable.
+    /// The SDK MAY call this right after [`VM::sys_tx_commit`] instead (pipelined commit):
+    /// the commands are then streamed right after the commit proposal, saving one round trip.
+    /// This relies on the runtime storing the commit proposal before any command that follows it on the same stream.
+    ///
     /// Returns the committed output.
     fn sys_tx_end(&mut self) -> VMResult<NonEmptyValue>;
 

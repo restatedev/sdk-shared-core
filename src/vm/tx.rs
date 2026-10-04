@@ -189,7 +189,11 @@ pub(crate) enum TxState {
         sends: Vec<OneWayCallCommandMessage>,
     },
     /// The commit record was proposed in this attempt, or was found in the replayed journal.
-    Committed { handle: NotificationHandle },
+    Committed {
+        handle: NotificationHandle,
+        /// Set if the commit record was proposed in this attempt.
+        proposed_record: Option<TxCommitRecord>,
+    },
     /// The commit record was applied.
     Ended,
 }

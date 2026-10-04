@@ -247,6 +247,47 @@ impl CoreVM {
         unreachable!();
     }
 
+    /// Takes the commit record from the completed commit run notification.
+    /// The outer error is the VM error, the inner one is a record decoding error.
+    fn take_committed_record(
+        &mut self,
+        handle: NotificationHandle,
+    ) -> VMResult<Result<tx::TxCommitRecord, Error>> {
+        Ok(match super::VM::take_notification(self, handle)? {
+            Some(Value::Success(b)) => <tx::TxCommitRecord as prost::Message>::decode(b)
+                .map_err(|e| {
+                    Error::new(
+                        errors::codes::PROTOCOL_VIOLATION,
+                        format!("Cannot decode the transaction commit record: {e}"),
+                    )
+                })
+                .and_then(|record| {
+                    if tx::check_record_version(&record) {
+                        Ok(record)
+                    } else {
+                        Err(Error::new(
+                            errors::codes::PROTOCOL_VIOLATION,
+                            format!(
+                                "Unsupported transaction commit record version {}",
+                                record.version
+                            ),
+                        ))
+                    }
+                }),
+            Some(v) => Err(Error::new(
+                errors::codes::PROTOCOL_VIOLATION,
+                format!(
+                    "Unexpected transaction commit result variant {}",
+                    <&'static str>::from(v)
+                ),
+            )),
+            None => Err(Error::new(
+                errors::codes::INTERNAL,
+                "sys_tx_end was called before the transaction commit was durable",
+            )),
+        })
+    }
+
     fn verify_target(&mut self, target: &Target) -> VMResult<()> {
         if let Some(idempotency_key) = &target.idempotency_key {
             if idempotency_key.is_empty() {
@@ -1512,7 +1553,10 @@ impl super::VM for CoreVM {
             // in which case this will fail with a journal mismatch.
             let RunHandle { replayed, handle } = self.sys_run(tx::TX_COMMIT_RUN_NAME.to_owned())?;
             if replayed {
-                self.tx = TxState::Committed { handle };
+                self.tx = TxState::Committed {
+                    handle,
+                    proposed_record: None,
+                };
                 return Ok(TxBegin::Committed(handle));
             }
             self.tx = TxState::Executing {
@@ -1666,13 +1710,19 @@ impl super::VM for CoreVM {
             RunExitResult::Success(prost::Message::encode_to_vec(&record).into()),
             RetryPolicy::default(),
         )?;
-        self.tx = TxState::Committed { handle };
+        self.tx = TxState::Committed {
+            handle,
+            proposed_record: Some(record),
+        };
         Ok(handle)
     }
 
     fn sys_tx_end(&mut self) -> VMResult<NonEmptyValue> {
-        let handle = match &self.tx {
-            TxState::Committed { handle } => *handle,
+        let (handle, proposed_record) = match &mut self.tx {
+            TxState::Committed {
+                handle,
+                proposed_record,
+            } => (*handle, proposed_record.take()),
             tx => {
                 let e = tx_unexpected_state("tx end", tx);
                 self.do_transition(HitError(e))?;
@@ -1680,38 +1730,11 @@ impl super::VM for CoreVM {
             }
         };
 
-        let record = match self.take_notification(handle)? {
-            Some(Value::Success(b)) => <tx::TxCommitRecord as prost::Message>::decode(b)
-                .map_err(|e| {
-                    Error::new(
-                        errors::codes::PROTOCOL_VIOLATION,
-                        format!("Cannot decode the transaction commit record: {e}"),
-                    )
-                })
-                .and_then(|record| {
-                    if tx::check_record_version(&record) {
-                        Ok(record)
-                    } else {
-                        Err(Error::new(
-                            errors::codes::PROTOCOL_VIOLATION,
-                            format!(
-                                "Unsupported transaction commit record version {}",
-                                record.version
-                            ),
-                        ))
-                    }
-                }),
-            Some(v) => Err(Error::new(
-                errors::codes::PROTOCOL_VIOLATION,
-                format!(
-                    "Unexpected transaction commit result variant {}",
-                    <&'static str>::from(v)
-                ),
-            )),
-            None => Err(Error::new(
-                errors::codes::INTERNAL,
-                "sys_tx_end was called before the transaction commit was durable",
-            )),
+        let record = match proposed_record {
+            // Proposed in this attempt: if the SDK didn't wait for the commit to be durable,
+            // the commands below are pipelined after the proposal on the same stream.
+            Some(record) => Ok(record),
+            None => self.take_committed_record(handle)?,
         };
         let (record, output) = match record.and_then(|record| {
             let output = record.output().ok_or_else(|| {

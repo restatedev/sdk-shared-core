@@ -643,3 +643,35 @@ fn write_outside_transaction_fails() {
     );
     assert_eq!(output.next(), None);
 }
+
+#[test]
+fn pipelined_commit() {
+    // The SDK applies the commit right after proposing it, without waiting for the ack.
+    let mut output = VMTestCase::new()
+        .input(start_with_state(1, INITIAL_STATE))
+        .input(input_entry_message(b""))
+        .run(|vm| {
+            vm.sys_input().unwrap();
+
+            assert_eq!(vm.sys_tx_begin().unwrap(), TxBegin::Execute);
+            let output = counter_body(vm);
+            vm.sys_tx_commit(output).unwrap();
+            assert_eq!(
+                Value::from(vm.sys_tx_end().unwrap()),
+                Value::Success(Bytes::from_static(b"10"))
+            );
+        });
+
+    output.next_decoded::<RunCommandMessage>().unwrap();
+    let proposal = output
+        .next_decoded::<ProposeRunCompletionMessage>()
+        .unwrap();
+    let Some(propose_run_completion_message::Result::Value(record)) = proposal.result else {
+        panic!("Expected a value");
+    };
+    assert_that!(
+        TxCommitRecord::decode(record).unwrap(),
+        eq(expected_counter_record())
+    );
+    assert_counter_record_applied_from_set_a(&mut output);
+}
