@@ -313,10 +313,47 @@ Against `restate-server` 1.7.13:
 An actor handler is a storage-mode handler with one implicit transaction whose result is the invocation output.
 The two could be unified: the single-commit mode is the special case where the output is part of the record.
 
+## Validation: a pi-durable style agent harness
+
+To check the storage journal mode against a real design, `packages/examples/node/src/durable_harness` in the
+TypeScript SDK implements a thin slice of [pi-durable](https://github.com/earendil-works/pi/tree/main/packages/durable):
+transcript entries, tasks as durable state machines, the generation and tool tasks, with replay-safe and
+unsafe tools, a faux streaming model, and crash recovery.
+
+- **Session**: one virtual object per session, pi-durable's single mutation line. Every exclusive handler is one
+  transaction on lazy state, reading what it needs with `tx_state_load`.
+- **TaskRunner**: runs a task's phases outside the Session's lock, in the storage journal mode. On every attempt it
+  loads the task's checkpoint with a fresh call (`sys_storage_fresh`), then commits through calls named after the
+  checkpoint sequence number, which the Session gates.
+- **Task creation** is a state write plus a `run()` message to the runner, in the same transaction.
+
+Its recovery scenarios pass against restate-server 1.7.13: a crash inside a replay-safe tool runs the tool again; a
+crash after an unsafe tool's effect gives the model an `interrupted` result without running it again; a crash
+mid-stream keeps the committed partial as an aborted entry and answers on the next attempt.
+
+What the validation changed or exposed:
+
+1. **The checkpoint is the recovery signal.** A tool task found in its `execute` phase was interrupted between intent
+   and result. What the runner needs is reads that observe the current state, hence `sys_storage_fresh`,
+   not a "was this entry recovered" flag.
+2. **Commit callbacks become named functions**, applied by the Session: a closure can't cross to where the state is.
+   Keeping closures would take lock-scoped or optimistic transactions in the runtime.
+3. **Lazy reads inside transactions** (`tx_state_load`) make transactions work with large state.
+4. **Buffered output loses fire-and-forget messages.** Progress sent while streaming stayed in the output buffer
+   until the next await. The TypeScript SDK now flushes right after a send in the storage journal mode.
+5. **Lazy reads are not snapshot-consistent.** A handler reading several keys lazily can observe a state that never
+   existed, when a commit lands in between. Eager state is a consistent snapshot; lazy state would need reads at a
+   version.
+6. **Reads are the dominant cost.** One input with a tool round of two calls takes 9 commits. The 29 lazy reads inside
+   them are journaled as 58 entries that nothing ever replays, and the 10 checkpoint loads are full calls.
+   Non-journaled reads, as a request/response control message outside the journal, would remove most of that.
+
 ## Where this could go with runtime support
 
 The prototype shows the semantics work on the current protocol. A runtime-native version could remove most of its costs:
 
+0. **Non-journaled, snapshot-consistent reads.** See the validation above: in the storage journal mode, reads are
+   pure overhead in the journal, and lazy ones can be torn.
 1. **Atomic commit message.** A dedicated command, or batch, carrying state mutations, outbox, output and end,
    that the partition processor applies as a single log record. That's one append per invocation, no redo phase
    and no double writes. Pipelining becomes a protocol guarantee by construction.
