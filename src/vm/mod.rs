@@ -19,7 +19,7 @@ use crate::{
     AttachInvocationTarget, AwaitResponse, AwakeableHandle, CallHandle, CommandRelationship, Error,
     Header, ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
     NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, RunHandle,
-    SendHandle, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult, Value,
+    SendHandle, Target, TerminalFailure, TxBegin, UnresolvedFuture, VMOptions, VMResult, Value,
     CANCEL_NOTIFICATION_HANDLE,
 };
 use async_results_state::AsyncResultsState;
@@ -34,12 +34,14 @@ use std::time::Duration;
 use std::{fmt, mem};
 use strum::IntoStaticStr;
 use tracing::{debug, enabled, instrument, Level};
+use tx::TxState;
 
 mod async_results_state;
 mod context;
 pub(crate) mod errors;
 mod run_state;
 mod transitions;
+pub(crate) mod tx;
 
 const CONTENT_TYPE: &str = "content-type";
 
@@ -95,6 +97,16 @@ impl State {
     }
 
     #[inline]
+    fn eager_state(&self) -> Option<&EagerState> {
+        match self {
+            State::WaitingReplayEntries { eager_state, .. }
+            | State::Replaying { eager_state, .. }
+            | State::Processing { eager_state, .. } => Some(eager_state),
+            _ => None,
+        }
+    }
+
+    #[inline]
     fn eager_state_mut(&mut self) -> Option<&mut EagerState> {
         match self {
             State::WaitingReplayEntries { eager_state, .. }
@@ -131,6 +143,9 @@ pub struct CoreVM {
 
     // Run names, useful for debugging
     sys_run_names: HashMap<NotificationHandle, String>,
+
+    // Transactional handler state
+    tx: TxState,
 }
 
 impl CoreVM {
@@ -174,6 +189,88 @@ impl CoreVM {
                 )
                 .into(),
             ));
+        }
+        Ok(())
+    }
+
+    fn tx_read<T>(
+        &mut self,
+        op: &'static str,
+        f: impl FnOnce(Option<&tx::WriteSet>, &EagerState) -> Result<T, tx::PartialStateError>,
+    ) -> VMResult<T> {
+        let res = match &self.last_transition {
+            Err(e) => return Err(e.clone()),
+            Ok(state) => match (state.eager_state(), &self.tx) {
+                (Some(snapshot), TxState::Inactive) => f(None, snapshot),
+                (Some(snapshot), TxState::Executing { write_set, .. }) => {
+                    f(Some(write_set), snapshot)
+                }
+                (Some(_), tx) => {
+                    let e = tx_unexpected_state(op, tx);
+                    self.do_transition(HitError(e))?;
+                    unreachable!();
+                }
+                (None, _) => {
+                    let e = state.as_unexpected_state(op);
+                    self.do_transition(HitError(e))?;
+                    unreachable!();
+                }
+            },
+        };
+        match res {
+            Ok(t) => Ok(t),
+            Err(tx::PartialStateError) => {
+                self.do_transition(HitError(errors::TX_PARTIAL_STATE))?;
+                unreachable!();
+            }
+        }
+    }
+
+    fn tx_write(
+        &mut self,
+        op: &'static str,
+        f: impl FnOnce(&mut tx::WriteSet, &mut Vec<OneWayCallCommandMessage>),
+    ) -> VMResult<()> {
+        if let Err(e) = &self.last_transition {
+            return Err(e.clone());
+        }
+        let e = match &mut self.tx {
+            TxState::Executing {
+                write_set, sends, ..
+            } => {
+                f(write_set, sends);
+                return Ok(());
+            }
+            tx => tx_unexpected_state(op, tx),
+        };
+        self.do_transition(HitError(e))?;
+        unreachable!();
+    }
+
+    fn verify_target(&mut self, target: &Target) -> VMResult<()> {
+        if let Some(idempotency_key) = &target.idempotency_key {
+            if idempotency_key.is_empty() {
+                self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
+                unreachable!();
+            }
+        }
+        if let Some(scope) = &target.scope {
+            if scope.is_empty() {
+                self.do_transition(HitError(EMPTY_SCOPE))?;
+                unreachable!();
+            }
+        }
+        if let Some(limit_key) = &target.limit_key {
+            if limit_key.is_empty() {
+                self.do_transition(HitError(EMPTY_LIMIT_KEY))?;
+                unreachable!();
+            }
+        }
+        if target.scope.is_some() {
+            self.verify_feature_support("scope", Version::V7)?;
+        }
+        if target.limit_key.is_some() {
+            self.verify_feature_support("limit key", Version::V7)?;
         }
         Ok(())
     }
@@ -297,6 +394,7 @@ impl super::VM for CoreVM {
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],
             sys_run_names: HashMap::with_capacity(0),
+            tx: TxState::default(),
         })
     }
 
@@ -470,7 +568,9 @@ impl super::VM for CoreVM {
         ret
     )]
     fn do_await(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<AwaitResponse> {
-        if self.is_implicit_cancellation_enabled() {
+        // Once a transaction started, the invocation is not cancellable anymore:
+        // the only thing left to await is the commit record durability.
+        if self.is_implicit_cancellation_enabled() && matches!(self.tx, TxState::Inactive) {
             // We want the runtime to wake us up in case cancel notification comes in.
             let unresolved_future_with_cancellation = UnresolvedFuture::FirstCompleted(vec![
                 unresolved_future,
@@ -758,30 +858,7 @@ impl super::VM for CoreVM {
             target.service,
             target.handler
         );
-        if let Some(idempotency_key) = &target.idempotency_key {
-            if idempotency_key.is_empty() {
-                self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
-                unreachable!();
-            }
-        }
-        if let Some(scope) = &target.scope {
-            if scope.is_empty() {
-                self.do_transition(HitError(EMPTY_SCOPE))?;
-                unreachable!();
-            }
-        }
-        if let Some(limit_key) = &target.limit_key {
-            if limit_key.is_empty() {
-                self.do_transition(HitError(EMPTY_LIMIT_KEY))?;
-                unreachable!();
-            }
-        }
-        if target.scope.is_some() {
-            self.verify_feature_support("scope", Version::V7)?;
-        }
-        if target.limit_key.is_some() {
-            self.verify_feature_support("limit key", Version::V7)?;
-        }
+        self.verify_target(&target)?;
 
         let call_invocation_id_completion_id =
             self.context.journal.next_completion_notification_id();
@@ -853,30 +930,7 @@ impl super::VM for CoreVM {
             target.service,
             target.handler
         );
-        if let Some(idempotency_key) = &target.idempotency_key {
-            if idempotency_key.is_empty() {
-                self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
-                unreachable!();
-            }
-        }
-        if let Some(scope) = &target.scope {
-            if scope.is_empty() {
-                self.do_transition(HitError(EMPTY_SCOPE))?;
-                unreachable!();
-            }
-        }
-        if let Some(limit_key) = &target.limit_key {
-            if limit_key.is_empty() {
-                self.do_transition(HitError(EMPTY_LIMIT_KEY))?;
-                unreachable!();
-            }
-        }
-        if target.scope.is_some() {
-            self.verify_feature_support("scope", Version::V7)?;
-        }
-        if target.limit_key.is_some() {
-            self.verify_feature_support("limit key", Version::V7)?;
-        }
+        self.verify_target(&target)?;
         let invoke_time = match u64::try_from(delay.unwrap_or_default().as_millis()) {
             Ok(d) => d,
             Err(e) => {
@@ -1435,6 +1489,280 @@ impl super::VM for CoreVM {
         self.do_transition(SysEnd)
     }
 
+    fn sys_tx_begin(&mut self) -> VMResult<TxBegin> {
+        let replaying = match (&self.last_transition, &self.tx) {
+            (Err(e), _) => return Err(e.clone()),
+            (Ok(State::Replaying { .. }), TxState::Inactive) => Ok(true),
+            (Ok(State::Processing { .. }), TxState::Inactive) => Ok(false),
+            (Ok(State::Replaying { .. } | State::Processing { .. }), tx) => {
+                Err(tx_unexpected_state("tx begin", tx))
+            }
+            (Ok(s), _) => Err(s.as_unexpected_state("tx begin")),
+        };
+        let replaying = match replaying {
+            Ok(r) => r,
+            Err(e) => {
+                self.do_transition(HitError(e))?;
+                unreachable!();
+            }
+        };
+
+        if replaying {
+            // Either the commit record was proposed by a previous attempt, or something else is in the journal,
+            // in which case this will fail with a journal mismatch.
+            let RunHandle { replayed, handle } = self.sys_run(tx::TX_COMMIT_RUN_NAME.to_owned())?;
+            if replayed {
+                self.tx = TxState::Committed { handle };
+                return Ok(TxBegin::Committed(handle));
+            }
+            self.tx = TxState::Executing {
+                commit_run_handle: Some(handle),
+                write_set: Default::default(),
+                sends: vec![],
+            };
+        } else {
+            self.tx = TxState::Executing {
+                commit_run_handle: None,
+                write_set: Default::default(),
+                sends: vec![],
+            };
+        }
+        invocation_debug_logs!(self, "Executing transaction");
+        Ok(TxBegin::Execute)
+    }
+
+    fn tx_state_get(&mut self, key: &str) -> VMResult<Option<Bytes>> {
+        self.tx_read("tx get state", |write_set, snapshot| match write_set {
+            Some(write_set) => write_set.get(key, snapshot),
+            None => tx::snapshot_get(key, snapshot),
+        })
+    }
+
+    fn tx_state_get_keys(&mut self) -> VMResult<Vec<String>> {
+        self.tx_read("tx get state keys", |write_set, snapshot| match write_set {
+            Some(write_set) => write_set.keys(snapshot),
+            None => tx::snapshot_keys(snapshot),
+        })
+    }
+
+    fn tx_state_set(&mut self, key: String, value: Bytes) -> VMResult<()> {
+        self.tx_write("tx set state", |write_set, _| write_set.set(key, value))
+    }
+
+    fn tx_state_clear(&mut self, key: String) -> VMResult<()> {
+        self.tx_write("tx clear state", |write_set, _| write_set.clear(key))
+    }
+
+    fn tx_state_clear_all(&mut self) -> VMResult<()> {
+        self.tx_write("tx clear all state", |write_set, _| write_set.clear_all())
+    }
+
+    fn tx_send(
+        &mut self,
+        target: Target,
+        input: Bytes,
+        execution_time_since_unix_epoch: Option<Duration>,
+        name: Option<String>,
+    ) -> VMResult<()> {
+        self.verify_target(&target)?;
+        let invoke_time = match u64::try_from(
+            execution_time_since_unix_epoch
+                .unwrap_or_default()
+                .as_millis(),
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                self.do_transition(HitError(OutOfBoundsDuration("send delay", e).into()))?;
+                unreachable!();
+            }
+        };
+        let send = OneWayCallCommandMessage {
+            service_name: target.service,
+            handler_name: target.handler,
+            key: target.key.unwrap_or_default(),
+            idempotency_key: target.idempotency_key,
+            scope: target.scope,
+            limit_key: target.limit_key,
+            headers: target
+                .headers
+                .into_iter()
+                .map(crate::service_protocol::messages::Header::from)
+                .collect(),
+            parameter: input,
+            invoke_time,
+            // Assigned when applying the commit record
+            invocation_id_notification_idx: 0,
+            name: name.unwrap_or_default(),
+        };
+        self.tx_write("tx send", |_, sends| sends.push(send))
+    }
+
+    fn sys_tx_commit(&mut self, output: NonEmptyValue) -> VMResult<NotificationHandle> {
+        if let Err(e) = &self.last_transition {
+            return Err(e.clone());
+        }
+        self.verify_error_metadata_feature_support(&output)?;
+        let (commit_run_handle, write_set, sends) = match mem::take(&mut self.tx) {
+            TxState::Executing {
+                commit_run_handle,
+                write_set,
+                sends,
+            } => (commit_run_handle, write_set, sends),
+            tx => {
+                let e = tx_unexpected_state("tx commit", &tx);
+                self.tx = tx;
+                self.do_transition(HitError(e))?;
+                unreachable!();
+            }
+        };
+
+        let record = match output {
+            NonEmptyValue::Success(_) => {
+                let (clear_all, mutations) = match self
+                    .last_transition
+                    .as_ref()
+                    .ok()
+                    .and_then(State::eager_state)
+                {
+                    Some(snapshot) => write_set.into_mutations(snapshot),
+                    None => {
+                        let e = self
+                            .last_transition
+                            .as_ref()
+                            .map(|s| s.as_unexpected_state("tx commit"))
+                            .unwrap_or_else(|e| e.clone());
+                        self.do_transition(HitError(e))?;
+                        unreachable!();
+                    }
+                };
+                invocation_debug_logs!(
+                    self,
+                    "Committing transaction with {} state mutation(s){} and {} one way call(s)",
+                    mutations.len(),
+                    if clear_all {
+                        " after clearing all state"
+                    } else {
+                        ""
+                    },
+                    sends.len()
+                );
+                tx::new_commit_record(clear_all, mutations, sends, output)
+            }
+            NonEmptyValue::Failure(_) => {
+                invocation_debug_logs!(
+                    self,
+                    "Committing transaction failure, discarding the buffered state mutations and one way calls"
+                );
+                tx::new_commit_record(false, vec![], vec![], output)
+            }
+        };
+
+        let handle = match commit_run_handle {
+            Some(handle) => handle,
+            None => self.sys_run(tx::TX_COMMIT_RUN_NAME.to_owned())?.handle,
+        };
+        self.propose_run_completion(
+            handle,
+            RunExitResult::Success(prost::Message::encode_to_vec(&record).into()),
+            RetryPolicy::default(),
+        )?;
+        self.tx = TxState::Committed { handle };
+        Ok(handle)
+    }
+
+    fn sys_tx_end(&mut self) -> VMResult<NonEmptyValue> {
+        let handle = match &self.tx {
+            TxState::Committed { handle } => *handle,
+            tx => {
+                let e = tx_unexpected_state("tx end", tx);
+                self.do_transition(HitError(e))?;
+                unreachable!();
+            }
+        };
+
+        let record = match self.take_notification(handle)? {
+            Some(Value::Success(b)) => <tx::TxCommitRecord as prost::Message>::decode(b)
+                .map_err(|e| {
+                    Error::new(
+                        errors::codes::PROTOCOL_VIOLATION,
+                        format!("Cannot decode the transaction commit record: {e}"),
+                    )
+                })
+                .and_then(|record| {
+                    if tx::check_record_version(&record) {
+                        Ok(record)
+                    } else {
+                        Err(Error::new(
+                            errors::codes::PROTOCOL_VIOLATION,
+                            format!(
+                                "Unsupported transaction commit record version {}",
+                                record.version
+                            ),
+                        ))
+                    }
+                }),
+            Some(v) => Err(Error::new(
+                errors::codes::PROTOCOL_VIOLATION,
+                format!(
+                    "Unexpected transaction commit result variant {}",
+                    <&'static str>::from(v)
+                ),
+            )),
+            None => Err(Error::new(
+                errors::codes::INTERNAL,
+                "sys_tx_end was called before the transaction commit was durable",
+            )),
+        };
+        let (record, output) = match record.and_then(|record| {
+            let output = record.output().ok_or_else(|| {
+                Error::new(
+                    errors::codes::PROTOCOL_VIOLATION,
+                    "The transaction commit record has no output",
+                )
+            })?;
+            Ok((record, output))
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                self.do_transition(HitError(e))?;
+                unreachable!();
+            }
+        };
+
+        // Apply the record. On replay, this re-emits exactly the same commands,
+        // so a partially applied record is completed by the next attempt.
+        if record.clear_all_state {
+            self.sys_state_clear_all()?;
+        }
+        for mutation in record.state_mutations {
+            match mutation.value {
+                Some(value) => {
+                    self.sys_state_set(mutation.key, value, PayloadOptions::default())?
+                }
+                None => self.sys_state_clear(mutation.key)?,
+            }
+        }
+        for mut send in record.sends {
+            invocation_debug_logs!(
+                self,
+                "Executing 'Send to {}/{}'",
+                send.service_name,
+                send.handler_name
+            );
+            let completion_id = self.context.journal.next_completion_notification_id();
+            send.invocation_id_notification_idx = completion_id;
+            self.do_transition(SysSimpleCompletableEntry(
+                send,
+                completion_id,
+                PayloadOptions::default(),
+            ))?;
+        }
+        self.sys_write_output(output.clone(), PayloadOptions::default())?;
+        self.sys_end()?;
+        self.tx = TxState::Ended;
+        Ok(output)
+    }
+
     #[inline]
     fn state(&self) -> crate::State {
         match &self.last_transition {
@@ -1450,6 +1778,16 @@ impl super::VM for CoreVM {
     fn last_command_index(&self) -> i64 {
         self.context.journal.command_index()
     }
+}
+
+fn tx_unexpected_state(op: &'static str, tx: &TxState) -> Error {
+    Error::new(
+        errors::codes::INTERNAL,
+        format!(
+            "Unexpected '{op}' while the transaction is in state {}. This is an SDK bug.",
+            tx.name()
+        ),
+    )
 }
 
 const INDIFFERENT_PAD: GeneralPurposeConfig = GeneralPurposeConfig::new()

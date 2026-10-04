@@ -427,6 +427,16 @@ pub struct RunHandle {
     pub handle: NotificationHandle,
 }
 
+/// Result of [`VM::sys_tx_begin`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TxBegin {
+    /// Nothing was committed yet: the SDK must execute the handler body, then call [`VM::sys_tx_commit`].
+    Execute,
+    /// A previous attempt already committed the transaction: the SDK must NOT execute the handler body.
+    /// It awaits the given handle until [`VM::is_completed`], then calls [`VM::sys_tx_end`].
+    Committed(NotificationHandle),
+}
+
 pub trait VM: Sized {
     fn new(request_headers: impl HeaderMap, options: VMOptions) -> VMResult<Self>;
 
@@ -556,6 +566,73 @@ pub trait VM: Sized {
     fn sys_write_output(&mut self, value: NonEmptyValue, options: PayloadOptions) -> VMResult<()>;
 
     fn sys_end(&mut self) -> VMResult<()>;
+
+    // --- Transactional handlers
+    //
+    // Actor-style execution mode, where the whole handler body is a single commit boundary.
+    // The handler body doesn't write anything to the journal: reads are served from the eager state,
+    // writes and one-way calls are buffered, and everything is committed atomically, together with the output,
+    // by [`VM::sys_tx_commit`]. See `docs/transactional-handlers.md`.
+    //
+    // Usage:
+    //
+    // ```text
+    // let handle = match vm.sys_tx_begin()? {
+    //     TxBegin::Execute => {
+    //         let output = run_handler(/* uses vm.tx_state_* and vm.tx_send */);
+    //         vm.sys_tx_commit(output)?
+    //     }
+    //     TxBegin::Committed(handle) => handle,
+    // };
+    // await_until_completed(handle); // progress loop, without take_notification
+    // vm.sys_tx_end()?;
+    // ```
+
+    /// Starts a transactional handler body. Must be called right after [`VM::sys_input`].
+    fn sys_tx_begin(&mut self) -> VMResult<TxBegin>;
+
+    /// Reads a state key, without journaling the read.
+    ///
+    /// Reads observe the writes performed by the current transaction. This can be used outside a transaction too,
+    /// e.g. in read-only handlers, in which case it reads the state snapshot.
+    ///
+    /// Fails if the runtime sent a partial state snapshot and the key is not part of it.
+    fn tx_state_get(&mut self, key: &str) -> VMResult<Option<Bytes>>;
+
+    /// Lists the state keys, without journaling the read. See [`VM::tx_state_get`].
+    fn tx_state_get_keys(&mut self) -> VMResult<Vec<String>>;
+
+    /// Buffers a state write in the current transaction.
+    fn tx_state_set(&mut self, key: String, value: Bytes) -> VMResult<()>;
+
+    /// Buffers a state clear in the current transaction.
+    fn tx_state_clear(&mut self, key: String) -> VMResult<()>;
+
+    /// Buffers a clear of all the state in the current transaction.
+    fn tx_state_clear_all(&mut self) -> VMResult<()>;
+
+    /// Buffers a one-way call in the current transaction. The call is sent only if the transaction commits.
+    fn tx_send(
+        &mut self,
+        target: Target,
+        input: Bytes,
+        execution_time_since_unix_epoch: Option<Duration>,
+        name: Option<String>,
+    ) -> VMResult<()>;
+
+    /// Commits the current transaction together with the handler `output`.
+    ///
+    /// If `output` is a failure, the buffered state writes and one-way calls are discarded,
+    /// and only the failure is committed.
+    ///
+    /// Returns the handle to await to know when the commit is durable.
+    fn sys_tx_commit(&mut self, output: NonEmptyValue) -> VMResult<NotificationHandle>;
+
+    /// Applies the durable commit record: writes the state mutations, the one-way calls and the output, then ends the invocation.
+    ///
+    /// Must be called once the handle returned by [`VM::sys_tx_begin`] or [`VM::sys_tx_commit`] is completed.
+    /// Returns the committed output.
+    fn sys_tx_end(&mut self) -> VMResult<NonEmptyValue>;
 
     /// Returns the current state of the state machine.
     fn state(&self) -> State;

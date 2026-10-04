@@ -8,6 +8,7 @@ mod run;
 mod sleep;
 mod state;
 mod suspensions;
+mod tx;
 
 use super::*;
 

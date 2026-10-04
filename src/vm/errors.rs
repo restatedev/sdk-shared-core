@@ -131,6 +131,12 @@ pub const EMPTY_SCOPE: Error = Error::new_const(
 
 pub const SUSPENDED: Error = Error::new_const(codes::SUSPENDED, "Suspended invocation");
 
+pub const TX_PARTIAL_STATE: Error = Error::new_const(
+    codes::INTERNAL,
+    "Transactional handlers read state from the snapshot sent by the runtime, but the runtime sent a partial snapshot. \
+    Make sure lazy state is disabled for this handler, and the state size is within the runtime 'eager-state-size-limit'.",
+);
+
 // Other errors
 
 #[derive(Debug, Clone, thiserror::Error)]
