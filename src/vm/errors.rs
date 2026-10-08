@@ -380,6 +380,35 @@ impl BadProposeRunCompletionAck {
     }
 }
 
+pub const EMPTY_GET_STATE_EPHEMERAL_NOTIFICATION: Error = Error::new_const(
+    codes::PROTOCOL_VIOLATION,
+    "Unexpected empty result variant for get state ephemeral notification.",
+);
+
+#[derive(Debug, thiserror::Error)]
+#[error("Cannot get state '{key}' without recording it in the journal: the input stream is closed, thus Restate cannot answer the request. Getting state without recording it in the journal requires a bidirectional stream between Restate and the service (not available in request/response mode, e.g. AWS Lambda), unless the state value is available in the eager state sent by Restate.")]
+pub struct EphemeralStateGetWithClosedInput {
+    key: String,
+}
+
+impl EphemeralStateGetWithClosedInput {
+    pub fn new(key: String) -> Self {
+        Self { key }
+    }
+}
+
+pub const INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS: Error = Error::new_const(
+    codes::INTERNAL,
+    "The input stream was closed while waiting for the result of a get state not recorded in the journal. Getting state without recording it in the journal requires a bidirectional stream between Restate and the service (not available in request/response mode, e.g. AWS Lambda), unless the state value is available in the eager state sent by Restate.",
+);
+
+/// Ephemeral commands should really only be executed within ctx.run, so this is a "proxy safeguard" for that, because ctx.run
+/// are really only started when we're processing (just track AwaitResponse::ExecuteRun usages)
+pub const EPHEMERAL_COMMAND_DURING_REPLAY: Error = Error::new_const(
+    codes::JOURNAL_MISMATCH,
+    "Cannot execute ephemeral commands (e.g. get state without recording it in the journal) during replay, as their result might differ from the original execution. Ephemeral commands can be used only while processing new journal entries, e.g. within a ctx.run closure. This usually means the code uses them outside a ctx.run closure, or the code was changed.",
+);
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("The provided duration for '{0}' is out of bounds: {1:?}")]
 pub struct OutOfBoundsDuration(
@@ -433,4 +462,5 @@ impl<M: RestateMessage + CommandMessageHeaderDiff> WithInvocationErrorCode
 impl_error_code!(BadEagerStateKeyError, INTERNAL);
 impl_error_code!(UnsupportedFeatureForNegotiatedVersion, UNSUPPORTED_FEATURE);
 impl_error_code!(BadProposeRunCompletionAck, PROTOCOL_VIOLATION);
+impl_error_code!(EphemeralStateGetWithClosedInput, INTERNAL);
 impl_error_code!(OutOfBoundsDuration, INTERNAL);

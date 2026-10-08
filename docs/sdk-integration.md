@@ -159,6 +159,7 @@ loop {
         AnyCompleted             => { /* loop again — at least one handle is ready */ }
         ExecuteRun(handle)       => execute_run_closure(handle),
         CancelSignalReceived     => return cancelled(),
+        EphemeralNotificationReady(id) => complete_ephemeral(id, vm.take_ephemeral_notification(id)?),
         WaitingExternalProgress  => { flush_output(); await_external_progress(); }
     }
 }
@@ -169,7 +170,7 @@ The `future` passed to `do_progress` is a tree of handles combined with promise-
 tree is reused as the `SuspensionMessage` payload if the VM decides to suspend — so combinators are
 first-class, not a client-side concern.
 
-The four responses:
+The five responses:
 
 - **`AnyCompleted`** — at least one leaf moved. The caller drains the leaves that completed via
   `take_notification` and re-enters the loop if the user-facing combinator still has unresolved
@@ -185,6 +186,10 @@ The four responses:
   [`ctx.run`](#7--ctxrun).
 - **`CancelSignalReceived`** — only produced when implicit cancellation is enabled. The VM has
   observed a `CANCEL` signal; the SDK should propagate cancellation to the user-facing future.
+- **`EphemeralNotificationReady(id)`** — the notification of an ephemeral command (e.g.
+  `ephemeral_state_get`) is ready. It takes precedence over every other response. The SDK takes it
+  with `take_ephemeral_notification(id)`, completes the SDK-side promise associated with `id`, and
+  re-enters the loop. See [Ephemeral commands](#ephemeral-commands).
 
 When the SDK uses an eager input pump (see [§3](#3--input-and-output)), the two external sources of
 progress — fresh input bytes and a freshly-proposed run completion — both need to wake the await
@@ -216,6 +221,30 @@ durably persist its result. The flow:
 The VM combines the SDK-supplied retry policy with the runtime's default to decide what to do on
 retryable failures (retry with delay, pause, or fail). The SDK does not implement the retry decision
 itself.
+
+### Ephemeral commands
+
+Ephemeral commands (protocol V8+) are commands that are neither recorded in the journal, nor replayed,
+as opposed to journaled commands. Their results are delivered as ephemeral notifications, which are
+not recorded either.
+
+`ephemeral_state_get(key)` reads a state value without recording it in the journal, and returns an
+ephemeral completion id. Ephemeral completion ids are scoped to the attempt and independent of notification
+handles. The SDK keeps a map from ephemeral completion id to a plain (non-combinable) SDK promise, and only
+the progress loop completes those promises, via `EphemeralNotificationReady`.
+
+Because the value is not recorded, the SDK should use it only inside a run closure, e.g. a
+`ctx.get(key, projection)` API can be implemented as
+`ctx.run("project:<key>", async () => projection(await ephemeralStateGet(key)))`.
+
+The VM answers locally when it knows the value (eager state, or state modified by the invocation),
+otherwise it writes a `GetStateEphemeralCommandMessage` to the output. In both cases the notification surfaces only
+through `do_progress`, so after calling `ephemeral_state_get` the SDK must make sure the progress loop
+wakes up: signal the external progress channel, so the loop polls the VM again, and flushes the output
+before waiting again.
+
+If the input stream closes while an ephemeral command is in flight, `do_progress` fails with a retryable error
+rather than suspending: the notification can't arrive anymore, and it can't be recovered on resume because it is not recorded.
 
 ## 8 — Terminating the invocation
 

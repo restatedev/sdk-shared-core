@@ -172,6 +172,27 @@ impl From<NotificationHandle> for u32 {
     }
 }
 
+/// Ephemeral completion id, identifying an ephemeral command and the ephemeral notification completing it, e.g. [VM::ephemeral_state_get].
+///
+/// Ephemeral commands are neither recorded in the journal, nor replayed.
+/// Their result is delivered as an ephemeral notification, see [AwaitResponse::EphemeralNotificationReady].
+///
+/// Ids are scoped to the current attempt and are unrelated to [NotificationHandle]s.
+#[derive(Debug, Hash, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub struct EphemeralCompletionId(u32);
+
+impl From<u32> for EphemeralCompletionId {
+    fn from(value: u32) -> Self {
+        EphemeralCompletionId(value)
+    }
+}
+
+impl From<EphemeralCompletionId> for u32 {
+    fn from(value: EphemeralCompletionId) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct CallHandle {
     pub invocation_id_notification_handle: NotificationHandle,
@@ -403,6 +424,12 @@ pub enum AwaitResponse {
     ExecuteRun(NotificationHandle),
     /// Returned only when [ImplicitCancellationOption::Enabled].
     CancelSignalReceived,
+    /// The notification of an ephemeral command is ready, see [VM::ephemeral_state_get].
+    ///
+    /// This takes precedence over any other response.
+    /// The SDK should take the notification using [VM::take_ephemeral_notification], complete the related SDK promise,
+    /// and then call [VM::do_await] again.
+    EphemeralNotificationReady(EphemeralCompletionId),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, strum::EnumIs)]
@@ -470,6 +497,26 @@ pub trait VM: Sized {
     ) -> VMResult<NotificationHandle>;
 
     fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle>;
+
+    /// Ephemeral command to get the state value of the given key: neither the command nor its notification are recorded in the journal.
+    ///
+    /// The value is answered locally when known (eager state, or state modified by this invocation),
+    /// otherwise it's requested to the runtime. In both cases, the result is made available through [VM::do_await],
+    /// returning [AwaitResponse::EphemeralNotificationReady] with the returned id. Then the SDK should take the value with [VM::take_ephemeral_notification].
+    ///
+    /// Because the result is not recorded, the SDK should use it only in contexts where its usage is recorded otherwise, e.g. within a `ctx.run`.
+    ///
+    /// This operation is allowed only in the processing phase, and requires protocol V8.
+    fn ephemeral_state_get(&mut self, key: String) -> VMResult<EphemeralCompletionId>;
+
+    /// Take the notification of an ephemeral command, see [VM::ephemeral_state_get].
+    ///
+    /// Returns [Value::Void] when the state is empty, [Value::Success] otherwise.
+    /// Returns `None` if the notification is not ready yet, or it was already taken.
+    fn take_ephemeral_notification(
+        &mut self,
+        completion_id: EphemeralCompletionId,
+    ) -> VMResult<Option<Value>>;
 
     fn sys_state_set(&mut self, key: String, value: Bytes, options: PayloadOptions)
         -> VMResult<()>;

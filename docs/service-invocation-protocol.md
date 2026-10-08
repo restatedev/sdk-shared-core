@@ -132,7 +132,9 @@ The 16-bit type field is partitioned into namespaces:
 
 | Range           | Namespace                                                                |
 |-----------------|--------------------------------------------------------------------------|
-| `0x0000–0x03FF` | Control frames (Start, Suspension, End, Error, …)                        |
+| `0x0000–0x01FF` | Control frames (Start, Suspension, End, Error, …)                        |
+| `0x0200–0x02FF` | Ephemeral commands (see [Ephemeral commands](#ephemeral-commands))       |
+| `0x0300–0x03FF` | Ephemeral notifications, paired with their command by the low byte       |
 | `0x0400–0x7FFF` | Commands                                                                 |
 | `0x8000–0xFBFF` | Notifications                                                            |
 | `0xFC00–0xFFFF` | Custom commands (see [Custom commands](#custom-commands))                |
@@ -393,6 +395,33 @@ When user code reads key `k`:
 `SetStateCommand`, `ClearStateCommand`, and `ClearAllStateCommand` MUST also update the SDK's local view
 of `state_map` so subsequent reads within the same invocation see the new value.
 `GetEagerStateKeysCommand` follows the same pattern for the set of known keys.
+
+## Ephemeral commands
+
+Since V8, the SDK can issue **ephemeral commands**, as opposed to journaled commands: neither the
+command nor its result (the ephemeral notification) is stored, and neither is replayed. On the wire they
+are control frames, an ephemeral command and its ephemeral notification, correlated by an `ephemeral_completion_id`
+that is scoped to the current attempt (starting from 1) and independent of completion ids.
+
+Because their result is not recorded, the SDK MUST only use it in a context where its effect is recorded
+otherwise, typically within a `ctx.run` closure whose result is then journaled.
+
+| Ephemeral command                 | Ephemeral notification                 | Description                                                  |
+|-----------------------------------|----------------------------------------|--------------------------------------------------------------|
+| `GetStateEphemeralCommandMessage` | `GetStateEphemeralNotificationMessage` | Read the current value of a state key (`void` if not found). |
+
+Rules:
+
+- The SDK sends ephemeral commands only in the PROCESSING phase.
+- The runtime can answer only while the request stream is open, so ephemeral commands are not
+  available in request/response mode. The SDK MUST NOT wait for an ephemeral notification once the input stream is
+  closed. Suspending does not help either, as the notification is not recorded, so the SDK fails the attempt with a
+  retryable error.
+- The runtime reads the latest committed state; it doesn't guarantee read-your-writes for state commands
+  the SDK sent in the current attempt that haven't been applied yet. The SDK serves keys it knows about
+  locally, without sending `GetStateEphemeralCommandMessage`: keys present in the eager state, and keys
+  set or cleared by the invocation itself (see [Eager state](#eager-state)). This also makes ephemeral
+  state reads usable in request/response mode, as long as the eager state covers the key.
 
 ## Custom commands
 

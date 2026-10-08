@@ -16,17 +16,18 @@ use crate::vm::errors::{
 use crate::vm::run_state::RunState;
 use crate::vm::transitions::*;
 use crate::{
-    AttachInvocationTarget, AwaitResponse, AwakeableHandle, CallHandle, CommandRelationship, Error,
-    Header, ImplicitCancellationOption, Input, NonDeterministicChecksOption, NonEmptyValue,
-    NotificationHandle, PayloadOptions, ResponseHead, RetryPolicy, RunExitResult, RunHandle,
-    SendHandle, Target, TerminalFailure, UnresolvedFuture, VMOptions, VMResult, Value,
-    CANCEL_NOTIFICATION_HANDLE,
+    AttachInvocationTarget, AwaitResponse, AwakeableHandle, CallHandle, CommandRelationship,
+    EphemeralCompletionId, Error, Header, ImplicitCancellationOption, Input,
+    NonDeterministicChecksOption, NonEmptyValue, NotificationHandle, PayloadOptions, ResponseHead,
+    RetryPolicy, RunExitResult, RunHandle, SendHandle, Target, TerminalFailure, UnresolvedFuture,
+    VMOptions, VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
 };
 use async_results_state::AsyncResultsState;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::{alphabet, Engine};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use context::{Context, EagerState, Output};
+use ephemeral_commands::EphemeralCommands;
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
@@ -37,6 +38,7 @@ use tracing::{debug, enabled, instrument, Level};
 
 mod async_results_state;
 mod context;
+mod ephemeral_commands;
 pub(crate) mod errors;
 mod run_state;
 mod transitions;
@@ -63,6 +65,7 @@ pub(crate) enum State {
         run_state: RunState,
         async_results: AsyncResultsState,
         eager_state: EagerState,
+        ephemeral_commands: EphemeralCommands,
     },
     Closed,
 }
@@ -89,6 +92,7 @@ impl State {
                 run_state,
                 async_results,
                 eager_state,
+                ephemeral_commands: Default::default(),
             },
             s => s,
         }
@@ -470,6 +474,18 @@ impl super::VM for CoreVM {
         ret
     )]
     fn do_await(&mut self, unresolved_future: UnresolvedFuture) -> VMResult<AwaitResponse> {
+        // Ephemeral notifications take precedence over anything else
+        if let Ok(State::Processing {
+            ephemeral_commands, ..
+        }) = &self.last_transition
+        {
+            if let Some(completion_id) = ephemeral_commands.any_ready() {
+                return Ok(AwaitResponse::EphemeralNotificationReady(completion_id));
+            }
+        }
+
+        // TODO(slinkydeveloper) this is getting complex over time,
+        //  need to figure out how to fit this implicit cancellation and co back into the typestate pattern.
         if self.is_implicit_cancellation_enabled() {
             // We want the runtime to wake us up in case cancel notification comes in.
             let unresolved_future_with_cancellation = UnresolvedFuture::FirstCompleted(vec![
@@ -620,6 +636,41 @@ impl super::VM for CoreVM {
     fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle> {
         invocation_debug_logs!(self, "Executing 'Get state keys'");
         self.do_transition(SysStateGetKeys)
+    }
+
+    #[instrument(
+        level = "trace",
+        skip(self),
+        fields(
+            restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
+            restate.journal.command_index = self.context.journal.command_index(),
+            restate.protocol.version = %self.context.negotiated_protocol_version
+        ),
+        ret
+    )]
+    fn ephemeral_state_get(&mut self, key: String) -> VMResult<EphemeralCompletionId> {
+        self.verify_feature_support("ephemeral state get", Version::V8)?;
+        invocation_debug_logs!(self, "Executing 'Ephemeral state get {key}'");
+        self.do_transition(EphemeralStateGet(key))
+    }
+
+    #[instrument(
+        level = "trace",
+        skip(self),
+        fields(
+            restate.invocation.id = self.debug_invocation_id(),
+            restate.protocol.state = self.debug_state(),
+            restate.journal.command_index = self.context.journal.command_index(),
+            restate.protocol.version = %self.context.negotiated_protocol_version
+        ),
+        ret
+    )]
+    fn take_ephemeral_notification(
+        &mut self,
+        completion_id: EphemeralCompletionId,
+    ) -> VMResult<Option<Value>> {
+        self.do_transition(TakeEphemeralNotification(completion_id))
     }
 
     #[instrument(

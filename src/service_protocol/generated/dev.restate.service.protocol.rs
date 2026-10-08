@@ -201,6 +201,39 @@ pub struct ProposeRunCompletionAckMessage {
     #[prost(uint32, tag = "1")]
     pub completion_id: u32,
 }
+/// Ephemeral command to get state.
+///
+/// Type: 0x0200 + 0
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetStateEphemeralCommandMessage {
+    #[prost(uint32, tag = "1")]
+    pub ephemeral_completion_id: u32,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub key: ::prost::bytes::Bytes,
+}
+/// Notification of GetStateEphemeralCommandMessage.
+/// Type: 0x0300 + 0
+#[allow(dead_code)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetStateEphemeralNotificationMessage {
+    #[prost(uint32, tag = "1")]
+    pub ephemeral_completion_id: u32,
+    #[prost(oneof = "get_state_ephemeral_notification_message::Result", tags = "4, 5")]
+    pub result: ::core::option::Option<get_state_ephemeral_notification_message::Result>,
+}
+/// Nested message and enum types in `GetStateEphemeralNotificationMessage`.
+pub mod get_state_ephemeral_notification_message {
+    #[allow(dead_code)]
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "4")]
+        Void(super::Void),
+        #[prost(message, tag = "5")]
+        Value(super::Value),
+    }
+}
 /// A notification message follows the following duck-type:
 ///
 #[allow(dead_code)]
@@ -1046,6 +1079,9 @@ pub enum ServiceProtocolVersion {
     /// * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
     /// * ErrorMessage.behavior to customize retry behavior
     V7 = 7,
+    /// Added:
+    /// * Ephemeral commands: GetStateEphemeralCommandMessage and GetStateEphemeralNotificationMessage
+    V8 = 8,
 }
 impl ServiceProtocolVersion {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1062,6 +1098,7 @@ impl ServiceProtocolVersion {
             Self::V5 => "V5",
             Self::V6 => "V6",
             Self::V7 => "V7",
+            Self::V8 => "V8",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1075,6 +1112,7 @@ impl ServiceProtocolVersion {
             "V5" => Some(Self::V5),
             "V6" => Some(Self::V6),
             "V7" => Some(Self::V7),
+            "V8" => Some(Self::V8),
             _ => None,
         }
     }

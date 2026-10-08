@@ -35,7 +35,9 @@ macro_rules! delegate_to_formatter {
     };
 }
 
-delegate_to_formatter!(display_closed_error(f: &mut fmt::Formatter<'_>, event: &str) -> fmt::Result);
+delegate_to_formatter!(
+    display_closed_error(f: &mut fmt::Formatter<'_>, event: &str) -> fmt::Result
+);
 
 pub(crate) struct DiffFormatter<'a, 'b> {
     fmt: &'a mut fmt::Formatter<'b>,
