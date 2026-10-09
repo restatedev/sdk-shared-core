@@ -5,7 +5,7 @@ use crate::vm::errors::{
     BadEagerStateKeyError, INPUT_CLOSED_WHILE_WAITING_ENTRIES, KNOWN_ENTRIES_IS_ZERO,
     UNEXPECTED_INPUT_MESSAGE,
 };
-use crate::vm::transitions::Transition;
+use crate::vm::transitions::{NewGetStateEphemeralNotificationMessage, Transition};
 use crate::vm::{errors, State};
 use crate::{Error, Version};
 use bytes::Bytes;
@@ -23,6 +23,9 @@ impl Transition<Context, NewMessage> for State {
             ty if ty.is_notification() => self.transition(context, NewNotificationMessage(msg)),
             MessageType::ProposeRunCompletionAck => {
                 self.transition(context, NewProposeRunCompletionAckMessage(msg))
+            }
+            MessageType::GetStateEphemeralNotification => {
+                self.transition(context, NewGetStateEphemeralNotificationMessage(msg))
             }
             _ => Err(UNEXPECTED_INPUT_MESSAGE)?,
         }

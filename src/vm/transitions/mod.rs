@@ -1,4 +1,5 @@
 mod async_results;
+mod ephemeral;
 mod input;
 mod journal;
 mod terminal;
@@ -8,6 +9,7 @@ use crate::vm::context::Context;
 use crate::vm::{errors, State};
 use crate::{CoreVM, Error, JournalMismatchRetryBehavior, Version};
 pub(crate) use async_results::*;
+pub(crate) use ephemeral::*;
 pub(crate) use input::*;
 pub(crate) use journal::*;
 use std::mem;

@@ -89,6 +89,8 @@ impl_message_traits!(End: core);
 impl_message_traits!(ProposeRunCompletion: message);
 impl_message_traits!(AwaitingOn: core);
 impl_message_traits!(ProposeRunCompletionAck: core);
+impl_message_traits!(GetStateEphemeralCommand: core);
+impl_message_traits!(GetStateEphemeralNotification: core);
 
 impl RestateEncodableMessage for ProposeRunCompletionMessage {
     fn encode(&self, service_protocol_version: Version) -> Bytes {

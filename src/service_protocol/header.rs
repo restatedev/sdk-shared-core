@@ -77,6 +77,8 @@ gen_message_type_enum!(
     ProposeRunCompletion = 0x0005,
     AwaitingOn = 0x0006,
     ProposeRunCompletionAck = 0x0007,
+    GetStateEphemeralCommand = 0x0200,
+    GetStateEphemeralNotification = 0x0300,
     InputCommand = 0x0400,
     OutputCommand = 0x0401,
     GetLazyStateCommand = 0x0402,
@@ -252,6 +254,35 @@ mod tests {
         GetLazyStateCommand,
         22
     );
+
+    roundtrip_test!(
+        get_state_ephemeral_command,
+        MessageHeader::new(GetStateEphemeralCommand, 10),
+        GetStateEphemeralCommand,
+        10
+    );
+
+    roundtrip_test!(
+        get_state_ephemeral_notification,
+        MessageHeader::new(GetStateEphemeralNotification, 22),
+        GetStateEphemeralNotification,
+        22
+    );
+
+    #[test]
+    fn ephemeral_message_types_ranges() {
+        // Ephemeral commands live in 0x0200..0x0300, their notifications in 0x0300..0x0400,
+        // paired by the low byte. They're neither journal commands nor notifications.
+        for (ty, id) in [
+            (GetStateEphemeralCommand, 0x0200u16),
+            (GetStateEphemeralNotification, 0x0300u16),
+        ] {
+            assert_eq!(u16::from(ty), id);
+            assert_eq!(MessageType::try_from(id).unwrap(), ty);
+            assert!(!ty.is_command());
+            assert!(!ty.is_notification());
+        }
+    }
 
     roundtrip_test!(
         custom_entry,

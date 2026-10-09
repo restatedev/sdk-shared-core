@@ -3,7 +3,9 @@ use crate::service_protocol::messages::AwaitingOnMessage;
 use crate::service_protocol::{MessageType, NotificationId, CANCEL_SIGNAL_ID};
 use crate::vm::async_results_state::ResolveFutureResult;
 use crate::vm::context::Context;
-use crate::vm::errors::UncompletedDoProgressDuringReplay;
+use crate::vm::errors::{
+    UncompletedDoProgressDuringReplay, INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS,
+};
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::{awakeable_id_str, State};
 use crate::{
@@ -105,6 +107,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
             State::Processing {
                 ref mut async_results,
                 ref mut run_state,
+                ref ephemeral_commands,
                 ..
             } => {
                 let ResolveFutureResult::WaitExternalInput(unresolved_future) =
@@ -127,6 +130,13 @@ impl TransitionAndReturn<Context, DoProgress> for State {
 
                 // Check suspension condition
                 if context.input_is_closed {
+                    // Some ephemeral command is waiting for its notification, which will never arrive now.
+                    // Suspending is not an option, as the response is not recorded:
+                    // the user code waiting for it (e.g. a run closure) would just hang forever.
+                    if ephemeral_commands.has_in_flight() {
+                        return Err(INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS);
+                    }
+
                     // Some run still executing; it's not time to suspend yet!
                     if waiting_run_proposal {
                         return Ok((

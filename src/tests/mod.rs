@@ -1,5 +1,6 @@
 mod async_result;
 mod calls;
+mod ephemeral_state_get;
 mod failures;
 mod implicit_cancellation;
 mod input_output;
