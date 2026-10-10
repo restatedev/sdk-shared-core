@@ -1,0 +1,37 @@
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# https://github.com/EmbarkStudios/cargo-deny/pull/611
+version = 2
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0097", reason = "jsonwebtoken's rust_crypto backend pulls in rand 0.8 for key generation, but this crate only uses Ed25519 verification in production and uses OsRng-based key generation in tests" },
+    { id = "RUSTSEC-2023-0071", reason = "jsonwebtoken's rust_crypto feature enables RSA support transitively, but this crate verifies EdDSA identity tokens and does not use RSA keys or RSA signature verification" },
+]
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+registries = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+allow = []
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
