@@ -323,12 +323,25 @@ pub enum JournalMismatchRetryBehavior {
     FollowRetryPolicy,
 }
 
+/// What a retried or resumed invocation does with the journal of its earlier attempts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum JournalReplay {
+    /// Replay it: commands return their recorded results, and must match them.
+    #[default]
+    Enabled,
+    /// Skip it: the handler runs again from the start and every command executes anew,
+    /// reading current state. Effects of earlier attempts may repeat (at least once), and
+    /// awakeables are unsupported.
+    Disabled,
+}
+
 #[derive(Debug)]
 pub struct VMOptions {
     pub implicit_cancellation: ImplicitCancellationOption,
     pub non_determinism_checks: NonDeterministicChecksOption,
     pub awaiting_on_policy: AwaitingOnPolicy,
     pub journal_mismatch_retry_behavior: JournalMismatchRetryBehavior,
+    pub journal_replay: JournalReplay,
 }
 
 impl Default for VMOptions {
@@ -341,6 +354,7 @@ impl Default for VMOptions {
             non_determinism_checks: Default::default(),
             awaiting_on_policy: Default::default(),
             journal_mismatch_retry_behavior: Default::default(),
+            journal_replay: Default::default(),
         }
     }
 }
@@ -493,10 +507,11 @@ pub trait VM: Sized {
     fn sys_state_get(
         &mut self,
         key: String,
+        name: Option<String>,
         options: PayloadOptions,
     ) -> VMResult<NotificationHandle>;
 
-    fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle>;
+    fn sys_state_get_keys(&mut self, name: Option<String>) -> VMResult<NotificationHandle>;
 
     /// Ephemeral command to get the state value of the given key: neither the command nor its notification are recorded in the journal.
     ///
@@ -518,12 +533,17 @@ pub trait VM: Sized {
         completion_id: EphemeralCompletionId,
     ) -> VMResult<Option<Value>>;
 
-    fn sys_state_set(&mut self, key: String, value: Bytes, options: PayloadOptions)
-        -> VMResult<()>;
+    fn sys_state_set(
+        &mut self,
+        key: String,
+        value: Bytes,
+        name: Option<String>,
+        options: PayloadOptions,
+    ) -> VMResult<()>;
 
-    fn sys_state_clear(&mut self, key: String) -> VMResult<()>;
+    fn sys_state_clear(&mut self, key: String, name: Option<String>) -> VMResult<()>;
 
-    fn sys_state_clear_all(&mut self) -> VMResult<()>;
+    fn sys_state_clear_all(&mut self, name: Option<String>) -> VMResult<()>;
 
     /// Note: `now_since_unix_epoch` is only used for debugging purposes
     fn sys_sleep(

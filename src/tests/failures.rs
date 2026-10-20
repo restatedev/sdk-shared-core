@@ -147,7 +147,7 @@ mod journal_mismatch {
                 result_completion_id: 1,
                 ..Default::default()
             },
-            |vm| vm.sys_state_get("another-key".to_owned(), PayloadOptions::default()),
+            |vm| vm.sys_state_get("another-key".to_owned(), None, PayloadOptions::default()),
         );
     }
 
@@ -172,6 +172,7 @@ mod journal_mismatch {
                 vm.sys_state_set(
                     "my-key".to_owned(),
                     Bytes::from_static(b"another-value"),
+                    None,
                     PayloadOptions::default(),
                 )
             },
@@ -512,11 +513,12 @@ mod journal_mismatch {
                 "my-key".to_owned(),
                 // NOTE: this is different payload!
                 Bytes::from_static(b"456"),
+                None,
                 PayloadOptions::default(),
             )
             .unwrap();
 
-            vm.sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            vm.sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
                 .unwrap();
 
             vm.sys_end().unwrap();
@@ -642,6 +644,7 @@ mod journal_mismatch {
                     "my-key".to_owned(),
                     // Different bytes than recorded, but marked as unstable.
                     Bytes::from_static(b"456"),
+                    None,
                     PayloadOptions::unstable_serialization(),
                 )
                 .unwrap();
@@ -689,6 +692,7 @@ mod journal_mismatch {
                 // With unstable serialization, different payload should be accepted
                 vm.sys_state_get(
                     "my-key".to_owned(),
+                    None,
                     PayloadOptions::unstable_serialization(),
                 )
                 .unwrap();

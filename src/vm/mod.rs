@@ -17,7 +17,7 @@ use crate::vm::run_state::RunState;
 use crate::vm::transitions::*;
 use crate::{
     AttachInvocationTarget, AwaitResponse, AwakeableHandle, CallHandle, CommandRelationship,
-    EphemeralCompletionId, Error, Header, ImplicitCancellationOption, Input,
+    EphemeralCompletionId, Error, Header, ImplicitCancellationOption, Input, JournalReplay,
     NonDeterministicChecksOption, NonEmptyValue, NotificationHandle, PayloadOptions, ResponseHead,
     RetryPolicy, RunExitResult, RunHandle, SendHandle, Target, TerminalFailure, UnresolvedFuture,
     VMOptions, VMResult, Value, CANCEL_NOTIFICATION_HANDLE,
@@ -285,6 +285,7 @@ impl super::VM for CoreVM {
             NonDeterministicChecksOption::PayloadChecksDisabled
         );
         let awaiting_on_policy = options.awaiting_on_policy;
+        let journal_replay = options.journal_replay;
 
         Ok(Self {
             options,
@@ -297,6 +298,7 @@ impl super::VM for CoreVM {
                 non_deterministic_checks_ignore_payload_equality,
                 negotiated_protocol_version: version,
                 awaiting_on_policy,
+                journal_replay,
             },
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],
@@ -488,10 +490,14 @@ impl super::VM for CoreVM {
         //  need to figure out how to fit this implicit cancellation and co back into the typestate pattern.
         if self.is_implicit_cancellation_enabled() {
             // We want the runtime to wake us up in case cancel notification comes in.
-            let unresolved_future_with_cancellation = UnresolvedFuture::FirstCompleted(vec![
-                unresolved_future,
-                UnresolvedFuture::Single(CANCEL_NOTIFICATION_HANDLE),
-            ]);
+            // An empty future (only ephemeral commands in flight) never completes: leave it out.
+            let cancellation = UnresolvedFuture::Single(CANCEL_NOTIFICATION_HANDLE);
+            let unresolved_future_with_cancellation = if matches!(&unresolved_future, UnresolvedFuture::FirstCompleted(f) if f.is_empty())
+            {
+                UnresolvedFuture::FirstCompleted(vec![cancellation])
+            } else {
+                UnresolvedFuture::FirstCompleted(vec![unresolved_future, cancellation])
+            };
 
             match self._do_progress(unresolved_future_with_cancellation) {
                 Ok(AwaitResponse::AnyCompleted) => {
@@ -616,10 +622,11 @@ impl super::VM for CoreVM {
     fn sys_state_get(
         &mut self,
         key: String,
+        name: Option<String>,
         options: PayloadOptions,
     ) -> Result<NotificationHandle, Error> {
         invocation_debug_logs!(self, "Executing 'Get state {key}'");
-        self.do_transition(SysStateGet(key, options))
+        self.do_transition(SysStateGet(key, name, options))
     }
 
     #[instrument(
@@ -633,9 +640,9 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_state_get_keys(&mut self) -> VMResult<NotificationHandle> {
+    fn sys_state_get_keys(&mut self, name: Option<String>) -> VMResult<NotificationHandle> {
         invocation_debug_logs!(self, "Executing 'Get state keys'");
-        self.do_transition(SysStateGetKeys)
+        self.do_transition(SysStateGetKeys(name))
     }
 
     #[instrument(
@@ -688,10 +695,11 @@ impl super::VM for CoreVM {
         &mut self,
         key: String,
         value: Bytes,
+        name: Option<String>,
         options: PayloadOptions,
     ) -> VMResult<()> {
         invocation_debug_logs!(self, "Executing 'Set state {key}'");
-        self.do_transition(SysStateSet(key, value, options))
+        self.do_transition(SysStateSet(key, value, name, options))
     }
 
     #[instrument(
@@ -705,9 +713,9 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_state_clear(&mut self, key: String) -> Result<(), Error> {
+    fn sys_state_clear(&mut self, key: String, name: Option<String>) -> Result<(), Error> {
         invocation_debug_logs!(self, "Executing 'Clear state {key}'");
-        self.do_transition(SysStateClear(key))
+        self.do_transition(SysStateClear(key, name))
     }
 
     #[instrument(
@@ -721,9 +729,9 @@ impl super::VM for CoreVM {
         ),
         ret
     )]
-    fn sys_state_clear_all(&mut self) -> Result<(), Error> {
+    fn sys_state_clear_all(&mut self, name: Option<String>) -> Result<(), Error> {
         invocation_debug_logs!(self, "Executing 'Clear all state'");
-        self.do_transition(SysStateClearAll)
+        self.do_transition(SysStateClearAll(name))
     }
 
     #[instrument(
@@ -990,6 +998,14 @@ impl super::VM for CoreVM {
     )]
     fn sys_awakeable(&mut self) -> VMResult<AwakeableHandle> {
         invocation_debug_logs!(self, "Executing 'Create awakeable'");
+        if self.options.journal_replay == JournalReplay::Disabled {
+            // Signal ids of skipped attempts are unknown, so a new one could collide.
+            self.do_transition(HitError(Error::new(
+                errors::codes::UNSUPPORTED_FEATURE,
+                "awakeables need journal replay",
+            )))?;
+            unreachable!();
+        }
 
         let signal_id = self.context.journal.next_signal_notification_id();
 

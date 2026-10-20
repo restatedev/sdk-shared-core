@@ -155,8 +155,11 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 // The only thing we can do at this point is to wait for some notification from the runtime,
                 // which will be received reading from input.
 
-                // Before returning, let's see if we need to send AwaitingOnMessage
+                // Before returning, let's see if we need to send AwaitingOnMessage.
+                // An empty future awaits nothing but ephemeral commands' notifications,
+                // which Restate answers anyway: there's nothing to tell it about.
                 if context.negotiated_protocol_version >= Version::V7
+                    && !awaiting_on_handles.is_empty()
                     && match context.awaiting_on_policy {
                         AwaitingOnPolicy::SendAlways => true,
                         AwaitingOnPolicy::DontSendWhenExecutingRun => !run_state.any_executing(),

@@ -169,10 +169,11 @@ mod local {
                 vm.sys_state_set(
                     "A".to_owned(),
                     Bytes::from_static(b"a"),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
-                vm.sys_state_clear("B".to_owned()).unwrap();
+                vm.sys_state_clear("B".to_owned(), None).unwrap();
                 let run = start_run(vm);
 
                 let id = vm.ephemeral_state_get("A".to_owned()).unwrap();
@@ -197,7 +198,7 @@ mod local {
             .input(input_entry_message(b"my-data"))
             .run_without_closing_input(|vm, _| {
                 vm.sys_input().unwrap();
-                vm.sys_state_clear_all().unwrap();
+                vm.sys_state_clear_all(None).unwrap();
                 let run = start_run(vm);
 
                 let id = vm.ephemeral_state_get("UNKNOWN".to_owned()).unwrap();
@@ -229,6 +230,7 @@ mod local {
                 vm.sys_state_set(
                     "STATE".to_owned(),
                     Bytes::from_static(b"Francesco"),
+                    None,
                     PayloadOptions::default(),
                 )
                 .unwrap();
@@ -357,11 +359,11 @@ mod remote {
                 vm.sys_input().unwrap();
 
                 let h1 = vm
-                    .sys_state_get("A".to_owned(), PayloadOptions::default())
+                    .sys_state_get("A".to_owned(), None, PayloadOptions::default())
                     .unwrap();
                 let u1 = vm.ephemeral_state_get("B".to_owned()).unwrap();
                 let h2 = vm
-                    .sys_state_get("C".to_owned(), PayloadOptions::default())
+                    .sys_state_get("C".to_owned(), None, PayloadOptions::default())
                     .unwrap();
                 let u2 = vm.ephemeral_state_get("D".to_owned()).unwrap();
                 assert_eq!(u32::from(u1), 1);
@@ -617,6 +619,49 @@ mod failures {
             error_message_as_error(
                 EphemeralStateGetWithClosedInput::new("STATE".to_owned()).into()
             )
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn awaiting_only_ephemeral_commands_awaits_the_cancellation() {
+        let mut output = VMTestCase::new()
+            .input(start_with_state(true, &[]))
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+                let id = vm.ephemeral_state_get("STATE".to_owned()).unwrap();
+
+                assert_that!(
+                    vm.do_await(UnresolvedFuture::FirstCompleted(vec![])),
+                    ok(pat!(AwaitResponse::WaitingExternalProgress { .. }))
+                );
+                vm.notify_input(encoder.encode(&get_state_notification(1, Some("a"))));
+                assert_eq!(
+                    vm.do_await(UnresolvedFuture::FirstCompleted(vec![]))
+                        .unwrap(),
+                    AwaitResponse::EphemeralNotificationReady(id)
+                );
+                assert_eq!(
+                    vm.take_ephemeral_notification(id).unwrap(),
+                    Some(Value::Success(Bytes::from_static(b"a")))
+                );
+            });
+
+        output
+            .next_decoded::<GetStateEphemeralCommandMessage>()
+            .unwrap();
+        // Awaiting on the cancel signal only: an empty future is not a valid one for Restate.
+        use crate::service_protocol::messages::{AwaitingOnMessage, Future};
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            pat!(AwaitingOnMessage {
+                awaiting_on: some(pat!(Future {
+                    waiting_signals: elements_are![eq(1)],
+                    waiting_completions: empty(),
+                    nested_futures: empty(),
+                })),
+            })
         );
         assert_eq!(output.next(), None);
     }
