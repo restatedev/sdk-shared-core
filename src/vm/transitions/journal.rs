@@ -21,8 +21,8 @@ use crate::vm::errors::{
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{
-    CommandRelationship, CommandType, EntryRetryInfo, Error, Header, Input, NotificationHandle,
-    PayloadOptions, RetryPolicy, RunExitResult, RunHandle, Version,
+    CommandRelationship, CommandType, EntryRetryInfo, Error, Header, Input, JournalReplay,
+    NotificationHandle, PayloadOptions, RetryPolicy, RunExitResult, RunHandle, Version,
 };
 use bytes::Bytes;
 use std::collections::VecDeque;
@@ -58,6 +58,33 @@ impl TransitionAndReturn<Context, SysInput> for State {
                     .resolve_related_command(CommandRelationship::Last),
             )
         })?;
+
+        // Skip journal replay when enabled
+        let s = if context.journal_replay == JournalReplay::Disabled {
+            match s {
+                State::Replaying {
+                    mut commands,
+                    run_state,
+                    async_results,
+                    eager_state,
+                } => {
+                    let skipped = commands.len() as u32;
+                    commands.clear();
+                    context.journal.skip_to(skipped);
+                    State::Replaying {
+                        commands,
+                        run_state,
+                        async_results,
+                        eager_state,
+                    }
+                    .try_transition_to_processing()
+                }
+                s => s,
+            }
+        } else {
+            s
+        };
+
         let start_info = context.expect_start_info();
 
         Ok((
@@ -296,8 +323,12 @@ impl TransitionAndReturn<Context, CreateSignalHandle> for State {
     }
 }
 
-/// State get with key and payload options for replay checks.
-pub(crate) struct SysStateGet(pub(crate) String, pub(crate) PayloadOptions);
+/// State get with key, command name and payload options for replay checks.
+pub(crate) struct SysStateGet(
+    pub(crate) String,
+    pub(crate) Option<String>,
+    pub(crate) PayloadOptions,
+);
 
 impl TransitionAndReturn<Context, SysStateGet> for State {
     type Output = NotificationHandle;
@@ -305,8 +336,9 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        SysStateGet(key, options): SysStateGet,
+        SysStateGet(key, name, options): SysStateGet,
     ) -> Result<(Self, Self::Output), Error> {
+        let name = name.unwrap_or_default();
         let completion_id = context.journal.next_completion_notification_id();
 
         match self {
@@ -334,9 +366,9 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                 if let Some((get_state_result, notification_result)) = result {
                     // Eager state case, we're good let's prepare the ready notification and send the get eager state entry
                     let new_entry = GetEagerStateCommandMessage {
+                        name,
                         key: Bytes::from(key),
                         result: Some(get_state_result),
-                        ..Default::default()
                     };
                     let new_notification = Notification {
                         id: NotificationId::CompletionId(completion_id),
@@ -351,9 +383,9 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                     Ok((self, handle))
                 } else {
                     let new_entry = GetLazyStateCommandMessage {
+                        name,
                         key: Bytes::from(key),
                         result_completion_id: completion_id,
-                        ..Default::default()
                     };
                     let handle = async_results
                         .create_handle_mapping(NotificationId::CompletionId(completion_id));
@@ -376,6 +408,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
                 let handle = process_get_entry_during_replay(
                     context,
                     key,
+                    name,
                     completion_id,
                     commands,
                     async_results,
@@ -402,6 +435,7 @@ impl TransitionAndReturn<Context, SysStateGet> for State {
 fn process_get_entry_during_replay(
     context: &mut Context,
     key: String,
+    name: String,
     completion_id: u32,
     commands: &mut VecDeque<RawMessage>,
     async_results: &mut AsyncResultsState,
@@ -426,9 +460,9 @@ fn process_get_entry_during_replay(
                 context.journal.command_index(),
                 &get_eager_state_command,
                 &GetEagerStateCommandMessage {
+                    name,
                     key: key.into_bytes().into(),
                     result: get_eager_state_command.result.clone(),
-                    name: "".to_string(),
                 },
                 ignore_payload_equality,
             )?;
@@ -454,9 +488,9 @@ fn process_get_entry_during_replay(
                 context.journal.command_index(),
                 &get_lazy_state_command,
                 &GetLazyStateCommandMessage {
+                    name,
                     key: key.into_bytes().into(),
                     result_completion_id: completion_id,
-                    name: "".to_string(),
                 },
                 ignore_payload_equality,
             )?;
@@ -467,14 +501,14 @@ fn process_get_entry_during_replay(
                 message_type,
                 MessageType::GetLazyStateCommand,
             )
-            .into())
+            .into());
         }
     }
 
     Ok(handle)
 }
 
-pub(crate) struct SysStateGetKeys;
+pub(crate) struct SysStateGetKeys(pub(crate) Option<String>);
 
 impl TransitionAndReturn<Context, SysStateGetKeys> for State {
     type Output = NotificationHandle;
@@ -482,8 +516,9 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        _: SysStateGetKeys,
+        SysStateGetKeys(name): SysStateGetKeys,
     ) -> Result<(Self, Self::Output), Error> {
+        let name = name.unwrap_or_default();
         let completion_id = context.journal.next_completion_notification_id();
 
         match self {
@@ -513,7 +548,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                     // Eager state case, we're good let's prepare the ready notification and send the get eager state entry
                     let new_entry = GetEagerStateKeysCommandMessage {
                         value: Some(get_state_result),
-                        ..Default::default()
+                        name,
                     };
                     let new_notification = Notification {
                         id: NotificationId::CompletionId(completion_id),
@@ -529,7 +564,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
                 } else {
                     let new_entry = GetLazyStateKeysCommandMessage {
                         result_completion_id: completion_id,
-                        ..Default::default()
+                        name,
                     };
                     let handle = async_results
                         .create_handle_mapping(NotificationId::CompletionId(completion_id));
@@ -551,6 +586,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
 
                 let handle = process_get_entry_keys_during_replay(
                     context,
+                    name,
                     completion_id,
                     commands,
                     async_results,
@@ -575,6 +611,7 @@ impl TransitionAndReturn<Context, SysStateGetKeys> for State {
 
 fn process_get_entry_keys_during_replay(
     context: &mut Context,
+    name: String,
     completion_id: u32,
     commands: &mut VecDeque<RawMessage>,
     async_results: &mut AsyncResultsState,
@@ -597,7 +634,7 @@ fn process_get_entry_keys_during_replay(
                 &get_eager_state_command,
                 &GetEagerStateKeysCommandMessage {
                     value: get_eager_state_command.value.clone(),
-                    name: "".to_string(),
+                    name,
                 },
                 ignore_payload_equality,
             )?;
@@ -622,7 +659,7 @@ fn process_get_entry_keys_during_replay(
                 &get_lazy_state_command,
                 &GetLazyStateKeysCommandMessage {
                     result_completion_id: completion_id,
-                    name: "".to_string(),
+                    name,
                 },
                 ignore_payload_equality,
             )?;
@@ -633,7 +670,7 @@ fn process_get_entry_keys_during_replay(
                 message_type,
                 MessageType::GetLazyStateKeysCommand,
             )
-            .into())
+            .into());
         }
     }
 
@@ -643,6 +680,7 @@ fn process_get_entry_keys_during_replay(
 pub(crate) struct SysStateSet(
     pub(crate) String,
     pub(crate) Bytes,
+    pub(crate) Option<String>,
     pub(crate) PayloadOptions,
 );
 
@@ -650,7 +688,7 @@ impl Transition<Context, SysStateSet> for State {
     fn transition(
         mut self,
         context: &mut Context,
-        SysStateSet(key, value, options): SysStateSet,
+        SysStateSet(key, value, name, options): SysStateSet,
     ) -> Result<Self, Error> {
         if let Some(eager_state) = self.eager_state_mut() {
             eager_state.set(key.clone(), value.clone());
@@ -659,9 +697,9 @@ impl Transition<Context, SysStateSet> for State {
             context,
             SysNonCompletableEntry(
                 SetStateCommandMessage {
+                    name: name.unwrap_or_default(),
                     key: key.into_bytes().into(),
                     value: Some(value.into()),
-                    ..SetStateCommandMessage::default()
                 },
                 options,
             ),
@@ -669,13 +707,13 @@ impl Transition<Context, SysStateSet> for State {
     }
 }
 
-pub(crate) struct SysStateClear(pub(crate) String);
+pub(crate) struct SysStateClear(pub(crate) String, pub(crate) Option<String>);
 
 impl Transition<Context, SysStateClear> for State {
     fn transition(
         mut self,
         context: &mut Context,
-        SysStateClear(key): SysStateClear,
+        SysStateClear(key, name): SysStateClear,
     ) -> Result<Self, Error> {
         if let Some(eager_state) = self.eager_state_mut() {
             eager_state.clear(key.clone());
@@ -684,8 +722,8 @@ impl Transition<Context, SysStateClear> for State {
             context,
             SysNonCompletableEntry(
                 ClearStateCommandMessage {
+                    name: name.unwrap_or_default(),
                     key: key.into_bytes().into(),
-                    ..ClearStateCommandMessage::default()
                 },
                 PayloadOptions::default(),
             ),
@@ -693,17 +731,23 @@ impl Transition<Context, SysStateClear> for State {
     }
 }
 
-pub(crate) struct SysStateClearAll;
+pub(crate) struct SysStateClearAll(pub(crate) Option<String>);
 
 impl Transition<Context, SysStateClearAll> for State {
-    fn transition(mut self, context: &mut Context, _: SysStateClearAll) -> Result<Self, Error> {
+    fn transition(
+        mut self,
+        context: &mut Context,
+        SysStateClearAll(name): SysStateClearAll,
+    ) -> Result<Self, Error> {
         if let Some(eager_state) = self.eager_state_mut() {
             eager_state.clear_all();
         }
         self.transition(
             context,
             SysNonCompletableEntry(
-                ClearAllStateCommandMessage::default(),
+                ClearAllStateCommandMessage {
+                    name: name.unwrap_or_default(),
+                },
                 PayloadOptions::default(),
             ),
         )
@@ -892,7 +936,10 @@ impl Transition<Context, ProposeRunCompletion> for State {
                 Ok(self)
             }
             s => {
-                trace!("Going to ignore proposed completion for run with handle {notification_handle:?}, because state is {}", <&'static str>::from(&s));
+                trace!(
+                    "Going to ignore proposed completion for run with handle {notification_handle:?}, because state is {}",
+                    <&'static str>::from(&s)
+                );
                 Ok(s)
             }
         }

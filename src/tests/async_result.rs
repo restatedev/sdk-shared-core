@@ -879,8 +879,13 @@ mod reverse_await_order {
                 vm.take_notification(h2.call_notification_handle).unwrap()
         );
 
-        vm.sys_state_set("A2".to_owned(), h2_value.clone(), PayloadOptions::default())
-            .unwrap();
+        vm.sys_state_set(
+            "A2".to_owned(),
+            h2_value.clone(),
+            None,
+            PayloadOptions::default(),
+        )
+        .unwrap();
 
         if vm
             .do_await(h1.call_notification_handle.into())

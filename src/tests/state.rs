@@ -11,7 +11,7 @@ fn get_state_handler(vm: &mut CoreVM) {
     vm.sys_input().unwrap();
 
     let h1 = vm
-        .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+        .sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
         .unwrap();
 
     if vm
@@ -264,7 +264,7 @@ mod eager {
         vm.sys_input().unwrap();
 
         let h1 = vm
-            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
             .unwrap();
 
         if vm
@@ -497,7 +497,7 @@ mod eager {
         let input = vm.sys_input().unwrap().input;
 
         let h1 = vm
-            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
             .unwrap();
 
         if vm
@@ -525,12 +525,13 @@ mod eager {
         vm.sys_state_set(
             "STATE".to_owned(),
             Bytes::from([get_result.clone(), input.clone()].concat()),
+            None,
             PayloadOptions::default(),
         )
         .unwrap();
 
         let h2 = vm
-            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
             .unwrap();
 
         if vm
@@ -688,7 +689,7 @@ mod eager {
         vm.sys_input().unwrap();
 
         let h1 = vm
-            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
             .unwrap();
 
         if vm
@@ -706,10 +707,10 @@ mod eager {
             _ => panic!("Unexpected variants"),
         };
 
-        vm.sys_state_clear("STATE".to_owned()).unwrap();
+        vm.sys_state_clear("STATE".to_owned(), None).unwrap();
 
         let h2 = vm
-            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
             .unwrap();
 
         if vm
@@ -852,7 +853,7 @@ mod eager {
         vm.sys_input().unwrap();
 
         let h1 = vm
-            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
             .unwrap();
 
         if vm
@@ -870,16 +871,16 @@ mod eager {
             _ => panic!("Unexpected variants"),
         };
 
-        vm.sys_state_clear_all().unwrap();
+        vm.sys_state_clear_all(None).unwrap();
 
         let h2 = vm
-            .sys_state_get("STATE".to_owned(), PayloadOptions::default())
+            .sys_state_get("STATE".to_owned(), None, PayloadOptions::default())
             .unwrap();
         vm.do_await(UnresolvedFuture::Single(h2)).unwrap();
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h2));
 
         let h3 = vm
-            .sys_state_get("ANOTHER_STATE".to_owned(), PayloadOptions::default())
+            .sys_state_get("ANOTHER_STATE".to_owned(), None, PayloadOptions::default())
             .unwrap();
         vm.do_await(UnresolvedFuture::Single(h3)).unwrap();
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h3));
@@ -1043,13 +1044,13 @@ mod eager {
         vm.sys_input().unwrap();
 
         let h1 = vm
-            .sys_state_get("key-0".to_owned(), PayloadOptions::default())
+            .sys_state_get("key-0".to_owned(), None, PayloadOptions::default())
             .unwrap();
         vm.do_await(UnresolvedFuture::Single(h1)).unwrap();
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h1));
 
         let h2 = vm
-            .sys_state_get("key-0".to_owned(), PayloadOptions::default())
+            .sys_state_get("key-0".to_owned(), None, PayloadOptions::default())
             .unwrap();
         vm.do_await(UnresolvedFuture::Single(h2)).unwrap();
         assert2::assert!(let Ok(Some(Value::Void)) = vm.take_notification(h2));
@@ -1165,7 +1166,7 @@ mod state_keys {
     fn get_state_keys_handler(vm: &mut CoreVM) {
         vm.sys_input().unwrap();
 
-        let h1 = vm.sys_state_get_keys().unwrap();
+        let h1 = vm.sys_state_get_keys(None).unwrap();
 
         if vm
             .do_await(UnresolvedFuture::Single(h1))
@@ -1374,5 +1375,222 @@ mod state_keys {
         );
 
         assert_eq!(output.next(), None);
+    }
+}
+
+mod named_commands {
+    use super::*;
+
+    use crate::tests::input_entry_message;
+    use test_log::test;
+
+    fn start(known_entries: u32) -> StartMessage {
+        StartMessage {
+            id: Bytes::from_static(b"abc"),
+            debug_id: "abc".to_owned(),
+            known_entries,
+            partial_state: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn state_commands_carry_the_given_name() {
+        let mut output = VMTestCase::new()
+            .input(start(1))
+            .input(input_entry_message(b"Till"))
+            .run(|vm| {
+                vm.sys_input().unwrap();
+                vm.sys_state_get(
+                    "A".to_owned(),
+                    Some("get-a".to_owned()),
+                    PayloadOptions::default(),
+                )
+                .unwrap();
+                vm.sys_state_set(
+                    "A".to_owned(),
+                    Bytes::from_static(b"x"),
+                    Some("set-a".to_owned()),
+                    PayloadOptions::default(),
+                )
+                .unwrap();
+                vm.sys_state_clear("A".to_owned(), Some("clear-a".to_owned()))
+                    .unwrap();
+                vm.sys_state_clear_all(Some("clear-all".to_owned()))
+                    .unwrap();
+                vm.sys_state_get_keys(Some("keys".to_owned())).unwrap();
+            });
+
+        assert_eq!(
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
+                key: Bytes::from_static(b"A"),
+                name: "get-a".to_owned(),
+                result_completion_id: 1,
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<SetStateCommandMessage>().unwrap(),
+            SetStateCommandMessage {
+                key: Bytes::from_static(b"A"),
+                name: "set-a".to_owned(),
+                value: Some(Bytes::from_static(b"x").into()),
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<ClearStateCommandMessage>().unwrap(),
+            ClearStateCommandMessage {
+                key: Bytes::from_static(b"A"),
+                name: "clear-a".to_owned(),
+            }
+        );
+        assert_eq!(
+            output
+                .next_decoded::<ClearAllStateCommandMessage>()
+                .unwrap(),
+            ClearAllStateCommandMessage {
+                name: "clear-all".to_owned(),
+            }
+        );
+        // After clear all, the keys are known (none): answered eagerly.
+        assert_eq!(
+            output
+                .next_decoded::<GetEagerStateKeysCommandMessage>()
+                .unwrap(),
+            GetEagerStateKeysCommandMessage {
+                value: Some(StateKeys { keys: vec![] }),
+                name: "keys".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn replay_matches_the_name() {
+        let mut output = VMTestCase::new()
+            .input(start(2))
+            .input(input_entry_message(b"Till"))
+            .input(SetStateCommandMessage {
+                key: Bytes::from_static(b"A"),
+                name: "set-a".to_owned(),
+                value: Some(Bytes::from_static(b"x").into()),
+            })
+            .run(|vm| {
+                vm.sys_input().unwrap();
+                vm.sys_state_set(
+                    "A".to_owned(),
+                    Bytes::from_static(b"x"),
+                    Some("set-a".to_owned()),
+                    PayloadOptions::default(),
+                )
+                .unwrap();
+                vm.sys_end().unwrap();
+            });
+
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+}
+
+mod journal_replay_disabled {
+    use super::*;
+    use crate::tests::{input_entry_message, suspended_waiting_completion};
+    use crate::{JournalReplay, VMOptions};
+
+    fn options() -> VMOptions {
+        VMOptions {
+            journal_replay: JournalReplay::Disabled,
+            ..Default::default()
+        }
+    }
+
+    /// A retry reads current state anew instead of the recorded result, with a completion
+    /// id after any an earlier attempt can have used.
+    #[test]
+    fn retry_skips_the_journal() {
+        let mut output = VMTestCase::with_vm_options(options())
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 4,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"Till"))
+            .input(SetStateCommandMessage {
+                key: Bytes::from_static(b"OTHER"),
+                value: Some(Bytes::from_static(b"x").into()),
+                ..Default::default()
+            })
+            .input(GetLazyStateCommandMessage {
+                key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
+                ..Default::default()
+            })
+            .input(GetLazyStateCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(
+                    get_lazy_state_completion_notification_message::Result::Value(
+                        Bytes::from_static(b"Francesco").into(),
+                    ),
+                ),
+            })
+            .run(get_state_handler);
+
+        assert_eq!(
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
+                key: Bytes::from_static(b"STATE"),
+                result_completion_id: 5,
+                ..Default::default()
+            }
+        );
+        assert_that!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            suspended_waiting_completion(5)
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    /// A first attempt has nothing to skip.
+    #[test]
+    fn first_attempt_is_unchanged() {
+        let mut output = VMTestCase::with_vm_options(options())
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 1,
+                partial_state: true,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"Till"))
+            .run(get_state_handler);
+
+        assert_eq!(
+            output.next_decoded::<GetLazyStateCommandMessage>().unwrap(),
+            GetLazyStateCommandMessage {
+                key: Bytes::from_static(b"STATE"),
+                result_completion_id: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn awakeables_are_refused() {
+        let mut vm = VMTestCase::with_vm_options(options())
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 1,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"Till"))
+            .vm;
+        vm.notify_input_closed();
+        vm.sys_input().unwrap();
+        assert!(vm.sys_awakeable().is_err());
     }
 }

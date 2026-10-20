@@ -3,7 +3,7 @@ use crate::service_protocol::messages::{
     NamedCommandMessage, RestateEncodableMessage, RestateMessage,
 };
 use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{AwaitingOnPolicy, CommandRelationship, EntryRetryInfo};
+use crate::{AwaitingOnPolicy, CommandRelationship, EntryRetryInfo, JournalReplay};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::HashMap;
@@ -56,6 +56,20 @@ impl Journal {
         let next = self.completion_index;
         self.completion_index += 1;
         next
+    }
+
+    /// Skip `skipped_commands` replayed commands without matching them. Later commands get
+    /// indexes after them, and completion ids that no earlier attempt used: a command takes
+    /// at most two completion ids, and every attempt skipped the same way over the commands
+    /// of the attempts before it, so ids after `2 * skipped_commands` more are fresh.
+    pub(crate) fn skip_to(&mut self, skipped_commands: u32) {
+        if skipped_commands > 0 {
+            self.command_index = Some(
+                self.command_index
+                    .map_or(skipped_commands - 1, |i| i + skipped_commands),
+            );
+        }
+        self.completion_index += 2 * skipped_commands;
     }
 
     pub(crate) fn next_signal_notification_id(&mut self) -> u32 {
@@ -233,6 +247,7 @@ pub(crate) struct Context {
     pub(crate) output: Output,
     pub(crate) non_deterministic_checks_ignore_payload_equality: bool,
     pub(crate) awaiting_on_policy: AwaitingOnPolicy,
+    pub(crate) journal_replay: JournalReplay,
 }
 
 impl Context {

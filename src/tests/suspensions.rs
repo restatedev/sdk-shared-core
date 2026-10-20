@@ -16,7 +16,7 @@ fn trigger_suspension_with_get_state() {
             let _ = vm.sys_input().unwrap();
 
             let handle = vm
-                .sys_state_get("Personaggio".to_owned(), PayloadOptions::default())
+                .sys_state_get("Personaggio".to_owned(), None, PayloadOptions::default())
                 .unwrap();
 
             // Also take_async_result returns Ok(None)
@@ -94,7 +94,7 @@ fn await_many_notifications() {
             let h1 = vm.sys_awakeable().unwrap().handle;
             let h2 = vm.create_signal_handle("abc".into()).unwrap();
             let h3 = vm
-                .sys_state_get("Personaggio".to_owned(), PayloadOptions::default())
+                .sys_state_get("Personaggio".to_owned(), None, PayloadOptions::default())
                 .unwrap();
 
             // Let's notify_input_closed now
