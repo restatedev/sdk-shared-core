@@ -335,6 +335,17 @@ pub enum JournalReplay {
     Disabled,
 }
 
+/// How repeated deliveries of the same signal are handed out to handles.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SignalDelivery {
+    /// Every delivery is kept and handed out in journal order, one per take.
+    #[default]
+    Queued,
+    /// A delivery not yet taken is replaced by the next delivery with the same signal id,
+    /// so earlier values can be lost.
+    Overwrite,
+}
+
 #[derive(Debug)]
 pub struct VMOptions {
     pub implicit_cancellation: ImplicitCancellationOption,
@@ -342,6 +353,7 @@ pub struct VMOptions {
     pub awaiting_on_policy: AwaitingOnPolicy,
     pub journal_mismatch_retry_behavior: JournalMismatchRetryBehavior,
     pub journal_replay: JournalReplay,
+    pub signal_delivery: SignalDelivery,
 }
 
 impl Default for VMOptions {
@@ -355,6 +367,7 @@ impl Default for VMOptions {
             awaiting_on_policy: Default::default(),
             journal_mismatch_retry_behavior: Default::default(),
             journal_replay: Default::default(),
+            signal_delivery: Default::default(),
         }
     }
 }

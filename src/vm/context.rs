@@ -3,7 +3,7 @@ use crate::service_protocol::messages::{
     NamedCommandMessage, RestateEncodableMessage, RestateMessage,
 };
 use crate::service_protocol::{Encoder, MessageType, Version};
-use crate::{AwaitingOnPolicy, CommandRelationship, EntryRetryInfo, JournalReplay};
+use crate::{AwaitingOnPolicy, CommandRelationship, EntryRetryInfo, JournalReplay, SignalDelivery};
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
 use std::collections::HashMap;
@@ -248,6 +248,7 @@ pub(crate) struct Context {
     pub(crate) non_deterministic_checks_ignore_payload_equality: bool,
     pub(crate) awaiting_on_policy: AwaitingOnPolicy,
     pub(crate) journal_replay: JournalReplay,
+    pub(crate) signal_delivery: SignalDelivery,
 }
 
 impl Context {

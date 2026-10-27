@@ -1110,3 +1110,19 @@ fn encode_message_with_custom_header<T: RestateMessage>(
 
     buf.freeze()
 }
+
+#[cfg(test)]
+mod tests {
+
+    impl From<&str> for super::signal_notification_message::SignalId {
+        fn from(value: &str) -> Self {
+            Self::Name(value.to_string())
+        }
+    }
+
+    impl From<u32> for super::signal_notification_message::SignalId {
+        fn from(value: u32) -> Self {
+            Self::Idx(value)
+        }
+    }
+}

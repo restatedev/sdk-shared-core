@@ -1,14 +1,20 @@
 use crate::service_protocol::messages::{CombinatorType, Future};
 use crate::service_protocol::{CompletionId, Notification, NotificationId, NotificationResult};
 use crate::vm::errors::BadProposeRunCompletionAck;
-use crate::{Error, NotificationHandle, UnresolvedFuture, CANCEL_NOTIFICATION_HANDLE};
+use crate::{
+    Error, NotificationHandle, SignalDelivery, UnresolvedFuture, CANCEL_NOTIFICATION_HANDLE,
+};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::instrument;
 
 #[derive(Debug)]
 pub(crate) struct AsyncResultsState {
     to_process: VecDeque<Notification>,
-    ready: HashMap<NotificationId, NotificationResult>,
+    // Deliveries ready to be taken, in arrival order per notification id.
+    // Entries are never empty: the entry is removed when its last delivery is taken.
+    ready: HashMap<NotificationId, VecDeque<NotificationResult>>,
+    signal_delivery: SignalDelivery,
 
     // We cache the results of the run completions executed during this attempt.
     // From protocol >= v7
@@ -20,19 +26,7 @@ pub(crate) struct AsyncResultsState {
 
 impl Default for AsyncResultsState {
     fn default() -> Self {
-        Self {
-            to_process: Default::default(),
-            ready: Default::default(),
-
-            cached_run_completions: Default::default(),
-
-            // First 15 are reserved for built-in signals!
-            handle_mapping: HashMap::from([(
-                CANCEL_NOTIFICATION_HANDLE,
-                NotificationId::SignalId(1),
-            )]),
-            next_notification_handle: NotificationHandle(17),
-        }
+        Self::new(SignalDelivery::default())
     }
 }
 
@@ -46,6 +40,23 @@ pub(crate) enum ResolveFutureResult {
 }
 
 impl AsyncResultsState {
+    pub(crate) fn new(signal_delivery: SignalDelivery) -> Self {
+        Self {
+            to_process: Default::default(),
+            ready: Default::default(),
+            signal_delivery,
+
+            cached_run_completions: Default::default(),
+
+            // First 15 are reserved for built-in signals!
+            handle_mapping: HashMap::from([(
+                CANCEL_NOTIFICATION_HANDLE,
+                NotificationId::SignalId(1),
+            )]),
+            next_notification_handle: NotificationHandle(17),
+        }
+    }
+
     #[instrument(
         level = "trace",
         skip_all,
@@ -107,7 +118,23 @@ impl AsyncResultsState {
         ret
     )]
     pub(crate) fn insert_ready(&mut self, notification: Notification) {
-        self.ready.insert(notification.id, notification.result);
+        self.push_ready(notification.id, notification.result);
+    }
+
+    fn push_ready(&mut self, id: NotificationId, result: NotificationResult) {
+        // Completion ids are delivered once, so only signals can have more than one delivery queued.
+        let queue = self.signal_delivery == SignalDelivery::Queued
+            && matches!(
+                id,
+                NotificationId::SignalId(_) | NotificationId::SignalName(_)
+            );
+        match self.ready.entry(id) {
+            Entry::Occupied(mut e) if queue => e.get_mut().push_back(result),
+            Entry::Occupied(mut e) => *e.get_mut() = VecDeque::from([result]),
+            Entry::Vacant(e) => {
+                e.insert(VecDeque::from([result]));
+            }
+        }
     }
 
     pub(crate) fn create_handle_mapping(
@@ -290,7 +317,7 @@ impl AsyncResultsState {
     // Returns false if there's no more to_process
     fn pop_notification_queue(&mut self) -> bool {
         if let Some(notif) = self.to_process.pop_front() {
-            self.ready.insert(notif.id, notif.result);
+            self.push_ready(notif.id, notif.result);
             true
         } else {
             false
@@ -316,6 +343,7 @@ impl AsyncResultsState {
             .handle_mapping
             .get(&handle)
             .and_then(|id| self.ready.get(id))
+            .and_then(VecDeque::front)
         {
             Some(notif) if notif.is_failure() => HandleState::Failed,
             Some(_) => HandleState::Succeeded,
@@ -416,16 +444,17 @@ impl AsyncResultsState {
     )]
     pub(crate) fn take_handle(&mut self, handle: NotificationHandle) -> Option<NotificationResult> {
         let id = self.handle_mapping.get(&handle)?;
-        if let Some(res) = self.ready.remove(id) {
-            if handle != CANCEL_NOTIFICATION_HANDLE {
-                self.handle_mapping.remove(&handle);
-                // Don't remove the CANCEL handle mapping
-                // TODO improve the code here around handling built-in signals handles
-            }
-            Some(res)
-        } else {
-            None
+        let deliveries = self.ready.get_mut(id)?;
+        let res = deliveries.pop_front();
+        if deliveries.is_empty() {
+            self.ready.remove(id);
         }
+        if handle != CANCEL_NOTIFICATION_HANDLE {
+            self.handle_mapping.remove(&handle);
+            // Don't remove the CANCEL handle mapping
+            // TODO improve the code here around handling built-in signals handles
+        }
+        res
     }
 
     #[instrument(
@@ -437,7 +466,10 @@ impl AsyncResultsState {
         ret
     )]
     pub(crate) fn copy_handle(&mut self, handle: NotificationHandle) -> Option<NotificationResult> {
-        self.ready.get(self.handle_mapping.get(&handle)?).cloned()
+        self.ready
+            .get(self.handle_mapping.get(&handle)?)?
+            .front()
+            .cloned()
     }
 }
 
@@ -484,6 +516,7 @@ mod tests {
         all_completed, all_succeeded_or_first_failed, first_completed,
         first_succeeded_or_all_failed, unknown,
     };
+    use bytes::Bytes;
     use googletest::prelude::*;
     use pastey::paste;
 
@@ -1027,4 +1060,71 @@ mod tests {
             combinator_type: eq(CombinatorType::AllCompleted as i32)
         })
     );
+
+    // --- Repeated deliveries of the same id ---
+
+    fn signal_delivery_state(
+        signal_delivery: SignalDelivery,
+        id: NotificationId,
+        values: &[&'static [u8]],
+    ) -> (AsyncResultsState, NotificationHandle) {
+        let mut state = AsyncResultsState::new(signal_delivery);
+        let handle = state.create_handle_mapping(id.clone());
+        for v in values {
+            state.enqueue(Notification {
+                id: id.clone(),
+                result: NotificationResult::Value(Bytes::from_static(v).into()),
+            });
+        }
+        // Drain to_process into ready
+        while state.pop_notification_queue() {}
+        (state, handle)
+    }
+
+    fn value(v: &'static [u8]) -> NotificationResult {
+        NotificationResult::Value(Bytes::from_static(v).into())
+    }
+
+    #[test]
+    fn queued_signal_deliveries_are_taken_in_order() {
+        let (mut state, h1) = signal_delivery_state(
+            SignalDelivery::Queued,
+            NotificationId::SignalName("a".to_owned()),
+            &[b"1", b"2"],
+        );
+        assert_eq!(state.copy_handle(h1), Some(value(b"1")));
+        assert_eq!(state.take_handle(h1), Some(value(b"1")));
+
+        let h2 = state.create_handle_mapping(NotificationId::SignalName("a".to_owned()));
+        assert!(state.is_handle_completed(h2));
+        assert_eq!(state.take_handle(h2), Some(value(b"2")));
+
+        let h3 = state.create_handle_mapping(NotificationId::SignalName("a".to_owned()));
+        assert!(!state.is_handle_completed(h3));
+        assert!(state.ready.is_empty());
+    }
+
+    #[test]
+    fn overwrite_signal_deliveries_keep_the_last() {
+        let (mut state, h1) = signal_delivery_state(
+            SignalDelivery::Overwrite,
+            NotificationId::SignalName("a".to_owned()),
+            &[b"1", b"2"],
+        );
+        assert_eq!(state.take_handle(h1), Some(value(b"2")));
+
+        let h2 = state.create_handle_mapping(NotificationId::SignalName("a".to_owned()));
+        assert!(!state.is_handle_completed(h2));
+    }
+
+    #[test]
+    fn queued_does_not_apply_to_completion_ids() {
+        let (mut state, h1) = signal_delivery_state(
+            SignalDelivery::Queued,
+            NotificationId::CompletionId(1),
+            &[b"1", b"2"],
+        );
+        assert_eq!(state.take_handle(h1), Some(value(b"2")));
+        assert!(state.ready.is_empty());
+    }
 }
