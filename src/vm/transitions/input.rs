@@ -1,5 +1,6 @@
 use crate::service_protocol::messages::StartMessage;
 use crate::service_protocol::{messages, MessageType, RawMessage};
+use crate::vm::async_results_state::AsyncResultsState;
 use crate::vm::context::{Context, EagerState, StartInfo};
 use crate::vm::errors::{
     BadEagerStateKeyError, INPUT_CLOSED_WHILE_WAITING_ENTRIES, KNOWN_ENTRIES_IS_ZERO,
@@ -79,7 +80,7 @@ impl Transition<Context, NewStartMessage> for State {
         Ok(State::WaitingReplayEntries {
             received_entries: 0,
             commands: Default::default(),
-            async_results: Default::default(),
+            async_results: AsyncResultsState::new(context.signal_delivery),
             eager_state,
         })
     }

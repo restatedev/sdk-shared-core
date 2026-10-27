@@ -1,8 +1,7 @@
 use super::*;
 
 use crate::service_protocol::messages::{
-    signal_notification_message, AwaitingOnMessage, EndMessage, GetLazyStateCommandMessage,
-    SignalNotificationMessage, SuspensionMessage,
+    AwaitingOnMessage, EndMessage, GetLazyStateCommandMessage, SuspensionMessage,
 };
 use crate::Value;
 use test_log::test;
@@ -165,12 +164,7 @@ fn when_notify_completion_then_notify_await_point_then_notify_input_closed_then_
             );
 
             // Let's send Completion for h2
-            vm.notify_input(encoder.encode(&SignalNotificationMessage {
-                signal_id: Some(signal_notification_message::SignalId::Idx(18)),
-                result: Some(signal_notification_message::Result::Value(
-                    completion.clone().into(),
-                )),
-            }));
+            vm.notify_input(encoder.encode(&signal_notification(18, b"completion")));
 
             // This should not suspend
             vm.notify_input_closed();

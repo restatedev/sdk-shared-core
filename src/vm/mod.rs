@@ -286,6 +286,7 @@ impl super::VM for CoreVM {
         );
         let awaiting_on_policy = options.awaiting_on_policy;
         let journal_replay = options.journal_replay;
+        let signal_delivery = options.signal_delivery;
 
         Ok(Self {
             options,
@@ -299,6 +300,7 @@ impl super::VM for CoreVM {
                 negotiated_protocol_version: version,
                 awaiting_on_policy,
                 journal_replay,
+                signal_delivery,
             },
             last_transition: Ok(State::WaitingStart),
             tracked_invocation_ids: vec![],

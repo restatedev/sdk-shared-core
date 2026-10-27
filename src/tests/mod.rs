@@ -6,6 +6,7 @@ mod implicit_cancellation;
 mod input_output;
 mod promise;
 mod run;
+mod signals;
 mod sleep;
 mod state;
 mod suspensions;
@@ -18,7 +19,7 @@ use crate::service_protocol::messages::{
     StartMessage, SuspensionMessage,
 };
 use crate::service_protocol::{
-    messages, CompletionId, Decoder, Encoder, MessageHeader, RawMessage, Version,
+    messages, CompletionId, Decoder, Encoder, MessageHeader, RawMessage, Version, CANCEL_SIGNAL_ID,
 };
 use bytes::Bytes;
 use googletest::prelude::*;
@@ -294,16 +295,27 @@ pub fn input_entry_message(b: impl AsRef<[u8]>) -> InputCommandMessage {
 }
 
 pub fn cancel_signal_notification() -> SignalNotificationMessage {
+    empty_signal_notification(CANCEL_SIGNAL_ID)
+}
+
+pub fn empty_signal_notification(
+    id: impl Into<signal_notification_message::SignalId>,
+) -> SignalNotificationMessage {
     SignalNotificationMessage {
-        signal_id: Some(signal_notification_message::SignalId::Idx(1)),
+        signal_id: Some(id.into()),
         result: Some(signal_notification_message::Result::Void(Default::default())),
     }
 }
 
-pub fn empty_signal_notification(id: u32) -> SignalNotificationMessage {
+fn signal_notification(
+    id: impl Into<signal_notification_message::SignalId>,
+    value: &'static [u8],
+) -> SignalNotificationMessage {
     SignalNotificationMessage {
-        signal_id: Some(signal_notification_message::SignalId::Idx(id)),
-        result: Some(signal_notification_message::Result::Void(Default::default())),
+        signal_id: Some(id.into()),
+        result: Some(signal_notification_message::Result::Value(
+            Bytes::from_static(value).into(),
+        )),
     }
 }
 

@@ -733,12 +733,7 @@ fn awaiting_on_shrinks_across_calls() {
             );
 
             // h1 arrives
-            vm.notify_input(encoder.encode(&SignalNotificationMessage {
-                signal_id: Some(signal_notification_message::SignalId::Idx(17)),
-                result: Some(signal_notification_message::Result::Value(
-                    Bytes::from_static(b"v1").into(),
-                )),
-            }));
+            vm.notify_input(encoder.encode(&signal_notification(17, b"v1")));
 
             // Second call: h1 resolves, h2+h3 still pending → WaitingExternalProgress
             assert_eq!(
@@ -750,12 +745,7 @@ fn awaiting_on_shrinks_across_calls() {
             );
 
             // h2 arrives
-            vm.notify_input(encoder.encode(&SignalNotificationMessage {
-                signal_id: Some(signal_notification_message::SignalId::Idx(18)),
-                result: Some(signal_notification_message::Result::Value(
-                    Bytes::from_static(b"v2").into(),
-                )),
-            }));
+            vm.notify_input(encoder.encode(&signal_notification(18, b"v2")));
 
             // Third call: h1+h2 resolved, h3 still pending → WaitingExternalProgress
             assert_eq!(
