@@ -1,6 +1,8 @@
 pub mod error;
 pub mod fmt;
 mod headers;
+#[cfg(feature = "tunnel")]
+pub mod relay;
 #[cfg(feature = "request_identity")]
 mod request_identity;
 mod retries;
