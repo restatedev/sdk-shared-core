@@ -88,4 +88,6 @@ pub enum WhoamiError {
     ApiKeyTooLong(usize),
     #[error("instance_id field exceeds the maximum length ({0} bytes)")]
     InstanceIdTooLong(usize),
+    #[error("version field must be 1 to {0} bytes of [A-Za-z0-9._-]")]
+    InvalidVersion(usize),
 }

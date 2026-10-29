@@ -63,6 +63,12 @@ pub struct WhoamiBody {
     /// restarted receiver is a new instance and affinity re-pins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
+    /// The version of the code this receiver serves (the relay's tunnel
+    /// charset, at most [`MAX_VERSION_LEN`] bytes). A relay routes a versioned
+    /// receiver as the tunnel `<tunnel>.<version>` and, with auto-registration,
+    /// registers it in its schema registry as its own deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// Internal raw deserialisation type. We keep it private so that all
@@ -78,6 +84,8 @@ struct Raw {
     tunnel: Option<String>,
     #[serde(default)]
     instance_id: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 /// Parse a `/whoami` response body.
@@ -106,12 +114,34 @@ pub fn parse(body: &[u8]) -> Result<WhoamiBody, WhoamiError> {
         }
     }
 
+    // Empty = absent, like `instance_id`.
+    let version = raw.version.filter(|s| !s.is_empty());
+    if let Some(v) = &version {
+        if !valid_version(v) {
+            return Err(WhoamiError::InvalidVersion(MAX_VERSION_LEN));
+        }
+    }
+
     Ok(WhoamiBody {
         env,
         api_key,
         tunnel,
         instance_id,
+        version,
     })
+}
+
+/// Maximum accepted `/whoami` `version` length in bytes.
+pub const MAX_VERSION_LEN: usize = 64;
+
+/// A `/whoami` `version`: 1 to [`MAX_VERSION_LEN`] bytes of the [`Tunnel`]
+/// charset, so `<tunnel>.<version>` is a tunnel too.
+pub fn valid_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= MAX_VERSION_LEN
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 impl WhoamiBody {
@@ -142,6 +172,7 @@ mod tests {
             api_key: "k1".to_string(),
             tunnel: Tunnel::new("abc123").unwrap(),
             instance_id: None,
+            version: None,
         };
         let bytes = b.to_json();
         let back = parse(&bytes).unwrap();
@@ -155,6 +186,7 @@ mod tests {
             api_key: "k1".to_string(),
             tunnel: Tunnel::new("abc123").unwrap(),
             instance_id: Some("inst-7f3a".to_string()),
+            version: None,
         };
         let bytes = b.to_json();
         // The id is on the wire and parses back.
@@ -287,5 +319,17 @@ mod tests {
             parse(body),
             Err(WhoamiError::MissingField("api_key"))
         ));
+    }
+
+    #[test]
+    fn version_round_trips_and_is_validated() {
+        let body = br#"{"env":"e1","api_key":"k1","tunnel":"checkout","version":"1.2.3-rc_1"}"#;
+        let parsed = parse(body).unwrap();
+        assert_eq!(parsed.version.as_deref(), Some("1.2.3-rc_1"));
+        assert_eq!(parse(&parsed.to_json()).unwrap(), parsed);
+        let empty = br#"{"env":"e1","api_key":"k1","tunnel":"t","version":""}"#;
+        assert_eq!(parse(empty).unwrap().version, None);
+        let bad = br#"{"env":"e1","api_key":"k1","tunnel":"t","version":"v/1"}"#;
+        assert!(matches!(parse(bad), Err(WhoamiError::InvalidVersion(_))));
     }
 }

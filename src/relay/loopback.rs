@@ -69,6 +69,12 @@ pub struct Config {
     /// `None` = auto-generate an ephemeral, process-unique id.
     #[serde(default)]
     pub instance_id: Option<String>,
+    /// The version of the code being served (e.g. `1.2.3` or a build id),
+    /// sent in `/whoami`: the relay routes each version apart and, with
+    /// auto-registration, registers each as its own deployment. `None` (or
+    /// empty) = unversioned.
+    #[serde(default)]
+    pub version: Option<String>,
     /// Delay between a connection ending and the next redial, in milliseconds.
     /// `None` = 1000ms.
     #[serde(default)]
@@ -138,6 +144,7 @@ impl Config {
         let mut rc = ReceiverConfig::new(self.relay_addr, env, tunnel, self.api_key);
         rc.tls = tls;
         rc.connections = self.connections;
+        rc.version = self.version.filter(|v| !v.is_empty());
         if let Some(id) = self.instance_id {
             // An explicit id overrides the auto-generated one; an empty string
             // is treated as "opt out of instance affinity".
@@ -455,6 +462,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(empty_id.into_receiver_config().unwrap().instance_id, None);
+    }
+
+    #[test]
+    fn config_passes_the_version_through() {
+        let parse = |version: &str| -> Option<String> {
+            let config: Config = serde_json::from_str(&format!(
+                r#"{{"relay_addr":"h:8080","env":"e1","tunnel":"c1","api_key":"k","local_port":1{version}}}"#
+            ))
+            .unwrap();
+            config.into_receiver_config().unwrap().version
+        };
+        assert_eq!(parse(r#","version":"v1""#).as_deref(), Some("v1"));
+        assert_eq!(parse(r#","version":"""#), None);
+        assert_eq!(parse(""), None);
     }
 
     #[test]

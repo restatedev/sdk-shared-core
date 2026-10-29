@@ -131,6 +131,9 @@ pub struct ReceiverConfig {
     /// them into a single affinity bucket — matching the native Node
     /// `connect()` client.
     pub connections: Option<usize>,
+    /// The code version this receiver serves, sent in `/whoami` (see
+    /// [`crate::relay::protocol::WhoamiBody::version`]). `None` = unversioned.
+    pub version: Option<String>,
 }
 
 /// Generate an ephemeral, process-unique receiver-instance id. Uses the
@@ -169,6 +172,7 @@ impl ReceiverConfig {
             reconnect_backoff: Duration::from_secs(1),
             instance_id: Some(generate_instance_id()),
             connections: None,
+            version: None,
         }
     }
 }
@@ -215,6 +219,7 @@ impl Receiver {
                 api_key: config.api_key.clone(),
                 tunnel: config.tunnel.clone(),
                 instance_id: config.instance_id.clone(),
+                version: config.version.clone(),
             }
             .to_json(),
         );
