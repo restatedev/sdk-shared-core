@@ -8,7 +8,7 @@ workflows:
         - 'actions/checkout@v4.4.0'
         - 'extractions/setup-just@v2.0.0'
         - 'extractions/setup-just@v4.0.0'
-        - 'taiki-e/install-action@nextest'
+        - 'taiki-e/install-action@v2.87.31'
     '.github/workflows/cla.yml': []
     '.github/workflows/verify-lockfile.yml':
         - 'actions/checkout@v7.0.1'
@@ -52,8 +52,8 @@ dependencies:
         commit: 'sha1-c19371144df3bb44fab255c43d04cbc2ab54d1c4'
         owner_id: 580492
         repo_id: 298565987
-    'taiki-e/install-action@nextest':
-        ref: 'nextest'
-        commit: 'sha1-d042af60014eb018fcd01f57f4f62118b69e3ea6'
+    'taiki-e/install-action@v2.87.31':
+        ref: 'v2.87.31'
+        commit: 'sha1-1e29709c0ec63babbe8f266397a465f29a825f91'
         owner_id: 43724913
         repo_id: 442947557
