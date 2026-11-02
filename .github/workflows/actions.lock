@@ -10,6 +10,12 @@ workflows:
         - 'extractions/setup-just@v4.0.0'
         - 'taiki-e/install-action@v2.87.31'
     '.github/workflows/cla.yml': []
+    '.github/workflows/pullfrog.yml':
+        - 'actions-rust-lang/setup-rust-toolchain@v1.17.0'
+        - 'actions/checkout@v6.1.0'
+        - 'extractions/setup-just@v4.0.0'
+        - 'pullfrog/pullfrog@v0.1.110'
+        - 'taiki-e/install-action@v2.87.31'
     '.github/workflows/verify-lockfile.yml':
         - 'actions/checkout@v7.0.1'
 dependencies:
@@ -23,6 +29,11 @@ dependencies:
     'actions/checkout@v4.4.0':
         ref: 'v4.4.0'
         commit: 'sha1-11d5960a326750d5838078e36cf38b85af677262'
+        owner_id: 44036562
+        repo_id: 197814629
+    'actions/checkout@v6.1.0':
+        ref: 'v6.1.0'
+        commit: 'sha1-d23441a48e516b6c34aea4fa41551a30e30af803'
         owner_id: 44036562
         repo_id: 197814629
     'actions/checkout@v7.0.1':
@@ -47,6 +58,11 @@ dependencies:
         repo_id: 258510356
         uses:
             - 'extractions/setup-crate@0551596312d4008a6dfbc4d3c38fa20eaef46d2d'
+    'pullfrog/pullfrog@v0.1.110':
+        ref: 'v0.1.110'
+        commit: 'sha1-895164fc90f5c493e72693c919c6cf269af158eb'
+        owner_id: 223181266
+        repo_id: 1032749534
     'swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4':
         ref: 'v2.9.1'
         commit: 'sha1-c19371144df3bb44fab255c43d04cbc2ab54d1c4'
