@@ -10,11 +10,37 @@ repository = "https://github.com/restatedev/sdk-shared-core"
 default = []
 request_identity = ["dep:jsonwebtoken", "dep:bs58"]
 sha2_random_seed = ["dep:sha2"]
-# jsonwebtoken crypto backend pass-through. Enable exactly one alongside
-# request_identity (or call jsonwebtoken's CryptoProvider::install_default yourself).
-rust_crypto = ["jsonwebtoken?/rust_crypto"]
-aws_lc_rs = ["jsonwebtoken?/aws_lc_rs"]
+# jsonwebtoken (and, with `tunnel`, rustls) crypto backend pass-through. Enable exactly one
+# alongside request_identity (or call jsonwebtoken's CryptoProvider::install_default yourself).
+# When both are enabled, rust_crypto is selected deterministically.
+rust_crypto = ["jsonwebtoken?/rust_crypto", "rustls?/ring"]
+aws_lc_rs = ["jsonwebtoken?/aws_lc_rs", "rustls?/aws_lc_rs"]
 tracing_pretty = ["dep:tracing-subscriber"]
+http = ["dep:http"]
+# Restate Cloud keys (`rstcloudv1_…`) and the connect configuration resolution
+# (`RESTATE_CONNECT_*` / operator `RESTATE_INPROC_*` environment). No engine, bs58 only.
+cloud = ["dep:bs58"]
+# The in-process Restate Cloud tunnel engine. Requires a crypto backend (rust_crypto or aws_lc_rs).
+tunnel = [
+    "cloud",
+    "request_identity",
+    "http",
+    "dep:futures-util",
+    "dep:hickory-resolver",
+    "dep:hostname",
+    "dep:http-body",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:rand",
+    "dep:rustls",
+    "dep:rustls-native-certs",
+    "dep:socket2",
+    "dep:tokio",
+    "dep:tokio-rustls",
+    "dep:tokio-util",
+    "dep:uuid",
+]
 
 # Sessions: an object's SQLite-compatible database kept in its Restate state.
 # Not for wasm32: the page cache's disk tier (foyer) runs on tokio.
@@ -80,8 +106,25 @@ foyer-memory = { version = "=0.22.3", optional = true }
 foyer-storage = { version = "=0.22.3", optional = true }
 foyer-tokio = { version = "=0.22.3", optional = true }
 # foyer's disk tier runs on tokio; the cache starts a small runtime when the host has none.
-tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+# The tunnel engine runs on the host's runtime and needs the networking features.
+tokio = { version = "1.49", default-features = false, features = ["rt-multi-thread", "io-util", "macros", "net", "rt", "sync", "time"], optional = true }
 object_store = { version = "0.14", optional = true, default-features = false }
+
+# tunnel
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"], optional = true }
+hostname = { version = "0.4", optional = true }
+http-body = { version = "1.0", optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1.8", default-features = false, features = ["server", "http2"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
+rand = { version = "0.8", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+socket2 = { version = "0.6", optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"], optional = true }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"], optional = true }
+uuid = { version = "1.20", features = ["v4"], optional = true }
 
 [dev-dependencies]
 googletest = "0.11"
@@ -91,6 +134,11 @@ prost-build = "0.14"
 rstest = "0.26.1"
 ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
 rand = "0.8"
+hyper = { version = "1.8", default-features = false, features = ["client", "http2"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+tokio = { version = "1.49", features = ["full"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+tokio-stream = { version = "0.1", default-features = false }
 
 # Sessions benchmarks (`benches/README.md`): standalone entry points, on the
 # simulated stores.

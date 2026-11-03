@@ -1,3 +1,5 @@
+#[cfg(feature = "cloud")]
+pub mod cloud;
 pub mod error;
 pub mod fmt;
 mod headers;
@@ -11,6 +13,8 @@ pub mod sql;
 pub mod state;
 #[cfg(feature = "tracing_pretty")]
 pub mod tracing_pretty;
+#[cfg(feature = "tunnel")]
+pub mod tunnel;
 mod vm;
 
 use bytes::Bytes;
