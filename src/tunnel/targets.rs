@@ -10,7 +10,7 @@ use hickory_resolver::net::NetError;
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::TokioResolver;
 
-use crate::cloud::ServerAddress;
+use super::options::ServerAddress;
 
 pub(crate) const DNS_REFRESH_FLOOR: Duration = Duration::from_secs(1);
 pub(crate) const DNS_REFRESH_CAP: Duration = Duration::from_secs(30);
@@ -25,11 +25,11 @@ pub(crate) enum Discovery {
     Explicit(Vec<Target>),
 }
 
-impl From<crate::cloud::Discovery> for Discovery {
-    fn from(discovery: crate::cloud::Discovery) -> Self {
+impl From<super::options::Discovery> for Discovery {
+    fn from(discovery: super::options::Discovery) -> Self {
         match discovery {
-            crate::cloud::Discovery::Srv(name) => Self::Srv(name),
-            crate::cloud::Discovery::Explicit(servers) => {
+            super::options::Discovery::Srv(name) => Self::Srv(name),
+            super::options::Discovery::Explicit(servers) => {
                 Self::Explicit(servers.iter().map(Target::from_address).collect())
             }
         }

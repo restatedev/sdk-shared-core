@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::key::{
+use crate::cloud_keys::{
     header_safe, srv_name_for_region_domain, validate_environment_id, validate_region_domain,
     validate_signing_public_key, ConnectKey, KeyError, Redacted, CONNECT_KEY_ENV, CONNECT_KEY_URL,
 };
@@ -352,13 +352,12 @@ impl TunnelEngineOptions {
     pub fn registration_deep_link(&self) -> String {
         format!(
             "{}/to/overview?register-deployment=connect://{}",
-            super::key::CLOUD_UI_URL,
+            crate::cloud_keys::CLOUD_UI_URL,
             self.name
         )
     }
 
     /// The `Authorization` value for the next dial (re-reads a token file).
-    #[cfg_attr(not(feature = "tunnel"), allow(dead_code))]
     pub(crate) fn bearer(&self) -> Result<String, TokenError> {
         self.auth_token.bearer()
     }
@@ -500,7 +499,6 @@ pub(crate) enum AuthToken {
 impl AuthToken {
     /// Read the current token and build the `Authorization` value. The token itself has no
     /// `Display` or `Debug` representation in this module.
-    #[cfg_attr(not(feature = "tunnel"), allow(dead_code))]
     pub(crate) fn bearer(&self) -> Result<String, TokenError> {
         match self {
             Self::Literal(token) => Ok(format!("Bearer {token}")),
@@ -753,7 +751,7 @@ pub enum TokenError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud::key::tests::{connect_key, encode_key, SIGNING_KEY};
+    use crate::cloud_keys::tests::{connect_key, encode_key, SIGNING_KEY};
     use std::collections::HashMap;
     use std::fs;
 

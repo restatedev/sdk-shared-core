@@ -15,6 +15,7 @@
 
 mod connection;
 mod draining;
+mod options;
 mod supervisor;
 mod targets;
 
@@ -31,7 +32,12 @@ use hyper::body::Incoming;
 use hyper::service::Service;
 use tokio::sync::{broadcast, watch};
 
-pub use crate::cloud::{ConfigError, ConnectOptions, TunnelEngineOptions};
+pub use options::{
+    parse_server_address, ConfigError, ConfigSource, ConnectOptions, Discovery, ReconnectPolicy,
+    ServerAddress, Servers, Token, TokenError, Tuning, TunnelEngineOptions, AUTH_TOKEN_ENV,
+    CONNECT_NAME_ENV, INPROC_AUTH_TOKEN_FILE_ENV, INPROC_CLOUD_REGION_ENV,
+    INPROC_ENVIRONMENT_ID_ENV, INPROC_SIGNING_PUBLIC_KEY_ENV, INPROC_TUNNEL_NAME_ENV,
+};
 use supervisor::Engine;
 
 /// Boxed error type of a [`TunnelBody`].

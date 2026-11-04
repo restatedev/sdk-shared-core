@@ -1,5 +1,5 @@
-#[cfg(feature = "cloud")]
-pub mod cloud;
+#[cfg(feature = "cloud_keys")]
+pub mod cloud_keys;
 pub mod error;
 pub mod fmt;
 mod headers;

@@ -23,9 +23,9 @@ use super::connection::{
     run_attempt, AttemptContext, AttemptEvent, AttemptOutcome, BoxIo, ConnectionSettings,
 };
 use super::draining::DrainState;
+use super::options::{ReconnectPolicy, TunnelEngineOptions};
 use super::targets::{Discovery, Target, TargetResolver};
 use super::{Error, Event, StartError, Status, TunnelInfo, TunnelService};
-use crate::cloud::{ReconnectPolicy, TunnelEngineOptions};
 use crate::IdentityVerifier;
 
 const TCP_KEEPALIVE: Duration = Duration::from_secs(75);
@@ -957,7 +957,7 @@ mod tests {
         );
         assert_eq!(sanitize_worker_id_segment("///"), "worker");
         assert_eq!(sanitize_worker_id_segment("a---b"), "a-b");
-        assert!(crate::cloud::parse_server_address(&format!("{}:1", default_worker_id())).is_ok());
+        assert!(super::super::parse_server_address(&format!("{}:1", default_worker_id())).is_ok());
     }
 
     #[tokio::test]

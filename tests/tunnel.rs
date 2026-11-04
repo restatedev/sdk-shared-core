@@ -19,10 +19,11 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use restate_sdk_shared_core::cloud::{
-    ConnectOptions, ReconnectPolicy, Servers, Tuning, TunnelEngineOptions, CLOUD_KEY_PREFIX,
+use restate_sdk_shared_core::cloud_keys::CLOUD_KEY_PREFIX;
+use restate_sdk_shared_core::tunnel::{
+    ConnectOptions, Error, Event, ReconnectPolicy, Servers, Status, Tuning, TunnelBody,
+    TunnelEngine, TunnelEngineOptions, TunnelInfo,
 };
-use restate_sdk_shared_core::tunnel::{Error, Event, Status, TunnelBody, TunnelEngine, TunnelInfo};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;

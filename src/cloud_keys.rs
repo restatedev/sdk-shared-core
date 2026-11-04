@@ -1,4 +1,4 @@
-//! Restate Cloud keys.
+//! Restate Cloud keys (feature `cloud_keys`).
 //!
 //! To users a key is opaque: docs and error messages only ever say "copy it
 //! again from the Cloud UI". This module is the one place in the SDKs that

@@ -28,8 +28,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::draining::{DrainState, InFlightPermit};
+use super::options::Tuning;
 use super::{BoxError, TunnelBody, TunnelInfo, TunnelService};
-use crate::cloud::Tuning;
 use crate::IdentityVerifier;
 
 const START_TUNNEL_PATH: &str = "/_/start-tunnel";
