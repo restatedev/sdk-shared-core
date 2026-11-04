@@ -24,27 +24,35 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::cloud_keys::{
-    header_safe, srv_name_for_region_domain, validate_environment_id, validate_region_domain,
-    validate_signing_public_key, ConnectKey, KeyError, Redacted, CONNECT_KEY_ENV, CONNECT_KEY_URL,
+    header_safe, validate_environment_id, validate_region_domain, validate_signing_public_key,
+    ConnectKey, KeyError, Redacted, CONNECT_KEY_ENV, CONNECT_KEY_URL,
 };
 
 /// The deployment name.
-pub const CONNECT_NAME_ENV: &str = "RESTATE_CONNECT_NAME";
+pub(crate) const CONNECT_NAME_ENV: &str = "RESTATE_CONNECT_NAME";
 /// The deployment name, as injected by the restate-operator.
-pub const INPROC_TUNNEL_NAME_ENV: &str = "RESTATE_INPROC_TUNNEL_NAME";
+pub(crate) const INPROC_TUNNEL_NAME_ENV: &str = "RESTATE_INPROC_TUNNEL_NAME";
 /// The environment id, as injected by the restate-operator.
-pub const INPROC_ENVIRONMENT_ID_ENV: &str = "RESTATE_INPROC_ENVIRONMENT_ID";
+pub(crate) const INPROC_ENVIRONMENT_ID_ENV: &str = "RESTATE_INPROC_ENVIRONMENT_ID";
 /// The region (`eu`, `us`, `<slug>.byoc`), as injected by the restate-operator.
-pub const INPROC_CLOUD_REGION_ENV: &str = "RESTATE_INPROC_CLOUD_REGION";
+pub(crate) const INPROC_CLOUD_REGION_ENV: &str = "RESTATE_INPROC_CLOUD_REGION";
 /// The request-identity public key, as injected by the restate-operator.
-pub const INPROC_SIGNING_PUBLIC_KEY_ENV: &str = "RESTATE_INPROC_SIGNING_PUBLIC_KEY";
+pub(crate) const INPROC_SIGNING_PUBLIC_KEY_ENV: &str = "RESTATE_INPROC_SIGNING_PUBLIC_KEY";
 /// A file holding the bearer token, re-read on every dial (a mounted Secret).
-pub const INPROC_AUTH_TOKEN_FILE_ENV: &str = "RESTATE_INPROC_AUTH_TOKEN_FILE";
+pub(crate) const INPROC_AUTH_TOKEN_FILE_ENV: &str = "RESTATE_INPROC_AUTH_TOKEN_FILE";
 /// The bearer token.
-pub const AUTH_TOKEN_ENV: &str = "RESTATE_AUTH_TOKEN";
+pub(crate) const AUTH_TOKEN_ENV: &str = "RESTATE_AUTH_TOKEN";
 
 /// The parent domain of every Restate Cloud region (`eu` → `eu.restate.cloud`).
 const CLOUD_DOMAIN: &str = "restate.cloud";
+
+/// The Cloud UI, for the registration deep link.
+const CLOUD_UI_URL: &str = "https://cloud.restate.dev";
+
+/// The DNS SRV name of the tunnel servers of a region domain.
+fn srv_name_for_region_domain(region: &str) -> String {
+    format!("tunnel.{region}")
+}
 
 const MAX_AUTH_TOKEN_FILE_BYTES: u64 = 64 * 1024;
 
@@ -191,12 +199,12 @@ pub enum ConfigSource {
 
 /// A parsed explicit tunnel server.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ServerAddress {
+pub(crate) struct ServerAddress {
     /// Host name or IP address (IPv6 without brackets).
-    pub host: String,
-    pub port: u16,
+    pub(crate) host: String,
+    pub(crate) port: u16,
     /// `http://` entries: no TLS. Tests and BYOC only.
-    pub plaintext: bool,
+    pub(crate) plaintext: bool,
 }
 
 impl fmt::Display for ServerAddress {
@@ -212,7 +220,7 @@ impl fmt::Display for ServerAddress {
 
 /// How the engine discovers the tunnel server set.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Discovery {
+pub(crate) enum Discovery {
     /// A DNS SRV query, refreshed following its TTL.
     Srv(String),
     /// A fixed set.
@@ -231,12 +239,12 @@ pub struct TunnelEngineOptions {
     /// Where the coordinates came from.
     pub source: ConfigSource,
     /// The explicit worker id, if any. `None`: the engine generates one.
-    pub worker_id: Option<String>,
+    pub(crate) worker_id: Option<String>,
     /// How the tunnel servers are found.
-    pub discovery: Discovery,
+    pub(crate) discovery: Discovery,
     /// The request-identity public key forwarded requests are verified against.
-    pub signing_public_key: String,
-    pub tuning: Tuning,
+    pub(crate) signing_public_key: String,
+    pub(crate) tuning: Tuning,
     pub(crate) auth_token: AuthToken,
 }
 
@@ -352,8 +360,7 @@ impl TunnelEngineOptions {
     pub fn registration_deep_link(&self) -> String {
         format!(
             "{}/to/overview?register-deployment=connect://{}",
-            crate::cloud_keys::CLOUD_UI_URL,
-            self.name
+            CLOUD_UI_URL, self.name
         )
     }
 
@@ -598,7 +605,7 @@ fn validate_srv_name(name: &str) -> Result<(), ConfigError> {
 }
 
 /// Parse an explicit `host:port`, `https://host[:port]`, or `http://host[:port]` tunnel server.
-pub fn parse_server_address(address: &str) -> Result<ServerAddress, ConfigError> {
+pub(crate) fn parse_server_address(address: &str) -> Result<ServerAddress, ConfigError> {
     let invalid = |reason: &str| ConfigError::Servers(format!("{reason}: {address:?}"));
 
     let (plaintext, authority, default_port) = match address.find("://") {

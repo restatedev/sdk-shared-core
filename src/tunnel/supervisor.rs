@@ -957,7 +957,10 @@ mod tests {
         );
         assert_eq!(sanitize_worker_id_segment("///"), "worker");
         assert_eq!(sanitize_worker_id_segment("a---b"), "a-b");
-        assert!(super::super::parse_server_address(&format!("{}:1", default_worker_id())).is_ok());
+        assert!(
+            super::super::options::parse_server_address(&format!("{}:1", default_worker_id()))
+                .is_ok()
+        );
     }
 
     #[tokio::test]

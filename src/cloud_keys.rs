@@ -24,13 +24,10 @@
 use std::fmt;
 
 /// The prefix every Restate Cloud key starts with.
-pub const CLOUD_KEY_PREFIX: &str = "rstcloudv1_";
+pub(crate) const CLOUD_KEY_PREFIX: &str = "rstcloudv1_";
 
 /// The shape shown in errors.
-pub const CLOUD_KEY_SHAPE: &str = "rstcloudv1_<base58>";
-
-/// The Cloud UI, for the deep links below.
-pub const CLOUD_UI_URL: &str = "https://cloud.restate.dev";
+pub(crate) const CLOUD_KEY_SHAPE: &str = "rstcloudv1_<base58>";
 
 /// Where to get a connect key (Development → Configure SDK), linked in every error.
 pub const CONNECT_KEY_URL: &str =
@@ -41,10 +38,10 @@ pub const INGRESS_KEY_URL: &str =
     "https://cloud.restate.dev/to/developers/integration#configure-client";
 
 /// The environment variable holding a connect key.
-pub const CONNECT_KEY_ENV: &str = "RESTATE_CONNECT_KEY";
+pub(crate) const CONNECT_KEY_ENV: &str = "RESTATE_CONNECT_KEY";
 
 /// The environment variable holding an ingress key.
-pub const INGRESS_KEY_ENV: &str = "RESTATE_INGRESS_KEY";
+pub(crate) const INGRESS_KEY_ENV: &str = "RESTATE_INGRESS_KEY";
 
 const IDENTITY_V1_PREFIX: &str = "publickeyv1_";
 
@@ -77,6 +74,24 @@ pub enum KeyError {
     /// An ingress key was expected but the key carries no API key.
     #[error("carries no API key (this is not an ingress key)")]
     NotAnIngressKey,
+}
+
+/// A key read from an environment variable that cannot be used. The text names the
+/// variable and where to get a fresh key.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{var} {error} — copy it again from {help}")]
+pub struct EnvKeyError {
+    var: &'static str,
+    help: &'static str,
+    #[source]
+    error: KeyError,
+}
+
+impl EnvKeyError {
+    /// Why the key is unusable.
+    pub fn error(&self) -> &KeyError {
+        &self.error
+    }
 }
 
 /// The coordinates of a Restate Cloud environment for a deployment that
@@ -131,36 +146,21 @@ impl ConnectKey {
     }
 
     /// Read and parse `RESTATE_CONNECT_KEY`. `Ok(None)` when it is unset or empty.
-    pub fn from_env() -> Result<Option<Self>, KeyError> {
+    pub fn from_env() -> Result<Option<Self>, EnvKeyError> {
         Self::from_env_with(|name| std::env::var(name).ok())
     }
 
     pub(crate) fn from_env_with(
         env: impl Fn(&str) -> Option<String>,
-    ) -> Result<Option<Self>, KeyError> {
+    ) -> Result<Option<Self>, EnvKeyError> {
         match env(CONNECT_KEY_ENV).filter(|value| !value.trim().is_empty()) {
-            Some(value) => Self::parse(&value).map(Some),
+            Some(value) => Self::parse(&value).map(Some).map_err(|error| EnvKeyError {
+                var: CONNECT_KEY_ENV,
+                help: CONNECT_KEY_URL,
+                error,
+            }),
             None => Ok(None),
         }
-    }
-
-    /// The DNS SRV name of the tunnel servers of this environment's region.
-    pub fn tunnel_srv(&self) -> String {
-        srv_name_for_region_domain(&self.region)
-    }
-
-    /// Encode the key back into its `rstcloudv1_<base58>` form.
-    pub fn encode(&self) -> String {
-        let mut query = format!("envid={}", self.environment_id);
-        if let Some(api_key) = &self.api_key {
-            query.push_str("&apikey=");
-            query.push_str(api_key);
-        }
-        query.push_str("&region=");
-        query.push_str(&self.region);
-        query.push_str("&signingkey=");
-        query.push_str(&self.signing_public_key);
-        encode_cloud_key(&query)
     }
 }
 
@@ -205,15 +205,19 @@ impl IngressKey {
     }
 
     /// Read and parse `RESTATE_INGRESS_KEY`. `Ok(None)` when it is unset or empty.
-    pub fn from_env() -> Result<Option<Self>, KeyError> {
+    pub fn from_env() -> Result<Option<Self>, EnvKeyError> {
         Self::from_env_with(|name| std::env::var(name).ok())
     }
 
     pub(crate) fn from_env_with(
         env: impl Fn(&str) -> Option<String>,
-    ) -> Result<Option<Self>, KeyError> {
+    ) -> Result<Option<Self>, EnvKeyError> {
         match env(INGRESS_KEY_ENV).filter(|value| !value.trim().is_empty()) {
-            Some(value) => Self::parse(&value).map(Some),
+            Some(value) => Self::parse(&value).map(Some).map_err(|error| EnvKeyError {
+                var: INGRESS_KEY_ENV,
+                help: INGRESS_KEY_URL,
+                error,
+            }),
             None => Ok(None),
         }
     }
@@ -231,26 +235,6 @@ impl IngressKey {
     pub fn bearer(&self) -> String {
         format!("Bearer {}", self.api_key)
     }
-
-    /// Encode the key back into its `rstcloudv1_<base58>` form.
-    pub fn encode(&self) -> String {
-        encode_cloud_key(&format!(
-            "envid={}&apikey={}&region={}",
-            self.environment_id, self.api_key, self.region
-        ))
-    }
-}
-
-fn encode_cloud_key(query: &str) -> String {
-    format!(
-        "{CLOUD_KEY_PREFIX}{}",
-        bs58::encode(query.as_bytes()).into_string()
-    )
-}
-
-/// The DNS SRV name of the tunnel servers of a region domain.
-pub(crate) fn srv_name_for_region_domain(region: &str) -> String {
-    format!("tunnel.{region}")
 }
 
 struct Params(Vec<(String, String)>);
@@ -414,7 +398,6 @@ pub(crate) mod tests {
         assert_eq!(key.api_key.as_deref(), Some("key_01abc.secret"));
         assert_eq!(key.region, "eu.restate.cloud");
         assert_eq!(key.signing_public_key, SIGNING_KEY);
-        assert_eq!(key.tunnel_srv(), "tunnel.eu.restate.cloud");
         assert!(!format!("{key:?}").contains("secret"));
     }
 
@@ -527,7 +510,12 @@ pub(crate) mod tests {
             ConnectKey::from_env_with(|_| Some(" ".into())).unwrap(),
             None
         );
-        assert!(ConnectKey::from_env_with(|_| Some("nope".into())).is_err());
+        let error = ConnectKey::from_env_with(|_| Some("nope".into())).unwrap_err();
+        assert_eq!(error.error(), &KeyError::NotACloudKey);
+        assert!(error
+            .to_string()
+            .starts_with("RESTATE_CONNECT_KEY is not a Restate Cloud key"));
+        assert!(error.to_string().ends_with(CONNECT_KEY_URL));
         let key = connect_key();
         assert!(
             ConnectKey::from_env_with(|name| (name == CONNECT_KEY_ENV).then(|| key.clone()))

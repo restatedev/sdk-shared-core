@@ -33,10 +33,8 @@ use hyper::service::Service;
 use tokio::sync::{broadcast, watch};
 
 pub use options::{
-    parse_server_address, ConfigError, ConfigSource, ConnectOptions, Discovery, ReconnectPolicy,
-    ServerAddress, Servers, Token, TokenError, Tuning, TunnelEngineOptions, AUTH_TOKEN_ENV,
-    CONNECT_NAME_ENV, INPROC_AUTH_TOKEN_FILE_ENV, INPROC_CLOUD_REGION_ENV,
-    INPROC_ENVIRONMENT_ID_ENV, INPROC_SIGNING_PUBLIC_KEY_ENV, INPROC_TUNNEL_NAME_ENV,
+    ConfigError, ConfigSource, ConnectOptions, ReconnectPolicy, Servers, Token, TokenError, Tuning,
+    TunnelEngineOptions,
 };
 use supervisor::Engine;
 

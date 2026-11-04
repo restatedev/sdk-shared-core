@@ -19,7 +19,6 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use restate_sdk_shared_core::cloud_keys::CLOUD_KEY_PREFIX;
 use restate_sdk_shared_core::tunnel::{
     ConnectOptions, Error, Event, ReconnectPolicy, Servers, Status, Tuning, TunnelBody,
     TunnelEngine, TunnelEngineOptions, TunnelInfo,
@@ -122,7 +121,7 @@ fn connect_key(api_key: &str) -> String {
         public_key_of(&signing_key())
     );
     format!(
-        "{CLOUD_KEY_PREFIX}{}",
+        "rstcloudv1_{}",
         bs58::encode(query.as_bytes()).into_string()
     )
 }
