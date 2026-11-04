@@ -55,7 +55,7 @@ clippy: (_target-installed target)
     cargo clippy {{ _target-option }} {{ _features }} --all-targets --workspace -- -D warnings
 
 # Runs all lints (fmt, clippy, deny)
-lint: check-fmt clippy
+lint: check-fmt clippy check-deny
 
 build *flags: (_target-installed target)
     cargo build {{ _target-option }} {{ _features }} {{ flags }}
@@ -71,6 +71,9 @@ verify: lint test
 
 udeps *flags:
     RUSTC_BOOTSTRAP=1 cargo udeps --all-features --all-targets {{ flags }}
+
+check-deny:
+    cargo deny --all-features check
 
 _target-installed target:
     #!/usr/bin/env bash
