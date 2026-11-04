@@ -9,66 +9,55 @@ on:
       - main
 
 jobs:
-  build-and-test:
-    name: Build and test with features '${{ matrix.features }}' (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-22.04 ]
-        features: [ "all", "" ]
-    env:
-      RUST_BACKTRACE: full
-    steps:
-      - uses: actions/checkout@v4.4.0
-
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
-        with:
-          components: clippy
-          rustflags: ""
-
-      - name: Install protoc
-        uses: $/.github/actions/install-protoc
-
-      - name: Install nextest
-        uses: taiki-e/install-action@v2.87.31
-        with:
-          tool: nextest
-
-      - name: Setup just
-        uses: extractions/setup-just@v4.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run tests
-        run: just --set features "${{ matrix.features }}" verify
-
-  build-smoke-test:
-    name: Build only (${{ matrix.target }}, features '${{ matrix.features }}')
+  ci:
+    name: ${{ matrix.cmd }} (${{ matrix.target || matrix.os }}, features '${{ matrix.features }}')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          # --- Full verification on the host target ---
+          # All features
+          - cmd: verify
+            os: ubuntu-22.04
+            features: all
+          # All without object store
+          - cmd: verify
+            os: ubuntu-22.04
+            features: request_identity,sha2_random_seed,rust_crypto,sql,tunnel
+          # Only request identity (used by some sdks)
+          - cmd: verify
+            os: ubuntu-22.04
+            features: request_identity,rust_crypto
+          # No features (default)
+          - cmd: verify
+            os: ubuntu-22.04
+            features: ""
+
+          # --- Build only, cross targets ---
+          - cmd: build
+            os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
-          - os: ubuntu-24.04-arm
+          - cmd: build
+            os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
-          - os: ubuntu-24.04-arm
+          - cmd: build
+            os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
-          - os: macos-14
+          - cmd: build
+            os: macos-14
             target: aarch64-apple-darwin
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
-          - os: macos-14
+          - cmd: build
+            os: macos-14
             target: x86_64-apple-darwin
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
-          - os: ubuntu-22.04
+          - cmd: build
+            os: ubuntu-22.04
             target: wasm32-unknown-unknown
             features: ""
     env:
@@ -79,10 +68,12 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
+          components: clippy
           target: ${{ matrix.target }}
           rustflags: ""
+
       - name: Install musl
-        if: ${{ endsWith( matrix.target, '-musl' ) }}
+        if: ${{ endsWith(matrix.target, '-musl') }}
         # cc-rs looks for `<arch>-linux-musl-gcc`, which musl-tools does not
         # provide; name its `musl-gcc` for the target.
         run: |
@@ -94,10 +85,16 @@ jobs:
       - name: Install protoc
         uses: $/.github/actions/install-protoc
 
+      - name: Install nextest
+        if: ${{ matrix.cmd == 'verify' }}
+        uses: taiki-e/install-action@v2.87.31
+        with:
+          tool: nextest
+
       - name: Setup just
-        uses: extractions/setup-just@v2.0.0
+        uses: extractions/setup-just@v4.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build
-        run: just --set features "${{ matrix.features }}" build --target ${{ matrix.target }}
+      - name: Run just ${{ matrix.cmd }}
+        run: just --set features "${{ matrix.features }}" ${{ matrix.target && format('--set target {0}', matrix.target) || '' }} ${{ matrix.cmd }}
