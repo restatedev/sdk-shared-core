@@ -4,7 +4,7 @@ use crate::service_protocol::{MessageType, NotificationId, CANCEL_SIGNAL_ID};
 use crate::vm::async_results_state::ResolveFutureResult;
 use crate::vm::context::Context;
 use crate::vm::errors::{
-    UncompletedDoProgressDuringReplay, INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS,
+    input_closed_while_waiting_ephemeral_notifications, UncompletedDoProgressDuringReplay,
 };
 use crate::vm::transitions::{HitSuspensionPoint, Transition, TransitionAndReturn};
 use crate::vm::{awakeable_id_str, State};
@@ -134,7 +134,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                     // Suspending is not an option, as the response is not recorded:
                     // the user code waiting for it (e.g. a run closure) would just hang forever.
                     if ephemeral_commands.has_in_flight() {
-                        return Err(INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS);
+                        return Err(input_closed_while_waiting_ephemeral_notifications());
                     }
 
                     // Some run still executing; it's not time to suspend yet!

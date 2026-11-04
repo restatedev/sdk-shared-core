@@ -34,13 +34,13 @@ fn got_closed_stream_before_end_of_replay() {
     // Try to check if input is ready, this should fail
     assert_that!(
         vm.is_ready_to_execute(),
-        err(eq_error(vm::errors::INPUT_CLOSED_WHILE_WAITING_ENTRIES))
+        err(eq_error(vm::errors::input_closed_while_waiting_entries()))
     );
 
     let mut output = OutputIterator::collect_vm(&mut vm);
     assert_that!(
         output.next_decoded::<ErrorMessage>().unwrap(),
-        error_message_as_error(vm::errors::INPUT_CLOSED_WHILE_WAITING_ENTRIES)
+        error_message_as_error(vm::errors::input_closed_while_waiting_entries())
     );
     assert_eq!(output.next(), None);
 }

@@ -3,8 +3,8 @@ use crate::service_protocol::{messages, MessageType, RawMessage};
 use crate::vm::async_results_state::AsyncResultsState;
 use crate::vm::context::{Context, EagerState, StartInfo};
 use crate::vm::errors::{
-    BadEagerStateKeyError, INPUT_CLOSED_WHILE_WAITING_ENTRIES, KNOWN_ENTRIES_IS_ZERO,
-    UNEXPECTED_INPUT_MESSAGE,
+    input_closed_while_waiting_entries, known_entries_is_zero, unexpected_input_message,
+    BadEagerStateKeyError,
 };
 use crate::vm::transitions::{NewGetStateEphemeralNotificationMessage, Transition};
 use crate::vm::{errors, State};
@@ -28,7 +28,7 @@ impl Transition<Context, NewMessage> for State {
             MessageType::GetStateEphemeralNotification => {
                 self.transition(context, NewGetStateEphemeralNotificationMessage(msg))
             }
-            _ => Err(UNEXPECTED_INPUT_MESSAGE)?,
+            _ => Err(unexpected_input_message())?,
         }
     }
 }
@@ -74,7 +74,7 @@ impl Transition<Context, NewStartMessage> for State {
         debug!("Start invocation");
 
         if msg.known_entries == 0 {
-            return Err(KNOWN_ENTRIES_IS_ZERO);
+            return Err(known_entries_is_zero());
         }
 
         Ok(State::WaitingReplayEntries {
@@ -144,7 +144,7 @@ impl Transition<Context, NewCommandMessage> for State {
             State::WaitingReplayEntries { commands, .. } => {
                 commands.push_back(msg);
             }
-            _ => return Err(errors::UNEXPECTED_ENTRY_MESSAGE),
+            _ => return Err(errors::unexpected_entry_message()),
         };
 
         self.transition(context, PostReceiveEntry)
@@ -190,7 +190,7 @@ impl Transition<Context, NotifyInputClosed> for State {
     fn transition(self, _: &mut Context, _: NotifyInputClosed) -> Result<Self, Error> {
         match self {
             State::WaitingStart | State::WaitingReplayEntries { .. } => {
-                Err(INPUT_CLOSED_WHILE_WAITING_ENTRIES)
+                Err(input_closed_while_waiting_entries())
             }
             _ => Ok(self),
         }

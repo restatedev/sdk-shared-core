@@ -69,8 +69,17 @@ impl fmt::Display for NotificationMetadata {
     }
 }
 
+/// Error returned by the VM.
+///
+/// This is the `Err` variant of pretty much every VM operation, so the payload is boxed
+/// to keep `Result<T, Error>` small and cheap to move around.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Error {
+pub struct Error(Box<ErrorInner>);
+
+/// Payload of [`Error`]. Public only because it's the `Deref` target of [`Error`], all the fields are crate-private.
+#[doc(hidden)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ErrorInner {
     pub(crate) code: u16,
     pub(crate) message: Cow<'static, str>,
     pub(crate) stacktrace: String,
@@ -78,6 +87,20 @@ pub struct Error {
     pub(crate) next_retry_delay: Option<Duration>,
     pub(crate) behavior: ErrorBehavior,
     pub(crate) metadata: Vec<(String, String)>,
+}
+
+impl std::ops::Deref for Error {
+    type Target = ErrorInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Error {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl fmt::Display for Error {
@@ -98,7 +121,7 @@ impl std::error::Error for Error {}
 
 impl Error {
     pub fn new(code: impl Into<u16>, message: impl Into<Cow<'static, str>>) -> Self {
-        Error {
+        Error(Box::new(ErrorInner {
             code: code.into(),
             message: message.into(),
             stacktrace: Default::default(),
@@ -106,7 +129,7 @@ impl Error {
             next_retry_delay: None,
             behavior: ErrorBehavior::Retry,
             metadata: vec![],
-        }
+        }))
     }
 
     pub fn internal(message: impl Into<Cow<'static, str>>) -> Self {
@@ -167,7 +190,7 @@ impl Error {
     }
 
     pub fn is_suspended_error(&self) -> bool {
-        self == &crate::vm::errors::SUSPENDED
+        self.code == crate::vm::errors::codes::SUSPENDED.code()
     }
 
     pub(crate) fn with_related_command_metadata(
