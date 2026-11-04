@@ -77,8 +77,7 @@ pub struct Error {
     pub(crate) related_command: Option<CommandMetadata>,
     pub(crate) next_retry_delay: Option<Duration>,
     pub(crate) behavior: ErrorBehavior,
-    // Boxed to keep `Error` small, as it's used as the `Err` variant pretty much everywhere.
-    pub(crate) metadata: Option<Box<[(String, String)]>>,
+    pub(crate) metadata: Vec<(String, String)>,
 }
 
 impl fmt::Display for Error {
@@ -106,7 +105,7 @@ impl Error {
             related_command: None,
             next_retry_delay: None,
             behavior: ErrorBehavior::Retry,
-            metadata: None,
+            metadata: vec![],
         }
     }
 
@@ -140,20 +139,15 @@ impl Error {
         mut self,
         metadata: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> Self {
-        let metadata: Box<[(String, String)]> = metadata
+        self.metadata = metadata
             .into_iter()
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
-        self.metadata = if metadata.is_empty() {
-            None
-        } else {
-            Some(metadata)
-        };
         self
     }
 
     pub fn metadata(&self) -> &[(String, String)] {
-        self.metadata.as_deref().unwrap_or(&[])
+        &self.metadata
     }
 
     pub fn with_next_retry_delay_override(mut self, delay: Duration) -> Self {

@@ -901,7 +901,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
                                     TerminalFailure {
                                         code: error.code,
                                         message: error.message.to_string(),
-                                        metadata: error.metadata.map(Vec::from).unwrap_or_default(),
+                                        metadata: error.metadata,
                                     }
                                     .into(),
                                 )

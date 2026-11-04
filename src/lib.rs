@@ -1,3 +1,6 @@
+// `Error` is the Err variant of pretty much every VM call and sits right at the lint threshold.
+#![allow(clippy::result_large_err)]
+
 pub mod error;
 pub mod fmt;
 mod headers;
