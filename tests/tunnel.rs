@@ -1199,6 +1199,97 @@ async fn giving_up_on_one_server_keeps_the_others_serving() {
     close.await.unwrap();
 }
 
+#[tokio::test]
+async fn a_given_up_explicit_server_is_redialed_after_the_longest_backoff() {
+    let dead = dead_address().await;
+    let mut cloud = FakeCloud::start().await;
+    let options = options_for(
+        vec![
+            format!("http://{}", cloud.address),
+            format!("http://{dead}"),
+        ],
+        Tuning {
+            reconnect: ReconnectPolicy {
+                initial_interval: Duration::from_millis(300),
+                max_attempts: Some(2),
+                max_interval: Duration::from_millis(500),
+                ..ReconnectPolicy::default()
+            },
+            ..Tuning::default()
+        },
+    );
+    let engine = TunnelEngine::start(TestService::plain().into_service(), options).unwrap();
+    let mut events = engine.events();
+    let (engine, _) = established_for(&mut cloud, engine).await;
+
+    let dead_label = dead.to_string();
+    let redialed = tokio::time::timeout(TEST_TIMEOUT, async {
+        let mut gave_up = false;
+        loop {
+            match events.recv().await.unwrap() {
+                Event::GaveUp { target, .. } if target == dead_label => gave_up = true,
+                Event::Connecting { target } if gave_up && target == dead_label => break,
+                Event::Fatal { reason } => panic!("fatal: {reason}"),
+                _ => {}
+            }
+        }
+    })
+    .await;
+    assert!(redialed.is_ok(), "the given-up server was not redialed");
+    assert!(matches!(*engine.status().borrow(), Status::Ready(_)));
+
+    let close = engine.shutdown(Duration::ZERO);
+    cloud.wait_for_disconnect().await;
+    close.await.unwrap();
+}
+
+#[tokio::test]
+async fn unresolvable_discovery_counts_towards_the_reconnect_policy() {
+    let options = TunnelEngineOptions::resolve_with_env(
+        ConnectOptions {
+            name: Some(TUNNEL_NAME.into()),
+            key: Some(connect_key("test-token")),
+            servers: Some(Servers::Srv("tunnel.does-not-exist.invalid".into())),
+            worker_id: None,
+            tuning: Tuning {
+                reconnect: ReconnectPolicy {
+                    max_attempts: Some(2),
+                    ..ReconnectPolicy::default()
+                },
+                ..Tuning::default()
+            },
+            token: None,
+        },
+        |_| Ok(None),
+    )
+    .unwrap();
+    let engine = TunnelEngine::start(TestService::plain().into_service(), options).unwrap();
+    let mut events = engine.events();
+
+    let error = tokio::time::timeout(Duration::from_secs(30), engine.ready())
+        .await
+        .expect("an unresolvable SRV name did not stop the engine under a bounded policy")
+        .expect_err("nothing can be resolved");
+    match &error {
+        Error::Fatal { reason } => {
+            assert!(reason.contains("tunnel.does-not-exist.invalid"), "{reason}");
+            assert!(reason.contains("max_attempts"), "{reason}");
+        }
+        other => panic!("unexpected error {other:?}"),
+    }
+    let mut failures = 0;
+    while let Ok(event) = events.try_recv() {
+        if let Event::AttemptFailed { target, .. } = event {
+            assert_eq!(target, "tunnel.does-not-exist.invalid");
+            failures += 1;
+        }
+    }
+    assert_eq!(
+        failures, 1,
+        "the second resolution gives up instead of scheduling a retry"
+    );
+}
+
 // ───────────────────────────── server drain handover ─────────────────────────────
 
 /// One Cloud-side HTTP/2 session. The driver task is always aborted if a test

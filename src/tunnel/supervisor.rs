@@ -15,7 +15,7 @@ use socket2::{SockRef, TcpKeepalive};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, watch};
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::{sleep, sleep_until, timeout_at, Instant};
+use tokio::time::{sleep_until, timeout_at, Instant};
 use tokio_rustls::TlsConnector;
 use tokio_util::sync::CancellationToken;
 
@@ -226,7 +226,21 @@ impl Drop for Engine {
 
 struct Slot {
     generation: u64,
-    cancel: CancellationToken,
+    /// Stop dialing and drain the live connections (a child of the engine's
+    /// graceful token, so an engine shutdown stops every slot too). Cutting
+    /// everything at once is the engine-wide `force` token.
+    stop: CancellationToken,
+}
+
+fn discovery_label(discovery: &Discovery) -> String {
+    match discovery {
+        Discovery::Srv(name) => name.clone(),
+        Discovery::Explicit(targets) => targets
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    }
 }
 
 enum SlotResult {
@@ -244,9 +258,15 @@ async fn supervise<S: TunnelService>(
     let mut tasks = JoinSet::<(Target, u64, SlotResult)>::new();
     let mut generation = 0_u64;
     let mut refresh_at = Instant::now();
-    let uses_dns = matches!(discovery, Discovery::Srv(_));
     let force = shared.force.clone();
     let graceful = shared.graceful.clone();
+    let label = discovery_label(&discovery);
+    // Resolutions in a row that yielded nothing to dial, while nothing is connected:
+    // they count towards the reconnect policy like failed attempts do, so a wrong SRV
+    // name or a host without DNS does not retry silently forever.
+    let mut resolution_failures = 0_u32;
+    let mut resolution_streak_started_at: Option<Instant> = None;
+    let mut resolution_backoff = Backoff::new(shared.options.tuning.reconnect.clone());
 
     loop {
         if force.is_cancelled() {
@@ -286,7 +306,7 @@ async fn supervise<S: TunnelService>(
                 result = shared.resolver.resolve(&discovery) => result,
             };
 
-            match resolution {
+            let (failure, retry_in) = match resolution {
                 Ok(resolution) => {
                     let desired = resolution.targets.into_iter().collect::<HashSet<_>>();
                     for target in &desired {
@@ -294,36 +314,81 @@ async fn supervise<S: TunnelService>(
                             continue;
                         }
                         generation = generation.wrapping_add(1);
+                        let stop = graceful.child_token();
                         let cancel = CancellationToken::new();
                         tasks.spawn({
                             let target = target.clone();
                             let shared = Arc::clone(&shared);
-                            let cancel_for_task = cancel.clone();
+                            let stop = stop.clone();
+                            let cancel = cancel.clone();
                             let slot_generation = generation;
                             async move {
-                                let result =
-                                    run_slot(target.clone(), shared, cancel_for_task).await;
+                                let result = run_slot(target.clone(), shared, stop, cancel).await;
                                 (target, slot_generation, result)
                             }
                         });
-                        slots.insert(target.clone(), Slot { generation, cancel });
+                        slots.insert(target.clone(), Slot { generation, stop });
                     }
                     slots.retain(|target, slot| {
                         if desired.contains(target) {
                             true
                         } else {
-                            slot.cancel.cancel();
+                            // The server left the record set: stop dialing it and let
+                            // its live connections finish their work.
+                            tracing::info!(target = %target, "Tunnel server no longer resolved; draining its connections");
+                            slot.stop.cancel();
                             false
                         }
                     });
-                    refresh_at = match resolution.refresh_after {
-                        Some(after) => Instant::now() + after,
-                        None => Instant::now() + Duration::from_secs(365 * 24 * 60 * 60),
-                    };
+                    let retry_in = resolution
+                        .refresh_after
+                        .unwrap_or(Duration::from_secs(365 * 24 * 60 * 60));
+                    if desired.is_empty() {
+                        (
+                            Some("resolution returned no tunnel servers".to_owned()),
+                            retry_in,
+                        )
+                    } else {
+                        (None, retry_in)
+                    }
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "Tunnel target resolution failed; retaining healthy connections");
-                    refresh_at = Instant::now() + DNS_RETRY_FALLBACK;
+                Err(error) => (Some(error.to_string()), DNS_RETRY_FALLBACK),
+            };
+            refresh_at = Instant::now() + retry_in;
+
+            match failure {
+                Some(reason) if slots.is_empty() => {
+                    // Nothing to dial: retry like a failed connection attempt would,
+                    // with the reconnect backoff rather than the DNS refresh cadence.
+                    let retry_in = resolution_backoff.next_delay();
+                    refresh_at = Instant::now() + retry_in;
+                    resolution_failures = resolution_failures.saturating_add(1);
+                    resolution_streak_started_at.get_or_insert_with(Instant::now);
+                    tracing::warn!(discovery = %label, %reason, retry_in = ?retry_in, "Tunnel target resolution yielded nothing; retrying");
+                    if let Some(gave_up) = give_up_reason(
+                        &shared.options.tuning.reconnect,
+                        resolution_failures,
+                        resolution_streak_started_at,
+                    ) {
+                        if shared.connected.load(Ordering::SeqCst) == 0 {
+                            tasks.abort_all();
+                            while tasks.join_next().await.is_some() {}
+                            return Err(format!("resolving {label}: {reason} ({gave_up})"));
+                        }
+                    }
+                    shared.emit(Event::AttemptFailed {
+                        target: label.clone(),
+                        reason,
+                        retry_in,
+                    });
+                }
+                Some(reason) => {
+                    tracing::warn!(discovery = %label, %reason, "Tunnel target resolution failed; retaining healthy connections");
+                }
+                None => {
+                    resolution_failures = 0;
+                    resolution_streak_started_at = None;
+                    resolution_backoff.reset();
                 }
             }
         }
@@ -331,27 +396,23 @@ async fn supervise<S: TunnelService>(
         tokio::select! {
             _ = force.cancelled() => {},
             _ = graceful.cancelled() => {},
-            _ = sleep_until(refresh_at), if uses_dns => {},
+            _ = sleep_until(refresh_at) => {},
             joined = tasks.join_next(), if !tasks.is_empty() => {
                 match joined {
                     Some(Ok((target, joined_generation, SlotResult::Stopped))) => {
                         if slots.get(&target).is_some_and(|slot| slot.generation == joined_generation) {
                             slots.remove(&target);
-                            // A fixed slot should not vanish by itself; allow the next
-                            // loop to recreate it from the retained discovery set.
-                            if !uses_dns {
-                                refresh_at = Instant::now();
-                            }
+                            // A slot should not vanish by itself; resolve again so the
+                            // next loop recreates it from the current discovery set.
+                            refresh_at = Instant::now();
                         }
                     }
                     Some(Ok((target, joined_generation, SlotResult::GaveUp(reason)))) => {
                         if slots.get(&target).is_some_and(|slot| slot.generation == joined_generation) {
                             slots.remove(&target);
-                            // The next discovery refresh brings the target back with a
-                            // fresh streak; a fixed set is retried after the longest backoff.
-                            if !uses_dns {
-                                refresh_at = Instant::now() + shared.options.tuning.reconnect.max_interval;
-                            }
+                            // Retried with a fresh streak after the longest backoff (a DNS
+                            // refresh due earlier brings it back earlier).
+                            refresh_at = refresh_at.min(Instant::now() + shared.options.tuning.reconnect.max_interval);
                         }
                         tracing::warn!(target = %target, %reason, "Gave up reconnecting to a tunnel server; other connections keep serving");
                         shared.emit(Event::GaveUp { target: target.to_string(), reason });
@@ -371,10 +432,6 @@ async fn supervise<S: TunnelService>(
                     _ => {}
                 }
             }
-            _ = sleep(Duration::from_millis(10)), if !uses_dns && tasks.is_empty() && refresh_at <= Instant::now() + Duration::from_millis(10) => {
-                refresh_at = Instant::now();
-            }
-            _ = sleep_until(refresh_at), if !uses_dns && tasks.is_empty() => {}
         }
     }
 }
@@ -382,6 +439,7 @@ async fn supervise<S: TunnelService>(
 async fn run_slot<S: TunnelService>(
     target: Target,
     shared: Arc<Shared<S>>,
+    slot_stop: CancellationToken,
     slot_cancel: CancellationToken,
 ) -> SlotResult {
     let mut attempts = JoinSet::<(u64, AttemptOutcome)>::new();
@@ -394,6 +452,10 @@ async fn run_slot<S: TunnelService>(
     let mut streak_started_at: Option<Instant> = None;
     let mut next_dial = Instant::now();
     let mut stopping_gracefully = false;
+    // When this slot alone is stopped (its server left the record set), its live
+    // connections get the server-drain grace to finish; an engine shutdown bounds
+    // the wait itself.
+    let mut removal_deadline: Option<Instant> = None;
     let force = shared.force.clone();
     let graceful = shared.graceful.clone();
     let target_label = target.to_string();
@@ -405,12 +467,24 @@ async fn run_slot<S: TunnelService>(
             release_established(&shared, &mut established);
             return SlotResult::Stopped;
         }
-        if graceful.is_cancelled() {
+        if slot_stop.is_cancelled() {
             stopping_gracefully = true;
+            if !graceful.is_cancelled() && removal_deadline.is_none() {
+                removal_deadline = Some(Instant::now() + shared.options.tuning.server_drain_grace);
+            }
         }
         if stopping_gracefully && attempts.is_empty() {
             release_established(&shared, &mut established);
             return SlotResult::Stopped;
+        }
+        if let Some(deadline) = removal_deadline {
+            if deadline <= Instant::now() {
+                tracing::warn!(target = %target, "Tunnel server left the record set and its connections did not drain in time; cutting them");
+                attempts.abort_all();
+                while attempts.join_next().await.is_some() {}
+                release_established(&shared, &mut established);
+                return SlotResult::Stopped;
+            }
         }
 
         if !stopping_gracefully && current.is_none() && next_dial <= Instant::now() {
@@ -426,21 +500,28 @@ async fn run_slot<S: TunnelService>(
                 let target = target.clone();
                 let shared = Arc::clone(&shared);
                 let events = events_tx.clone();
+                let slot_stop = slot_stop.clone();
                 let slot_cancel = slot_cancel.clone();
                 async move {
                     let outcome =
-                        run_one_attempt(attempt_id, target, shared, events, slot_cancel).await;
+                        run_one_attempt(attempt_id, target, shared, events, slot_stop, slot_cancel)
+                            .await;
                     (attempt_id, outcome)
                 }
             });
         }
 
+        let removal_cut = async {
+            match removal_deadline {
+                Some(deadline) => sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             _ = force.cancelled() => {},
             _ = slot_cancel.cancelled() => {},
-            _ = graceful.cancelled(), if !stopping_gracefully => {
-                stopping_gracefully = true;
-            },
+            _ = slot_stop.cancelled(), if !stopping_gracefully => {},
+            _ = removal_cut => {},
             _ = sleep_until(next_dial), if !stopping_gracefully && current.is_none() => {},
             Some(event) = events_rx.recv() => {
                 match event {
@@ -608,6 +689,7 @@ async fn run_one_attempt<S: TunnelService>(
     target: Target,
     shared: Arc<Shared<S>>,
     events: tokio::sync::mpsc::Sender<AttemptEvent>,
+    slot_stop: CancellationToken,
     slot_cancel: CancellationToken,
 ) -> AttemptOutcome {
     let authorization = match shared.options.bearer() {
@@ -625,7 +707,7 @@ async fn run_one_attempt<S: TunnelService>(
         Err(error) => return AttemptOutcome::Retryable(error.to_string()),
     };
     let connection_id = uuid::Uuid::new_v4().simple().to_string();
-    let io = match dial_target(&target, &shared, &slot_cancel).await {
+    let io = match dial_target(&target, &shared, &slot_stop, &slot_cancel).await {
         Ok(io) => io,
         Err(error) => return AttemptOutcome::Retryable(error),
     };
@@ -643,7 +725,7 @@ async fn run_one_attempt<S: TunnelService>(
             tunnel_connection_id: connection_id,
             target: target.to_string(),
             drain: Arc::clone(&shared.drain),
-            graceful: shared.graceful.clone(),
+            graceful: slot_stop,
             force: shared.force.clone(),
             slot_cancel,
             events,
@@ -656,9 +738,9 @@ async fn run_one_attempt<S: TunnelService>(
 async fn dial_target<S>(
     target: &Target,
     shared: &Shared<S>,
+    graceful: &CancellationToken,
     slot_cancel: &CancellationToken,
 ) -> Result<BoxIo, String> {
-    let graceful = &shared.graceful;
     let force = &shared.force;
     let addresses = tokio::select! {
         _ = graceful.cancelled() => return Err("tunnel is draining".into()),
