@@ -9,8 +9,7 @@ use crate::service_protocol::messages::{
     SetStateCommandMessage, StateKeys, Void,
 };
 use crate::service_protocol::{
-    messages, CompletionId, MessageType, Notification, NotificationId, NotificationResult,
-    RawMessage,
+    CompletionId, MessageType, Notification, NotificationId, NotificationResult, RawMessage,
 };
 use crate::vm::async_results_state::AsyncResultsState;
 use crate::vm::context::{Context, EagerGetState, EagerGetStateKeys};
@@ -22,7 +21,8 @@ use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
 use crate::{
     CommandRelationship, CommandType, EntryRetryInfo, Error, Header, Input, JournalReplay,
-    NotificationHandle, PayloadOptions, RetryPolicy, RunExitResult, RunHandle, Version,
+    NotificationHandle, PayloadOptions, RetryPolicy, RunExitResult, RunHandle, TerminalFailure,
+    Version,
 };
 use bytes::Bytes;
 use std::collections::VecDeque;
@@ -895,12 +895,16 @@ impl Transition<Context, ProposeRunCompletion> for State {
                                 return Err(error);
                             }
                             NextRetry::FailAsTerminal => {
-                                // We don't retry, but convert the retryable error to actual error
-                                propose_run_completion_message::Result::Failure(messages::Failure {
-                                    code: error.code.into(),
-                                    message: error.message.to_string(),
-                                    metadata: vec![],
-                                })
+                                // We don't retry, but convert the retryable error to actual error,
+                                // carrying over code, message and metadata of the last attempt.
+                                propose_run_completion_message::Result::Failure(
+                                    TerminalFailure {
+                                        code: error.code,
+                                        message: error.message.to_string(),
+                                        metadata: error.metadata.map(Vec::from).unwrap_or_default(),
+                                    }
+                                    .into(),
+                                )
                             }
                         }
                     }

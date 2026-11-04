@@ -1268,10 +1268,13 @@ impl super::VM for CoreVM {
                 }
             }
         }
-        if let RunExitResult::TerminalFailure(f) = &value {
-            if !f.metadata.is_empty() {
-                self.verify_feature_support("terminal error metadata", Version::V6)?;
-            }
+        let has_metadata = match &value {
+            RunExitResult::TerminalFailure(f) => !f.metadata.is_empty(),
+            RunExitResult::RetryableFailure { error, .. } => !error.metadata().is_empty(),
+            RunExitResult::Success(_) => false,
+        };
+        if has_metadata {
+            self.verify_feature_support("terminal error metadata", Version::V6)?;
         }
         if retry_policy.should_pause_on_max_attempts() {
             self.verify_feature_support("pause", Version::V7)?;

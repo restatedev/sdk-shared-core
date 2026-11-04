@@ -77,6 +77,8 @@ pub struct Error {
     pub(crate) related_command: Option<CommandMetadata>,
     pub(crate) next_retry_delay: Option<Duration>,
     pub(crate) behavior: ErrorBehavior,
+    // Boxed to keep `Error` small, as it's used as the `Err` variant pretty much everywhere.
+    pub(crate) metadata: Option<Box<[(String, String)]>>,
 }
 
 impl fmt::Display for Error {
@@ -104,6 +106,7 @@ impl Error {
             related_command: None,
             next_retry_delay: None,
             behavior: ErrorBehavior::Retry,
+            metadata: None,
         }
     }
 
@@ -126,6 +129,31 @@ impl Error {
     pub fn with_stacktrace(mut self, stacktrace: impl ToString) -> Self {
         self.stacktrace = stacktrace.to_string();
         self
+    }
+
+    /// Metadata key-value pairs attached to this error.
+    ///
+    /// When this error is used as [`crate::RunExitResult::RetryableFailure`] and the retry policy
+    /// gives up retrying, the metadata is copied into the resulting terminal failure.
+    /// Requires service protocol V6 or newer.
+    pub fn with_metadata(
+        mut self,
+        metadata: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        let metadata: Box<[(String, String)]> = metadata
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        self.metadata = if metadata.is_empty() {
+            None
+        } else {
+            Some(metadata)
+        };
+        self
+    }
+
+    pub fn metadata(&self) -> &[(String, String)] {
+        self.metadata.as_deref().unwrap_or(&[])
     }
 
     pub fn with_next_retry_delay_override(mut self, delay: Duration) -> Self {

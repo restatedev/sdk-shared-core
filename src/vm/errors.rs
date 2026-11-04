@@ -87,6 +87,7 @@ impl Error {
             related_command: None,
             next_retry_delay: None,
             behavior: ErrorBehavior::Retry,
+            metadata: None,
         }
     }
 }
