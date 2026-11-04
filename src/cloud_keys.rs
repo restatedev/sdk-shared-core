@@ -54,7 +54,7 @@ const IDENTITY_V1_PREFIX: &str = "publickeyv1_";
 /// they pasted something else or lost part of the key.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum KeyError {
-    /// The value does not start with [`CLOUD_KEY_PREFIX`].
+    /// The value does not start with `rstcloudv1_`.
     #[error("is not a Restate Cloud key (it does not start with {CLOUD_KEY_PREFIX}); expected {CLOUD_KEY_SHAPE}")]
     NotACloudKey,
     /// The encoded part is empty, is not base58, or does not decode to a query string.
