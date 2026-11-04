@@ -679,9 +679,11 @@ async fn graceful_shutdown_refuses_raced_requests_then_flushes_in_flight_respons
                 .await
                 .expect("draining response body failed");
         }
+        // hyper reports the refusal as `Canceled` or as an h2 GOAWAY error, whose
+        // Display text is only "http2 error": inspect the Debug form.
         Err(error) => assert!(
-            error.is_canceled() || error.to_string().contains("GoAway"),
-            "raced stream failed for an unexpected reason: {error}"
+            error.is_canceled() || format!("{error:?}").contains("GoAway"),
+            "raced stream failed for an unexpected reason: {error:?}"
         ),
     }
 
