@@ -120,6 +120,28 @@ well_known_errors! {
         "Trying to execute a request with an empty scope. The scope must be non-empty."
     ),
     suspended => (codes::SUSPENDED, "Suspended invocation"),
+    empty_get_eager_state => (
+        codes::PROTOCOL_VIOLATION,
+        "Unexpected empty value variant for get eager state."
+    ),
+    empty_get_eager_state_keys => (
+        codes::PROTOCOL_VIOLATION,
+        "Unexpected empty value variant for state keys."
+    ),
+    empty_get_state_ephemeral_notification => (
+        codes::PROTOCOL_VIOLATION,
+        "Unexpected empty result variant for get state ephemeral notification."
+    ),
+    input_closed_while_waiting_ephemeral_notifications => (
+        codes::INTERNAL,
+        "The input stream was closed while waiting for the result of a get state not recorded in the journal. Getting state without recording it in the journal requires a bidirectional stream between Restate and the service (not available in request/response mode, e.g. AWS Lambda), unless the state value is available in the eager state sent by Restate."
+    ),
+    /// Ephemeral commands should really only be executed within ctx.run, so this is a "proxy safeguard" for that, because ctx.run
+    /// are really only started when we're processing (just track AwaitResponse::ExecuteRun usages)
+    ephemeral_command_during_replay => (
+        codes::JOURNAL_MISMATCH,
+        "Cannot execute ephemeral commands (e.g. get state without recording it in the journal) during replay, as their result might differ from the original execution. Ephemeral commands can be used only while processing new journal entries, e.g. within a ctx.run closure. This usually means the code uses them outside a ctx.run closure, or the code was changed."
+    ),
 }
 
 // Other errors
@@ -327,14 +349,6 @@ impl std::error::Error for UncompletedDoProgressDuringReplay {}
 #[error("Cannot convert a eager state key into UTF-8 String: {0:?}")]
 pub struct BadEagerStateKeyError(#[from] pub(crate) std::string::FromUtf8Error);
 
-well_known_errors! {
-    empty_get_eager_state => (codes::PROTOCOL_VIOLATION, "Unexpected empty value variant for get eager state."),
-}
-
-well_known_errors! {
-    empty_get_eager_state_keys => (codes::PROTOCOL_VIOLATION, "Unexpected empty value variant for state keys."),
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("Feature '{feature}' is not supported by the negotiated protocol version '{current_version}', the minimum required version is '{minimum_required_version}'")]
 pub struct UnsupportedFeatureForNegotiatedVersion {
@@ -369,10 +383,6 @@ impl BadProposeRunCompletionAck {
     }
 }
 
-well_known_errors! {
-    empty_get_state_ephemeral_notification => (codes::PROTOCOL_VIOLATION, "Unexpected empty result variant for get state ephemeral notification."),
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot get state '{key}' without recording it in the journal: the input stream is closed, thus Restate cannot answer the request. Getting state without recording it in the journal requires a bidirectional stream between Restate and the service (not available in request/response mode, e.g. AWS Lambda), unless the state value is available in the eager state sent by Restate.")]
 pub struct EphemeralStateGetWithClosedInput {
@@ -383,16 +393,6 @@ impl EphemeralStateGetWithClosedInput {
     pub fn new(key: String) -> Self {
         Self { key }
     }
-}
-
-well_known_errors! {
-    input_closed_while_waiting_ephemeral_notifications => (codes::INTERNAL, "The input stream was closed while waiting for the result of a get state not recorded in the journal. Getting state without recording it in the journal requires a bidirectional stream between Restate and the service (not available in request/response mode, e.g. AWS Lambda), unless the state value is available in the eager state sent by Restate."),
-}
-
-well_known_errors! {
-    /// Ephemeral commands should really only be executed within ctx.run, so this is a "proxy safeguard" for that, because ctx.run
-    /// are really only started when we're processing (just track AwaitResponse::ExecuteRun usages)
-    ephemeral_command_during_replay => (codes::JOURNAL_MISMATCH, "Cannot execute ephemeral commands (e.g. get state without recording it in the journal) during replay, as their result might differ from the original execution. Ephemeral commands can be used only while processing new journal entries, e.g. within a ctx.run closure. This usually means the code uses them outside a ctx.run closure, or the code was changed."),
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
