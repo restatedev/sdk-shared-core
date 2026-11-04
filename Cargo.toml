@@ -16,6 +16,35 @@ rust_crypto = ["jsonwebtoken?/rust_crypto"]
 aws_lc_rs = ["jsonwebtoken?/aws_lc_rs"]
 tracing_pretty = ["dep:tracing-subscriber"]
 
+# Sessions: an object's SQLite-compatible database kept in its Restate state.
+# Not for wasm32: the page cache's disk tier (foyer) runs on tokio.
+#
+# `state`: the database's file and its records over a key/value store the
+# SDK implements, changed through a mutation that a flush makes durable at
+# once (`src/state/README.md`).
+state = [
+    "dep:futures",
+    "dep:parking_lot",
+    "dep:zstd-safe",
+    "dep:foyer",
+    "dep:foyer-common",
+    "dep:foyer-memory",
+    "dep:foyer-storage",
+    "dep:foyer-tokio",
+    "dep:tokio",
+]
+# `sql`: the `Database`, SQL on the state's file, each commit flushed with
+# the host's records (`src/sql/README.md`).
+sql = ["state", "dep:turso_core"]
+# Internal, for the benchmarks in `benches/` (hence the `__`: no API
+# stability): the state's in-memory stores, fault injection and latency
+# simulator, which tests always have.
+__bench = ["state"]
+# Blobs in an object store (S3, GCS, Azure, a directory):
+# `state::ObjectStoreBlobs`. Enable the backend on `object_store` itself
+# (its feature `aws` for S3).
+object_store = ["state", "dep:object_store"]
+
 [dependencies]
 thiserror = "2.0"
 prost = "0.14"
@@ -35,6 +64,26 @@ jsonwebtoken = { version = "10.3", default-features = false, optional = true }
 
 http = { version = "1.3", optional = true }
 
+# Sessions (features `state`, `sql`, `object_store`).
+turso_core = { version = "=0.8.2", default-features = false, features = ["fs", "uuid", "json"], optional = true }
+futures = { version = "0.3", optional = true }
+# The engine retains an owned schema lock across open-time I/O. Allow that
+# guard to move with the host future between executor threads, without a worker.
+parking_lot = { version = "0.12", features = ["send_guard"], optional = true }
+# Pages: zstd frames, a delta against the page before as the reference prefix.
+zstd-safe = { version = "7.2", default-features = false, features = ["std"], optional = true }
+# Pinned with its subcrates (which foyer itself takes as `^0.22.3`): 0.22.4 to
+# 0.22.6 print a debug line to stdout whenever a file device opens. No
+# Cargo.lock is committed, so the pins are here.
+foyer = { version = "=0.22.3", optional = true }
+foyer-common = { version = "=0.22.3", optional = true }
+foyer-memory = { version = "=0.22.3", optional = true }
+foyer-storage = { version = "=0.22.3", optional = true }
+foyer-tokio = { version = "=0.22.3", optional = true }
+# foyer's disk tier runs on tokio; the cache starts a small runtime when the host has none.
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+object_store = { version = "0.14", optional = true, default-features = false }
+
 [dev-dependencies]
 googletest = "0.11"
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
@@ -43,3 +92,30 @@ prost-build = "0.14"
 rstest = "0.26.1"
 ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
 rand = "0.8"
+
+# Sessions benchmarks (`benches/README.md`): standalone entry points, on the
+# simulated stores.
+[[bench]]
+name = "amplification"
+harness = false
+required-features = ["sql", "__bench"]
+
+[[bench]]
+name = "small_databases"
+harness = false
+required-features = ["sql", "__bench"]
+
+[[bench]]
+name = "flush_costs"
+harness = false
+required-features = ["sql", "__bench"]
+
+[[bench]]
+name = "read_latency"
+harness = false
+required-features = ["sql", "__bench"]
+
+[[bench]]
+name = "cache_cpu"
+harness = false
+required-features = ["sql", "__bench"]

@@ -1,0 +1,268 @@
+//! The owner cache across owners, crashes and readers: no session reads a
+//! page of a flush that was lost, and a reader reads the state it opened
+//! while the owner flushes.
+
+use super::support::*;
+use crate::state::{kv::KvStore, simulation::*, Result, State, StateOptions};
+use futures::future::Either;
+use std::sync::Arc;
+
+/// Small frames, large records in packs, and a checkpoint
+/// every other flush.
+fn options(cache: Option<&Namespace>) -> Setup {
+    Setup {
+        options: StateOptions {
+            frame_pages: 2,
+            inline_record_bytes: 256,
+            checkpoint_entries: 2,
+            ..StateOptions::default()
+        },
+        cache: cache.cloned(),
+        packs: None,
+    }
+}
+
+fn failing_sync() -> Failpoint {
+    Failpoint {
+        operation: Operation::Sync,
+        key_prefix: String::new(),
+        nth: 1,
+        effect: Effect::None,
+        cancel: false,
+    }
+}
+
+/// Flush `ops` in a new session; the model follows.
+async fn flush(
+    store: &Arc<dyn KvStore>,
+    cache: Option<&Namespace>,
+    model: &mut Model,
+    ops: &[Op],
+) -> Result<()> {
+    let session = Session::open(store.clone(), options(cache)).await?;
+    assert_eq!(model.differs(&session).await?, None);
+    session.flush(ops).await?;
+    *model = model.applied(ops);
+    Ok(())
+}
+
+/// Owner A's flush fails at its sync; A reopens and reads what the failed
+/// flush wrote (visible, but synced by that open). A crash loses whatever is
+/// not durable. Another process, B, takes over and flushes, at versions the
+/// lost flush may have used. A, back with its cache, must read B's pages,
+/// not the ones it cached.
+#[test]
+fn a_cache_that_read_a_lost_flush_never_serves_it() -> Result<()> {
+    futures::executor::block_on(async {
+        let memory = MemoryKv::default();
+        let fault = Arc::new(FaultKv::new(memory.clone(), 0));
+        let store: Arc<dyn KvStore> = fault.clone();
+        let (a, b) = (fresh_namespace(), fresh_namespace());
+        let mut model = Model::default();
+        flush(&store, Some(&a), &mut model, &[Op::Write(0, Some(page(1)))]).await?;
+
+        // A's flush fails at its sync: its writes are visible.
+        let session = Session::open(store.clone(), options(Some(&a))).await?;
+        let _gate = fault.arm(failing_sync());
+        let write = [Op::Write(0, Some(page(2)))];
+        assert!(session.flush(&write).await.is_err());
+        fault.disarm();
+        drop(session);
+        // A reopens on them, and reads (and caches) the page.
+        let failed = model.applied(&write);
+        let session = Session::open(store.clone(), options(Some(&a))).await?;
+        assert_eq!(failed.differs(&session).await?, None);
+        drop(session);
+        // The backend loses every write since the last sync, if any remain.
+        memory.crash();
+        let session = Session::open(store.clone(), options(None)).await?;
+        if failed.matches(&session).await? {
+            model = failed;
+        }
+        drop(session);
+
+        // B, another process, flushes another page.
+        flush(&store, Some(&b), &mut model, &[Op::Write(0, Some(page(3)))]).await?;
+        // A reads B's page.
+        let session = Session::open(store.clone(), options(Some(&a))).await?;
+        assert_eq!(model.differs(&session).await?, None);
+        Ok(())
+    })
+}
+
+/// State A's flush waits on its sync when a second owner state, B, opens:
+/// the store shows A's head, not yet durable. B must not cache the state it
+/// names: A's flush is lost, and another process flushes at those versions.
+#[test]
+fn a_state_opened_beside_a_running_flush_caches_nothing_it_may_lose() -> Result<()> {
+    futures::executor::block_on(async {
+        let memory = MemoryKv::default();
+        let fault = Arc::new(FaultKv::new(memory.clone(), 0));
+        let store: Arc<dyn KvStore> = fault.clone();
+        let (a, b) = (fresh_namespace(), fresh_namespace());
+        let mut model = Model::default();
+        flush(&store, Some(&a), &mut model, &[Op::Write(0, Some(page(1)))]).await?;
+
+        let first = Session::open(store.clone(), options(Some(&a))).await?;
+        let stuck = fault.arm(Failpoint {
+            cancel: true,
+            ..failing_sync()
+        });
+        let write = [Op::Write(0, Some(page(2)))];
+        let running = Box::pin(first.flush(&write));
+        let Either::Right((_, running)) = futures::future::select(running, stuck).await else {
+            panic!("the flush did not wait on its sync");
+        };
+        // B opens, and reads (and may cache) what A's flush wrote.
+        let second = Session::open(store.clone(), options(Some(&a))).await?;
+        drop(second);
+        drop(running);
+        fault.disarm();
+        memory.crash();
+        let failed = model.applied(&write);
+        let session = Session::open(store.clone(), options(None)).await?;
+        if failed.matches(&session).await? {
+            model = failed;
+        }
+        drop(session);
+
+        // Another process flushes, at the versions the lost flush used.
+        flush(&store, Some(&b), &mut model, &[Op::Write(0, Some(page(3)))]).await?;
+        let session = Session::open(store.clone(), options(Some(&a))).await?;
+        assert_eq!(model.differs(&session).await?, None);
+        Ok(())
+    })
+}
+
+/// The object's state is cleared, and another process makes a new database
+/// in the same namespace, numbering its versions from 0 again. The owner,
+/// back with its cache, must read the new database's pages, not the ones it
+/// cached of the old one at the same versions.
+#[test]
+fn a_namespace_made_again_never_reads_the_old_databases_pages() -> Result<()> {
+    futures::executor::block_on(async {
+        let a = fresh_namespace();
+        let old: Arc<dyn KvStore> = Arc::new(MemoryKv::default());
+        let mut model = Model::default();
+        flush(&old, Some(&a), &mut model, &[Op::Write(0, Some(page(1)))]).await?;
+        let session = Session::open(old, options(Some(&a))).await?;
+        assert_eq!(model.differs(&session).await?, None);
+        drop(session);
+
+        let cleared: Arc<dyn KvStore> = Arc::new(MemoryKv::default());
+        let mut model = Model::default();
+        flush(&cleared, None, &mut model, &[Op::Write(0, Some(page(2)))]).await?;
+        let session = Session::open(cleared, options(Some(&a))).await?;
+        assert_eq!(model.differs(&session).await?, None);
+        Ok(())
+    })
+}
+
+/// A reader beside the owner, which flushes and checkpoints meanwhile, and a
+/// worker that collects garbage after each flush: the reader reads the state
+/// it opened, and never writes to the store; once the owner's second
+/// checkpoint since dropped a pack it needs, a read of it fails, never reads
+/// another state.
+#[test]
+fn a_reader_beside_a_flushing_owner_reads_what_it_opened() -> Result<()> {
+    futures::executor::block_on(async {
+        let mut rng = Rng::new(0x7ead);
+        let memory = MemoryKv::default();
+        let store: Arc<dyn KvStore> = Arc::new(memory.clone());
+        let owner = fresh_namespace();
+        let mut model = Model::default();
+        // The owner's second checkpoint after the reader opened may come at
+        // its third flush.
+        let grace = 3;
+        let (mut read, mut gone) = (0, 0);
+        for round in 0..60 {
+            let ops: Vec<Op> = (0..1 + rng.below(6))
+                .map(|_| Op::random(&mut rng))
+                .collect();
+            flush(&store, Some(&owner), &mut model, &ops).await?;
+            let lazy = Setup {
+                options: StateOptions {
+                    prefetch_pages: rng.below(2) * 16,
+                    ..StateOptions::default()
+                },
+                cache: rng.percent(50).then(|| owner.clone()),
+                packs: None,
+            };
+            let reader = Session::reader(store.clone(), lazy).await?;
+            let opened = model.clone();
+            // Past the grace sometimes: then packs it reads may be gone.
+            let flushes = rng.pick(&[0, 1, grace - 1, grace, grace + 4]);
+            for _ in 0..flushes {
+                // Pages the reader reads often, and anything else.
+                let hot = Op::Write(rng.below(4), Some(varied(&mut rng)));
+                let ops = [hot, Op::random(&mut rng)];
+                flush(&store, Some(&owner), &mut model, &ops).await?;
+                // A worker collects garbage beside them.
+                let worker = State::open(store.clone()).reader().await?;
+                worker.collect_garbage().await?;
+            }
+            for _ in 0..16 {
+                let index = rng.below(opened.len().div_ceil(4096) + 1);
+                match reader.file().read(index).await {
+                    Ok(page) => {
+                        assert_eq!(page, opened.page(index), "round {round}");
+                        read += 1;
+                    }
+                    Err(error) if flushes >= grace => {
+                        assert!(error.to_string().contains("is gone"), "{error}");
+                        gone += 1;
+                    }
+                    Err(error) => panic!("round {round}: {error}"),
+                }
+            }
+            for name in RECORDS {
+                assert_eq!(reader.state.record(name), opened.record(name));
+            }
+            // Its mutations never flush.
+            let keys = memory.keys();
+            let error = reader.flush(&[Op::Record("outbox", "reader".into())]).await;
+            let error = error.unwrap_err().to_string();
+            assert!(error.contains("a reader writes nothing"), "{error}");
+            assert_eq!(memory.keys(), keys);
+        }
+        assert!(read > 100 && gone > 0, "{read} read, {gone} gone");
+        Ok(())
+    })
+}
+
+/// Two sessions of one owner overlap: the open one reads the state it opened
+/// on while the other flushes; then it may not flush on top.
+#[test]
+fn an_open_session_reads_its_state_while_another_flushes() -> Result<()> {
+    futures::executor::block_on(async {
+        let memory = MemoryKv::default();
+        let store: Arc<dyn KvStore> = Arc::new(memory.clone());
+        let cache = fresh_namespace();
+        let mut model = Model::default();
+        let mut rng = Rng::new(0x0e7);
+        for _ in 0..3 {
+            let ops: Vec<Op> = (0..6).map(|_| Op::random(&mut rng)).collect();
+            flush(&store, Some(&cache), &mut model, &ops).await?;
+        }
+        let open = Session::open(store.clone(), options(Some(&cache))).await?;
+        let opened = model.clone();
+        let writer = Session::open(store.clone(), options(Some(&cache))).await?;
+        for n in 0..5 {
+            let ops = [Op::Write(n, Some(page(100 + n))), Op::random(&mut rng)];
+            writer.flush(&ops).await?;
+            model = model.applied(&ops);
+            assert_eq!(opened.differs(&open).await?, None);
+        }
+        let late = [Op::Record("outbox", "late".into())];
+        let error = open.flush(&late).await.unwrap_err().to_string();
+        assert!(error.contains("another state flushed"), "{error}");
+        drop(open);
+        let ops = [Op::Write(0, Some(page(7)))];
+        writer.flush(&ops).await?;
+        model = model.applied(&ops);
+        drop(writer);
+        let session = Session::open(store, options(Some(&cache))).await?;
+        assert_eq!(model.differs(&session).await?, None);
+        Ok(())
+    })
+}

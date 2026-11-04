@@ -46,14 +46,31 @@ jobs:
         run: just --set features "${{ matrix.features }}" verify
 
   build-smoke-test:
-    name: Build only (${{ matrix.os }} / ${{ matrix.target }})
+    name: Build only (${{ matrix.target }}, features '${{ matrix.features }}')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-22.04 ]
-        target: [ x86_64-unknown-linux-musl, wasm32-unknown-unknown ]
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
+          - os: macos-14
+            target: aarch64-apple-darwin
+            features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
+          - os: macos-14
+            target: x86_64-apple-darwin
+            features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
+          - os: ubuntu-22.04
+            target: wasm32-unknown-unknown
+            features: request_identity
     env:
       RUST_BACKTRACE: full
     steps:
@@ -66,7 +83,13 @@ jobs:
           rustflags: ""
       - name: Install musl
         if: ${{ endsWith( matrix.target, '-musl' ) }}
-        run: sudo apt install musl-tools
+        # cc-rs looks for `<arch>-linux-musl-gcc`, which musl-tools does not
+        # provide; name its `musl-gcc` for the target.
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+        env:
+          TARGET: ${{ matrix.target }}
 
       - name: Install protoc
         uses: $/.github/actions/install-protoc
@@ -76,5 +99,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run tests
-        run: just build --target ${{ matrix.target }}
+      - name: Build
+        run: just --set features "${{ matrix.features }}" build --target ${{ matrix.target }}
