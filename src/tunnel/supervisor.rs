@@ -315,15 +315,13 @@ async fn supervise<S: TunnelService>(
                         }
                         generation = generation.wrapping_add(1);
                         let stop = graceful.child_token();
-                        let cancel = CancellationToken::new();
                         tasks.spawn({
                             let target = target.clone();
                             let shared = Arc::clone(&shared);
                             let stop = stop.clone();
-                            let cancel = cancel.clone();
                             let slot_generation = generation;
                             async move {
-                                let result = run_slot(target.clone(), shared, stop, cancel).await;
+                                let result = run_slot(target.clone(), shared, stop).await;
                                 (target, slot_generation, result)
                             }
                         });
@@ -440,7 +438,6 @@ async fn run_slot<S: TunnelService>(
     target: Target,
     shared: Arc<Shared<S>>,
     slot_stop: CancellationToken,
-    slot_cancel: CancellationToken,
 ) -> SlotResult {
     let mut attempts = JoinSet::<(u64, AttemptOutcome)>::new();
     let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(32);
@@ -461,7 +458,7 @@ async fn run_slot<S: TunnelService>(
     let target_label = target.to_string();
 
     loop {
-        if force.is_cancelled() || slot_cancel.is_cancelled() {
+        if force.is_cancelled() {
             attempts.abort_all();
             while attempts.join_next().await.is_some() {}
             release_established(&shared, &mut established);
@@ -501,11 +498,9 @@ async fn run_slot<S: TunnelService>(
                 let shared = Arc::clone(&shared);
                 let events = events_tx.clone();
                 let slot_stop = slot_stop.clone();
-                let slot_cancel = slot_cancel.clone();
                 async move {
                     let outcome =
-                        run_one_attempt(attempt_id, target, shared, events, slot_stop, slot_cancel)
-                            .await;
+                        run_one_attempt(attempt_id, target, shared, events, slot_stop).await;
                     (attempt_id, outcome)
                 }
             });
@@ -519,7 +514,6 @@ async fn run_slot<S: TunnelService>(
         };
         tokio::select! {
             _ = force.cancelled() => {},
-            _ = slot_cancel.cancelled() => {},
             _ = slot_stop.cancelled(), if !stopping_gracefully => {},
             _ = removal_cut => {},
             _ = sleep_until(next_dial), if !stopping_gracefully && current.is_none() => {},
@@ -690,7 +684,6 @@ async fn run_one_attempt<S: TunnelService>(
     shared: Arc<Shared<S>>,
     events: tokio::sync::mpsc::Sender<AttemptEvent>,
     slot_stop: CancellationToken,
-    slot_cancel: CancellationToken,
 ) -> AttemptOutcome {
     let authorization = match shared.options.bearer() {
         Ok(value) => match HeaderValue::from_str(&value) {
@@ -707,7 +700,7 @@ async fn run_one_attempt<S: TunnelService>(
         Err(error) => return AttemptOutcome::Retryable(error.to_string()),
     };
     let connection_id = uuid::Uuid::new_v4().simple().to_string();
-    let io = match dial_target(&target, &shared, &slot_stop, &slot_cancel).await {
+    let io = match dial_target(&target, &shared, &slot_stop).await {
         Ok(io) => io,
         Err(error) => return AttemptOutcome::Retryable(error),
     };
@@ -727,7 +720,6 @@ async fn run_one_attempt<S: TunnelService>(
             drain: Arc::clone(&shared.drain),
             graceful: slot_stop,
             force: shared.force.clone(),
-            slot_cancel,
             events,
             settings: shared.settings,
         },
@@ -739,13 +731,11 @@ async fn dial_target<S>(
     target: &Target,
     shared: &Shared<S>,
     graceful: &CancellationToken,
-    slot_cancel: &CancellationToken,
 ) -> Result<BoxIo, String> {
     let force = &shared.force;
     let addresses = tokio::select! {
         _ = graceful.cancelled() => return Err("tunnel is draining".into()),
         _ = force.cancelled() => return Err("tunnel closed".into()),
-        _ = slot_cancel.cancelled() => return Err("target removed".into()),
         result = shared.resolver.resolve_dial_addresses(target) => result.map_err(|error| error.to_string())?,
     };
     let deadline = Instant::now() + shared.options.tuning.connect_timeout;
@@ -756,8 +746,7 @@ async fn dial_target<S>(
         let stream = match tokio::select! {
             _ = graceful.cancelled() => return Err("tunnel is draining".into()),
             _ = force.cancelled() => return Err("tunnel closed".into()),
-            _ = slot_cancel.cancelled() => return Err("target removed".into()),
-            result = connect => result,
+                result = connect => result,
         } {
             Ok(Ok(stream)) => stream,
             Ok(Err(error)) => {
@@ -784,8 +773,7 @@ async fn dial_target<S>(
         let stream = match tokio::select! {
             _ = graceful.cancelled() => return Err("tunnel is draining".into()),
             _ = force.cancelled() => return Err("tunnel closed".into()),
-            _ = slot_cancel.cancelled() => return Err("target removed".into()),
-            result = connect => result,
+                result = connect => result,
         } {
             Ok(Ok(stream)) => stream,
             Ok(Err(error)) => {

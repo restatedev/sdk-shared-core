@@ -87,7 +87,6 @@ pub(crate) struct AttemptContext<S> {
     pub(crate) drain: Arc<DrainState>,
     pub(crate) graceful: CancellationToken,
     pub(crate) force: CancellationToken,
-    pub(crate) slot_cancel: CancellationToken,
     pub(crate) events: mpsc::Sender<AttemptEvent>,
     pub(crate) settings: ConnectionSettings,
 }
@@ -250,7 +249,6 @@ async fn run_attempt_inner<S: TunnelService>(
     let body = tokio::select! {
         biased;
         _ = context.force.cancelled() => return close_gate(&gate, AttemptOutcome::Cancelled),
-        _ = context.slot_cancel.cancelled() => return close_gate(&gate, AttemptOutcome::Cancelled),
         _ = context.graceful.cancelled() => {
             gate.send_replace(StreamGate::Closed);
             connection.as_mut().graceful_shutdown();
@@ -280,7 +278,6 @@ async fn run_attempt_inner<S: TunnelService>(
     let info = tokio::select! {
         biased;
         _ = context.force.cancelled() => return close_gate(&gate, AttemptOutcome::Cancelled),
-        _ = context.slot_cancel.cancelled() => return close_gate(&gate, AttemptOutcome::Cancelled),
         _ = context.graceful.cancelled() => {
             gate.send_replace(StreamGate::Closed);
             connection.as_mut().graceful_shutdown();
@@ -300,10 +297,7 @@ async fn run_attempt_inner<S: TunnelService>(
         }
     };
 
-    if context.force.is_cancelled()
-        || context.slot_cancel.is_cancelled()
-        || context.graceful.is_cancelled()
-    {
+    if context.force.is_cancelled() || context.graceful.is_cancelled() {
         return close_gate(&gate, AttemptOutcome::Cancelled);
     }
 
@@ -328,7 +322,6 @@ async fn run_attempt_inner<S: TunnelService>(
         tokio::select! {
             biased;
             _ = context.force.cancelled() => return AttemptOutcome::Cancelled,
-            _ = context.slot_cancel.cancelled() => return AttemptOutcome::Cancelled,
             _ = context.graceful.cancelled() => {
                 connection.as_mut().graceful_shutdown();
                 return finish_gracefully(&mut connection, &context).await;
@@ -363,7 +356,6 @@ async fn run_attempt_inner<S: TunnelService>(
     tokio::select! {
         biased;
         _ = context.force.cancelled() => AttemptOutcome::Cancelled,
-        _ = context.slot_cancel.cancelled() => AttemptOutcome::Cancelled,
         _ = context.graceful.cancelled() => {
             connection.as_mut().graceful_shutdown();
             finish_gracefully(&mut connection, &context).await
@@ -400,7 +392,6 @@ where
             tracing::debug!(attempt_id = context.attempt_id, "Tunnel connection cut during graceful shutdown");
             AttemptOutcome::Cancelled
         }
-        _ = context.slot_cancel.cancelled() => AttemptOutcome::Cancelled,
         result = connection.as_mut() => {
             tracing::debug!(attempt_id = context.attempt_id, ?result, "Tunnel connection drained");
             AttemptOutcome::Cancelled
