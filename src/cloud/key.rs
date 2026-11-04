@@ -50,55 +50,34 @@ const IDENTITY_V1_PREFIX: &str = "publickeyv1_";
 
 /// Why a string is not a usable Restate Cloud key.
 ///
-/// Reasons never echo parts of the value (the whole thing is a credential) and
-/// never describe the encoding: a user only needs to know whether they pasted
-/// something else or lost part of the key, and where to get a fresh one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The texts are predicates of the key ("RESTATE_CONNECT_KEY {error}"): whoever
+/// reports the error prepends what the key was read from and appends where to
+/// get a fresh one. They never echo parts of the value (the whole thing is a
+/// credential) and never describe the encoding: a user only needs to know whether
+/// they pasted something else or lost part of the key.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum KeyError {
     /// The value does not start with [`CLOUD_KEY_PREFIX`].
+    #[error("is not a Restate Cloud key (it does not start with {CLOUD_KEY_PREFIX}); expected {CLOUD_KEY_SHAPE}")]
     NotACloudKey,
     /// The encoded part is empty, is not base58, or does not decode to a query string.
+    #[error(
+        "is not a Restate Cloud key (it is truncated or corrupted); expected {CLOUD_KEY_SHAPE}"
+    )]
     Corrupted,
     /// A required parameter is missing.
+    #[error("is incomplete")]
     Incomplete,
     /// A parameter is present but does not have the expected shape.
+    #[error("is malformed")]
     Malformed,
     /// A connect key was expected but the key carries no signing key (an ingress key, or an incomplete paste).
+    #[error("carries no signing key (this is an ingress key, or an incomplete paste)")]
     NotAConnectKey,
     /// An ingress key was expected but the key carries no API key.
+    #[error("carries no API key (this is not an ingress key)")]
     NotAnIngressKey,
 }
-
-impl KeyError {
-    /// The error text for a key read from `what` (for example `RESTATE_CONNECT_KEY` or "the key option"),
-    /// pointing at `help` for a fresh copy.
-    pub fn describe(&self, what: &str, help: &str) -> String {
-        match self {
-            KeyError::NotACloudKey => format!(
-                "{what} is not a Restate Cloud key (it does not start with {CLOUD_KEY_PREFIX}); expected {CLOUD_KEY_SHAPE} — copy it again from {help}"
-            ),
-            KeyError::Corrupted => format!(
-                "{what} is not a Restate Cloud key (it is truncated or corrupted); expected {CLOUD_KEY_SHAPE} — copy it again from {help}"
-            ),
-            KeyError::Incomplete => format!("{what} is incomplete — copy it again from {help}"),
-            KeyError::Malformed => format!("{what} is malformed — copy it again from {help}"),
-            KeyError::NotAConnectKey => format!(
-                "{what} carries no signing key — this is an ingress key or an incomplete paste; copy a connect key from {help}"
-            ),
-            KeyError::NotAnIngressKey => format!(
-                "{what} carries no API key — this is not an ingress key; copy an ingress key from {help}"
-            ),
-        }
-    }
-}
-
-impl fmt::Display for KeyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.describe("the key", CLOUD_UI_URL))
-    }
-}
-
-impl std::error::Error for KeyError {}
 
 /// The coordinates of a Restate Cloud environment for a deployment that
 /// connects to it: a parsed connect key.
@@ -535,11 +514,10 @@ pub(crate) mod tests {
             .unwrap_err(),
             KeyError::Malformed
         );
-        let text = KeyError::NotACloudKey.describe(CONNECT_KEY_ENV, CONNECT_KEY_URL);
-        assert!(text.starts_with(
-            "RESTATE_CONNECT_KEY is not a Restate Cloud key (it does not start with rstcloudv1_)"
-        ));
-        assert!(text.ends_with(CONNECT_KEY_URL));
+        assert_eq!(
+            KeyError::NotACloudKey.to_string(),
+            "is not a Restate Cloud key (it does not start with rstcloudv1_); expected rstcloudv1_<base58>"
+        );
     }
 
     #[test]

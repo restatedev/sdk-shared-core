@@ -690,7 +690,7 @@ pub enum ConfigError {
     InvalidName(String),
     #[error("no Restate Cloud connect key — set {CONNECT_KEY_ENV} (create one at {CONNECT_KEY_URL}) or pass a key")]
     MissingKey,
-    #[error("{}", error.describe(what, CONNECT_KEY_URL))]
+    #[error("{what} {error} — copy it again from {CONNECT_KEY_URL}")]
     Key {
         what: &'static str,
         #[source]
