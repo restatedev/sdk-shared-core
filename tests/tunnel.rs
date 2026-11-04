@@ -652,8 +652,10 @@ async fn graceful_shutdown_refuses_raced_requests_then_flushes_in_flight_respons
     assert_eq!(held_response.status(), StatusCode::OK);
 
     // `send_request` queues the new stream synchronously. Calling shutdown
-    // before polling its response models a stream racing the client's GOAWAY:
-    // it must see the draining sentinel if it reaches the SDK.
+    // before polling its response models a stream racing the client's GOAWAY.
+    // Which side wins is up to scheduling: if the HEADERS reach the SDK first,
+    // the stream must see the draining sentinel; if the GOAWAY reaches the
+    // client first, hyper refuses the stream locally. Either way it is not served.
     let mut raced_sender = cloud.request_sender();
     let raced_response = raced_sender.send_request(cloud_request(
         "/http/h/9080/discover",
@@ -661,20 +663,27 @@ async fn graceful_shutdown_refuses_raced_requests_then_flushes_in_flight_respons
     ));
     let shutdown = engine.shutdown(Duration::from_secs(2));
 
-    let raced_response = tokio::time::timeout(TEST_TIMEOUT, raced_response)
+    match tokio::time::timeout(TEST_TIMEOUT, raced_response)
         .await
         .expect("raced request did not complete")
-        .expect("raced stream was reset instead of receiving the drain sentinel");
-    assert_eq!(raced_response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        raced_response.headers()["x-restate-tunnel-draining"],
-        "true"
-    );
-    raced_response
-        .into_body()
-        .collect()
-        .await
-        .expect("draining response body failed");
+    {
+        Ok(raced_response) => {
+            assert_eq!(raced_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                raced_response.headers()["x-restate-tunnel-draining"],
+                "true"
+            );
+            raced_response
+                .into_body()
+                .collect()
+                .await
+                .expect("draining response body failed");
+        }
+        Err(error) => assert!(
+            error.is_canceled() || error.to_string().contains("GoAway"),
+            "raced stream failed for an unexpected reason: {error}"
+        ),
+    }
 
     let mut shutdown = Box::pin(shutdown);
     assert!(
