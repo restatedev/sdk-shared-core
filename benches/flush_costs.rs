@@ -4,8 +4,8 @@
 //! a cold read.
 //!
 //! ```sh
-//! cargo bench --locked --features bench --bench flush_costs
-//! S3=1 cargo bench --locked --features bench --bench flush_costs
+//! cargo bench --features sql,__bench --bench flush_costs
+//! S3=1 cargo bench --features sql,__bench --bench flush_costs
 //! ```
 //!
 //! `FRAME_PAGES`, `INLINE_BYTES`, `CHECKPOINT_ENTRIES`, `CHECKPOINT_BYTES`

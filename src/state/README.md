@@ -10,14 +10,14 @@ through a **mutation**, an owned value that collects the pages written and
 the records set, and a **flush** makes everything in the
 mutation durable at once, in one round trip. It needs only `get`, `put`,
 `delete` and `sync` from the backend, and a listing of its keys to collect
-the garbage. It is a private module of the addon's crate, for the
-[database](../sql/README.md) on it: see [the
-layers](../../README.md#inside-the-layers).
+the garbage. It is the `state` module of `restate_sdk_shared_core`, on with
+the feature `sql`, for the [database](../sql/README.md) on it; its own API
+is private, the database's is the public one.
 
 ## API
 
-A host implements `kv::KvStore` over its store (the addon, over the
-JavaScript one), then:
+A host implements `KvStore` over its store (sdk-sessions' Node addon, over
+a JavaScript one), then:
 
 ```rust,ignore
 use crate::state::{PageCache, PageCacheConfig, State};
@@ -83,11 +83,11 @@ writes since the last sync.
 
 ## Build and test
 
-From `packages/sessions/native`:
+From the crate's root, with the feature `sql` (no Cargo.lock is committed):
 
 ```sh
-cargo test --locked --release state::     # the state's tests, with the in-memory store and fault injection
-cargo clippy --locked --all-targets -- -D warnings
+cargo test --release --features sql state::     # the state's tests, with the in-memory store and fault injection
+cargo clippy --all-features --all-targets -- -D warnings
 ```
 
 The `simulation` module, an in-memory KV store, fault injection and a

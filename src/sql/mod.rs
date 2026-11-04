@@ -74,8 +74,9 @@
 //! # Example
 //!
 //! ```ignore
-//! # use restate_sessions::Database;
-//! # async fn example(store: Arc<dyn KvStore>, cache: &PageCache) -> restate_sessions::Result<()> {
+//! # use restate_sdk_shared_core::sql::Database;
+//! # use restate_sdk_shared_core::state::{KvStore, PageCache};
+//! # async fn example(store: Arc<dyn KvStore>, cache: &PageCache) -> restate_sdk_shared_core::state::Result<()> {
 //! let db = Database::open(store).cached(cache, "chat/42").await?;
 //! db.execute("CREATE TABLE messages(body TEXT)").await?; // durable now
 //! db.begin().await?;

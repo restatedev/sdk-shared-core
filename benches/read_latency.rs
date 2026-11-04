@@ -4,8 +4,8 @@
 //! request taking its store's time; requests issued together overlap.
 //!
 //! ```sh
-//! cargo bench --locked --features bench --bench read_latency
-//! S3=1 cargo bench --locked --features bench --bench read_latency
+//! cargo bench --features sql,__bench --bench read_latency
+//! S3=1 cargo bench --features sql,__bench --bench read_latency
 //! ```
 //!
 //! Without `S3`, the packs are kept in Restate's state too; with `S3=1`,

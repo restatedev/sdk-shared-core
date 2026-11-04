@@ -12,12 +12,12 @@ the sdk-sessions repository runs its end-to-end benchmark.
 Run from the crate's root:
 
 ```sh
-cargo bench --locked --features sql,__bench --bench flush_costs
-S3=1 cargo bench --locked --features sql,__bench --bench flush_costs   # packs in S3, priced
-S3=1 cargo bench --locked --features sql,__bench --bench read_latency  # uncached reads, timed
-cargo bench --locked --features sql,__bench --bench amplification -- 3 > amplification.csv
-cargo bench --locked --features sql,__bench --bench small_databases -- 3 > small_databases.csv
-cargo bench --locked --features sql,__bench --bench cache_cpu -- 3 > cache_cpu.csv
+cargo bench --features sql,__bench --bench flush_costs
+S3=1 cargo bench --features sql,__bench --bench flush_costs   # packs in S3, priced
+S3=1 cargo bench --features sql,__bench --bench read_latency  # uncached reads, timed
+cargo bench --features sql,__bench --bench amplification -- 3 > amplification.csv
+cargo bench --features sql,__bench --bench small_databases -- 3 > small_databases.csv
+cargo bench --features sql,__bench --bench cache_cpu -- 3 > cache_cpu.csv
 ```
 
 The positional argument is the repeat count; the default is three. Cargo's

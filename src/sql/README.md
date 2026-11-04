@@ -11,17 +11,17 @@ A `Database` is one session of it. Its statements change a private view of
 the file, and each call that leaves no SQL transaction open commits: what the
 SQL committed, and the records of `commit(records)`, in one flush,
 durable before the call returns. With a page cache, a session that ends
-cleanly leaves its engine warm for the namespace's next one. It is a private
-module of the addon's crate; where it sits: [the
-layers](../../README.md#inside-the-layers).
+cleanly leaves its engine warm for the namespace's next one. It is the `sql`
+module of `restate_sdk_shared_core`, on with the feature `sql`; the Node
+addon of sdk-sessions is one host of it.
 
 ## API
 
-`Database` is the crate's one entry point. A host implements `KvStore` over
-its store (the addon, over the JavaScript one), then:
+`Database` is the module's entry point. A host implements `state::KvStore`
+over its store (sdk-sessions' Node addon, over a JavaScript one), then:
 
 ```rust,ignore
-use restate_sessions::Database;
+use restate_sdk_shared_core::sql::Database;
 
 // Kept warm in the process's page cache under the namespace's stable key.
 let db = Database::open(store).cached(&cache, "object-42").await?;
@@ -35,7 +35,8 @@ db.save().await?;                                   // ends the session, leaving
 `Database::open` returns a builder: `.options(StateOptions)` sets how the
 state flushes and reads, `.checkpoints(blobs)` keeps the bulk of the
 checkpoints in S3, and `.reader()` opens a reader beside the owner, as a
-session object's view does. The host's `transaction(body)` (`src/database.ts`) runs
+session object's view does. A host's `transaction(body)` (sdk-sessions'
+`src/database.ts`, say) runs
 `body` between `begin` and `commit`, or `rollback` when it fails; a statement
 in the body that ends its transaction (`COMMIT`, `END`, `ROLLBACK`) ends the
 session rather than commit the body halfway. `commit(records)` commits
@@ -52,8 +53,8 @@ as in SQLite, and the session goes on. A storage error, a cancelled call or a
 failed commit ends the session (`is_usable()` returns false): settle
 outstanding requests and open a new one; a failed commit's outcome is unknown.
 
-The addon ([`node.rs`](../node.rs)) exposes a `Database` to JavaScript, over
-a key/value store implemented there.
+sdk-sessions' Node addon (its `src/node.rs`) exposes a `Database` to
+JavaScript, over a key/value store implemented there.
 
 ## Layout
 
@@ -65,11 +66,11 @@ a key/value store implemented there.
 
 ## Build and test
 
-From `packages/sessions/native`:
+From the crate's root, with the feature `sql` (no Cargo.lock is committed):
 
 ```sh
-cargo test --locked --release
-cargo clippy --locked --all-targets -- -D warnings
+cargo test --release --features sql sql::
+cargo clippy --all-features --all-targets -- -D warnings
 ```
 
 The tests run on the state's in-memory KV store, fault injection and latency
@@ -80,6 +81,6 @@ The randomized campaign (`tests/integration/campaign.rs`) runs a few seeds by
 default; run more, or replay a failing one with a trace:
 
 ```sh
-SQL_CAMPAIGN_SEEDS=1000 cargo test --locked --release sql::tests::integration::campaign
-SQL_CAMPAIGN_SEED=17 SQL_CAMPAIGN_TRACE=1 cargo test --locked sql::tests::integration::campaign -- --nocapture
+SQL_CAMPAIGN_SEEDS=1000 cargo test --release --features sql sql::tests::integration::campaign
+SQL_CAMPAIGN_SEED=17 SQL_CAMPAIGN_TRACE=1 cargo test --features sql sql::tests::integration::campaign -- --nocapture
 ```
