@@ -10,8 +10,8 @@ use crate::service_protocol::messages::{
 };
 use crate::service_protocol::{Decoder, NotificationId, RawMessage, Version, CANCEL_SIGNAL_ID};
 use crate::vm::errors::{
-    ClosedError, OutOfBoundsDuration, UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion,
-    EMPTY_IDEMPOTENCY_KEY, EMPTY_LIMIT_KEY, EMPTY_SCOPE, SUSPENDED,
+    empty_idempotency_key, empty_limit_key, empty_scope, suspended, ClosedError,
+    OutOfBoundsDuration, UnexpectedStateError, UnsupportedFeatureForNegotiatedVersion,
 };
 use crate::vm::run_state::RunState;
 use crate::vm::transitions::*;
@@ -198,7 +198,7 @@ impl CoreVM {
     ) -> Result<AwaitResponse, Error> {
         match self.do_transition(DoProgress(unresolved_future)) {
             Ok(Ok(do_progress_response)) => Ok(do_progress_response),
-            Ok(Err(_)) => Err(SUSPENDED),
+            Ok(Err(_)) => Err(suspended()),
             Err(e) => Err(e),
         }
     }
@@ -263,7 +263,7 @@ impl super::VM for CoreVM {
                     format!("cannot read '{CONTENT_TYPE}' header: {e:?}"),
                 )
             })?
-            .ok_or(errors::MISSING_CONTENT_TYPE)?
+            .ok_or_else(errors::missing_content_type)?
             .parse::<Version>()?;
 
         if version < Version::minimum_supported_version()
@@ -518,7 +518,7 @@ impl super::VM for CoreVM {
                                 Ok(AwaitResponse::AnyCompleted) => {
                                     let invocation_id = match self.do_transition(CopyNotification(handle)) {
                                         Ok(Ok(Some(Value::InvocationId(invocation_id)))) => Ok(invocation_id),
-                                        Ok(Err(_)) => Err(SUSPENDED),
+                                        Ok(Err(_)) => Err(suspended()),
                                         _ => panic!("Unexpected variant! If the id handle is completed, it must be an invocation id handle!")
                                     }?;
 
@@ -590,7 +590,7 @@ impl super::VM for CoreVM {
                 Ok(Some(value))
             }
             Ok(Ok(None)) => Ok(None),
-            Ok(Err(_)) => Err(SUSPENDED),
+            Ok(Err(_)) => Err(suspended()),
             Err(e) => Err(e),
         }
     }
@@ -821,19 +821,19 @@ impl super::VM for CoreVM {
         );
         if let Some(idempotency_key) = &target.idempotency_key {
             if idempotency_key.is_empty() {
-                self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
+                self.do_transition(HitError(empty_idempotency_key()))?;
                 unreachable!();
             }
         }
         if let Some(scope) = &target.scope {
             if scope.is_empty() {
-                self.do_transition(HitError(EMPTY_SCOPE))?;
+                self.do_transition(HitError(empty_scope()))?;
                 unreachable!();
             }
         }
         if let Some(limit_key) = &target.limit_key {
             if limit_key.is_empty() {
-                self.do_transition(HitError(EMPTY_LIMIT_KEY))?;
+                self.do_transition(HitError(empty_limit_key()))?;
                 unreachable!();
             }
         }
@@ -916,19 +916,19 @@ impl super::VM for CoreVM {
         );
         if let Some(idempotency_key) = &target.idempotency_key {
             if idempotency_key.is_empty() {
-                self.do_transition(HitError(EMPTY_IDEMPOTENCY_KEY))?;
+                self.do_transition(HitError(empty_idempotency_key()))?;
                 unreachable!();
             }
         }
         if let Some(scope) = &target.scope {
             if scope.is_empty() {
-                self.do_transition(HitError(EMPTY_SCOPE))?;
+                self.do_transition(HitError(empty_scope()))?;
                 unreachable!();
             }
         }
         if let Some(limit_key) = &target.limit_key {
             if limit_key.is_empty() {
-                self.do_transition(HitError(EMPTY_LIMIT_KEY))?;
+                self.do_transition(HitError(empty_limit_key()))?;
                 unreachable!();
             }
         }
@@ -1268,10 +1268,13 @@ impl super::VM for CoreVM {
                 }
             }
         }
-        if let RunExitResult::TerminalFailure(f) = &value {
-            if !f.metadata.is_empty() {
-                self.verify_feature_support("terminal error metadata", Version::V6)?;
-            }
+        let has_metadata = match &value {
+            RunExitResult::TerminalFailure(f) => !f.metadata.is_empty(),
+            RunExitResult::RetryableFailure { error, .. } => !error.metadata().is_empty(),
+            RunExitResult::Success(_) => false,
+        };
+        if has_metadata {
+            self.verify_feature_support("terminal error metadata", Version::V6)?;
         }
         if retry_policy.should_pause_on_max_attempts() {
             self.verify_feature_support("pause", Version::V7)?;
@@ -1336,7 +1339,7 @@ impl super::VM for CoreVM {
                 scope: Some(scope), ..
             } => {
                 if scope.is_empty() {
-                    self.do_transition(HitError(EMPTY_SCOPE))?;
+                    self.do_transition(HitError(empty_scope()))?;
                     unreachable!();
                 }
                 self.verify_feature_support("scope", Version::V7)?;
@@ -1407,7 +1410,7 @@ impl super::VM for CoreVM {
                 scope: Some(scope), ..
             } => {
                 if scope.is_empty() {
-                    self.do_transition(HitError(EMPTY_SCOPE))?;
+                    self.do_transition(HitError(empty_scope()))?;
                     unreachable!();
                 }
                 self.verify_feature_support("scope", Version::V7)?;

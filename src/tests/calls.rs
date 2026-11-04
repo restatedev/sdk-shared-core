@@ -292,7 +292,7 @@ fn call_with_empty_scope_errors() {
         )
         .unwrap_err();
 
-    assert_that!(err, eq_error(crate::vm::errors::EMPTY_SCOPE));
+    assert_that!(err, eq_error(crate::vm::errors::empty_scope()));
 }
 
 #[test]
@@ -321,7 +321,7 @@ fn call_with_empty_limit_key_errors() {
         )
         .unwrap_err();
 
-    assert_that!(err, eq_error(crate::vm::errors::EMPTY_LIMIT_KEY));
+    assert_that!(err, eq_error(crate::vm::errors::empty_limit_key()));
 }
 
 #[test]

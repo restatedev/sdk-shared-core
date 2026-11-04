@@ -13,8 +13,8 @@ use crate::service_protocol::messages::{
 };
 use crate::vm::errors::codes;
 use crate::vm::errors::{
-    EphemeralStateGetWithClosedInput, EPHEMERAL_COMMAND_DURING_REPLAY,
-    INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS,
+    ephemeral_command_during_replay, input_closed_while_waiting_ephemeral_notifications,
+    EphemeralStateGetWithClosedInput,
 };
 
 fn start_with_state(partial_state: bool, state: &[(&'static str, &'static str)]) -> StartMessage {
@@ -505,9 +505,7 @@ mod failures {
                 vm.notify_input(encoder.encode(&notification));
                 assert_that!(
                     vm.do_await(UnresolvedFuture::Single(run)),
-                    err(pat!(Error {
-                        code: eq(codes::PROTOCOL_VIOLATION.code())
-                    }))
+                    err(has_error_code(codes::PROTOCOL_VIOLATION))
                 );
             });
 
@@ -679,7 +677,9 @@ mod failures {
                 vm.notify_input_closed();
                 assert_that!(
                     vm.do_await(UnresolvedFuture::Single(run)),
-                    err(eq_error(INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS))
+                    err(eq_error(
+                        input_closed_while_waiting_ephemeral_notifications()
+                    ))
                 );
             });
 
@@ -689,7 +689,7 @@ mod failures {
             .unwrap();
         assert_that!(
             output.next_decoded::<ErrorMessage>().unwrap(),
-            error_message_as_error(INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS)
+            error_message_as_error(input_closed_while_waiting_ephemeral_notifications())
         );
         assert_eq!(output.next(), None);
     }
@@ -703,9 +703,7 @@ mod failures {
                 vm.sys_input().unwrap();
                 assert_that!(
                     vm.ephemeral_state_get("STATE".to_owned()),
-                    err(pat!(Error {
-                        code: eq(codes::UNSUPPORTED_FEATURE.code())
-                    }))
+                    err(has_error_code(codes::UNSUPPORTED_FEATURE))
                 );
             });
 
@@ -758,13 +756,13 @@ mod failures {
                 vm.sys_input().unwrap();
                 assert_that!(
                     vm.ephemeral_state_get("STATE".to_owned()),
-                    err(eq_error(EPHEMERAL_COMMAND_DURING_REPLAY))
+                    err(eq_error(ephemeral_command_during_replay()))
                 );
             });
 
         assert_that!(
             output.next_decoded::<ErrorMessage>().unwrap(),
-            error_message_as_error(EPHEMERAL_COMMAND_DURING_REPLAY)
+            error_message_as_error(ephemeral_command_during_replay())
         );
         assert_eq!(output.next(), None);
     }

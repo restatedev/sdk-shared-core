@@ -2,7 +2,7 @@ use super::*;
 
 use crate::service_protocol::messages::{
     propose_run_completion_message, run_completion_notification_message, AwaitingOnMessage,
-    EndMessage, ErrorBehavior, ErrorMessage, Failure, OutputCommandMessage,
+    EndMessage, ErrorBehavior, ErrorMessage, Failure, FailureMetadata, OutputCommandMessage,
     ProposeRunCompletionAckMessage, ProposeRunCompletionMessage, RunCommandMessage,
     RunCompletionNotificationMessage, SleepCommandMessage, SleepCompletionNotificationMessage,
     StartMessage, SuspensionMessage,
@@ -1395,6 +1395,132 @@ mod retry_policy {
                 max_interval: None,
                 on_max_attempts: OnMaxAttempts::Pause,
             },
+        );
+    }
+
+    #[test]
+    fn exit_with_retryable_error_retry_policy_exhausted_propagates_code_and_metadata() {
+        let expected_failure = Failure {
+            code: 503,
+            message: "my-error".to_string(),
+            metadata: vec![
+                FailureMetadata {
+                    key: "source".to_string(),
+                    value: "run-closure".to_string(),
+                },
+                FailureMetadata {
+                    key: "attempt".to_string(),
+                    value: "last".to_string(),
+                },
+            ],
+        };
+
+        let mut output = VMTestCase::new()
+            .input(start_message(1))
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+
+                let RunHandle { replayed, handle } =
+                    vm.sys_run("my-side-effect".to_owned()).unwrap();
+                assert!(!replayed);
+                vm.propose_run_completion(
+                    handle,
+                    RunExitResult::RetryableFailure {
+                        error: Error::new(503u16, "my-error")
+                            .with_stacktrace("my-stacktrace")
+                            .with_metadata([("source", "run-closure"), ("attempt", "last")]),
+                        attempt_duration: Duration::from_millis(10),
+                    },
+                    RetryPolicy::Exponential {
+                        initial_interval: Duration::from_millis(10),
+                        factor: 2.0,
+                        max_attempts: Some(1),
+                        max_duration: None,
+                        max_interval: None,
+                        on_max_attempts: OnMaxAttempts::FailAsTerminal,
+                    },
+                )
+                .unwrap();
+
+                vm.notify_input(encoder.encode(&RunCompletionNotificationMessage {
+                    completion_id: 1,
+                    result: Some(run_completion_notification_message::Result::Failure(
+                        expected_failure.clone(),
+                    )),
+                }));
+                vm.notify_input_closed();
+
+                assert_eq!(
+                    vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                    AwaitResponse::AnyCompleted
+                );
+                let value = vm.take_notification(handle).unwrap().unwrap();
+                let Value::Failure(f) = value else {
+                    panic!("Unexpected value {value:?}")
+                };
+                assert_eq!(f.code, 503);
+                assert_eq!(f.message, "my-error");
+                assert_eq!(
+                    f.metadata,
+                    vec![
+                        ("source".to_string(), "run-closure".to_string()),
+                        ("attempt".to_string(), "last".to_string())
+                    ]
+                );
+                vm.sys_end().unwrap();
+            });
+
+        assert_eq!(
+            output.next_decoded::<RunCommandMessage>().unwrap(),
+            RunCommandMessage {
+                result_completion_id: 1,
+                name: "my-side-effect".to_string(),
+            }
+        );
+        assert_eq!(
+            output
+                .next_decoded::<ProposeRunCompletionMessage>()
+                .unwrap(),
+            ProposeRunCompletionMessage {
+                result_completion_id: 1,
+                result: Some(propose_run_completion_message::Result::Failure(
+                    expected_failure
+                )),
+            }
+        );
+        assert_eq!(
+            output.next_decoded::<EndMessage>().unwrap(),
+            EndMessage::default()
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn propose_run_completion_with_retryable_error_metadata_on_v5_returns_unsupported_feature() {
+        let mut vm = CoreVM::mock_init(Version::V5);
+        let encoder = Encoder::new(Version::V5);
+        vm.notify_input(encoder.encode(&start_message(1)));
+        vm.notify_input(encoder.encode(&input_entry_message(b"my-data")));
+        vm.notify_input_closed();
+        vm.sys_input().unwrap();
+        let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+        assert!(!replayed);
+
+        let err = vm
+            .propose_run_completion(
+                handle,
+                RunExitResult::RetryableFailure {
+                    error: Error::internal("my-error").with_metadata([("k", "v")]),
+                    attempt_duration: Duration::from_millis(0),
+                },
+                RetryPolicy::Infinite,
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            err.code,
+            crate::vm::errors::codes::UNSUPPORTED_FEATURE.code()
         );
     }
 

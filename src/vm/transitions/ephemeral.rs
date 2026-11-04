@@ -5,8 +5,8 @@ use crate::service_protocol::messages::{
 use crate::service_protocol::RawMessage;
 use crate::vm::context::{Context, EagerGetState};
 use crate::vm::errors::{
-    EphemeralStateGetWithClosedInput, EMPTY_GET_STATE_EPHEMERAL_NOTIFICATION,
-    EPHEMERAL_COMMAND_DURING_REPLAY,
+    empty_get_state_ephemeral_notification, ephemeral_command_during_replay,
+    EphemeralStateGetWithClosedInput,
 };
 use crate::vm::transitions::{Transition, TransitionAndReturn};
 use crate::vm::State;
@@ -55,7 +55,7 @@ impl TransitionAndReturn<Context, EphemeralStateGet> for State {
                     }
                 }
             }
-            State::Replaying { .. } => Err(EPHEMERAL_COMMAND_DURING_REPLAY),
+            State::Replaying { .. } => Err(ephemeral_command_during_replay()),
             s => Err(s.as_unexpected_state("SysEphemeralStateGet")),
         }
     }
@@ -74,7 +74,10 @@ impl Transition<Context, NewGetStateEphemeralNotificationMessage> for State {
                 ephemeral_commands, ..
             } => {
                 let msg = msg.decode_to::<GetStateEphemeralNotificationMessage>(0)?;
-                let value = match msg.result.ok_or(EMPTY_GET_STATE_EPHEMERAL_NOTIFICATION)? {
+                let value = match msg
+                    .result
+                    .ok_or_else(empty_get_state_ephemeral_notification)?
+                {
                     get_state_ephemeral_notification_message::Result::Void(_) => Value::Void,
                     get_state_ephemeral_notification_message::Result::Value(v) => {
                         Value::Success(v.content)

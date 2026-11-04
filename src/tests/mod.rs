@@ -192,19 +192,28 @@ impl Iterator for OutputIterator {
 
 /// Matcher for Error
 pub fn eq_error(vm_error: Error) -> impl Matcher<ActualT = Error> {
-    pat!(Error {
-        code: eq(vm_error.code),
-        message: eq(vm_error.message),
-        stacktrace: eq(vm_error.stacktrace)
+    predicate(move |e: &Error| {
+        e.code == vm_error.code
+            && e.message == vm_error.message
+            && e.stacktrace == vm_error.stacktrace
     })
+    .with_description("is the expected error", "is not the expected error")
+}
+
+/// Matcher for Error code
+pub fn has_error_code(
+    code: crate::vm::errors::InvocationErrorCode,
+) -> impl Matcher<ActualT = Error> {
+    predicate(move |e: &Error| e.code == code.code())
+        .with_description("has the expected error code", "has a different error code")
 }
 
 /// Matcher for ErrorMessage to equal Error
 pub fn error_message_as_error(vm_error: Error) -> impl Matcher<ActualT = ErrorMessage> {
     pat!(ErrorMessage {
         code: eq(vm_error.code as u32),
-        message: eq(vm_error.message),
-        stacktrace: eq(vm_error.stacktrace)
+        message: eq(vm_error.message.to_string()),
+        stacktrace: eq(vm_error.stacktrace.clone())
     })
 }
 

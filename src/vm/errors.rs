@@ -1,11 +1,10 @@
 use crate::error::NotificationMetadata;
 use crate::fmt::{display_closed_error, DiffFormatter};
-use crate::service_protocol::messages::{CommandMessageHeaderDiff, ErrorBehavior, RestateMessage};
+use crate::service_protocol::messages::{CommandMessageHeaderDiff, RestateMessage};
 use crate::service_protocol::{
     CompletionId, ContentTypeError, DecodingError, MessageType, NotificationId,
 };
 use crate::{Error, Version};
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 // Error codes
@@ -76,60 +75,74 @@ pub mod codes {
     pub const SUSPENDED: InvocationErrorCode = InvocationErrorCode(599);
 }
 
-// Const errors
+// Well-known errors
 
-impl Error {
-    const fn new_const(code: InvocationErrorCode, message: &'static str) -> Self {
-        Error {
-            code: code.0,
-            message: Cow::Borrowed(message),
-            stacktrace: String::new(),
-            related_command: None,
-            next_retry_delay: None,
-            behavior: ErrorBehavior::Retry,
-        }
-    }
+/// Generates a `pub(crate) fn $name() -> Error` for each well-known error.
+macro_rules! well_known_errors {
+    ($($(#[$meta:meta])* $name:ident => ($code:expr, $message:literal)),* $(,)?) => {
+        $(
+            $(#[$meta])*
+            pub(crate) fn $name() -> Error {
+                Error::new($code, $message)
+            }
+        )*
+    };
 }
 
-pub const MISSING_CONTENT_TYPE: Error = Error::new_const(
-    codes::UNSUPPORTED_MEDIA_TYPE,
-    "Missing content type when invoking the service deployment",
-);
-
-pub const UNEXPECTED_INPUT_MESSAGE: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "Expected incoming message to be an entry",
-);
-
-pub const KNOWN_ENTRIES_IS_ZERO: Error =
-    Error::new_const(codes::INTERNAL, "Known entries is zero, expected >= 1");
-
-pub const UNEXPECTED_ENTRY_MESSAGE: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "Expected entry messages only when waiting replay entries",
-);
-
-pub const INPUT_CLOSED_WHILE_WAITING_ENTRIES: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "The input was closed while still waiting to receive all journal to replay",
-);
-
-pub const EMPTY_IDEMPOTENCY_KEY: Error = Error::new_const(
-    codes::INTERNAL,
-    "Trying to execute an idempotent request with an empty idempotency key. The idempotency key must be non-empty.",
-);
-
-pub const EMPTY_LIMIT_KEY: Error = Error::new_const(
-    codes::INTERNAL,
-    "Trying to execute a request with an empty limit key. The limit key must be non-empty.",
-);
-
-pub const EMPTY_SCOPE: Error = Error::new_const(
-    codes::INTERNAL,
-    "Trying to execute a request with an empty scope. The scope must be non-empty.",
-);
-
-pub const SUSPENDED: Error = Error::new_const(codes::SUSPENDED, "Suspended invocation");
+well_known_errors! {
+    missing_content_type => (
+        codes::UNSUPPORTED_MEDIA_TYPE,
+        "Missing content type when invoking the service deployment"
+    ),
+    unexpected_input_message => (
+        codes::PROTOCOL_VIOLATION,
+        "Expected incoming message to be an entry"
+    ),
+    known_entries_is_zero => (codes::INTERNAL, "Known entries is zero, expected >= 1"),
+    unexpected_entry_message => (
+        codes::PROTOCOL_VIOLATION,
+        "Expected entry messages only when waiting replay entries"
+    ),
+    input_closed_while_waiting_entries => (
+        codes::PROTOCOL_VIOLATION,
+        "The input was closed while still waiting to receive all journal to replay"
+    ),
+    empty_idempotency_key => (
+        codes::INTERNAL,
+        "Trying to execute an idempotent request with an empty idempotency key. The idempotency key must be non-empty."
+    ),
+    empty_limit_key => (
+        codes::INTERNAL,
+        "Trying to execute a request with an empty limit key. The limit key must be non-empty."
+    ),
+    empty_scope => (
+        codes::INTERNAL,
+        "Trying to execute a request with an empty scope. The scope must be non-empty."
+    ),
+    suspended => (codes::SUSPENDED, "Suspended invocation"),
+    empty_get_eager_state => (
+        codes::PROTOCOL_VIOLATION,
+        "Unexpected empty value variant for get eager state."
+    ),
+    empty_get_eager_state_keys => (
+        codes::PROTOCOL_VIOLATION,
+        "Unexpected empty value variant for state keys."
+    ),
+    empty_get_state_ephemeral_notification => (
+        codes::PROTOCOL_VIOLATION,
+        "Unexpected empty result variant for get state ephemeral notification."
+    ),
+    input_closed_while_waiting_ephemeral_notifications => (
+        codes::INTERNAL,
+        "The input stream was closed while waiting for the result of a get state not recorded in the journal. Getting state without recording it in the journal requires a bidirectional stream between Restate and the service (not available in request/response mode, e.g. AWS Lambda), unless the state value is available in the eager state sent by Restate."
+    ),
+    /// Ephemeral commands should really only be executed within ctx.run, so this is a "proxy safeguard" for that, because ctx.run
+    /// are really only started when we're processing (just track AwaitResponse::ExecuteRun usages)
+    ephemeral_command_during_replay => (
+        codes::JOURNAL_MISMATCH,
+        "Cannot execute ephemeral commands (e.g. get state without recording it in the journal) during replay, as their result might differ from the original execution. Ephemeral commands can be used only while processing new journal entries, e.g. within a ctx.run closure. This usually means the code uses them outside a ctx.run closure, or the code was changed."
+    ),
+}
 
 // Other errors
 
@@ -336,16 +349,6 @@ impl std::error::Error for UncompletedDoProgressDuringReplay {}
 #[error("Cannot convert a eager state key into UTF-8 String: {0:?}")]
 pub struct BadEagerStateKeyError(#[from] pub(crate) std::string::FromUtf8Error);
 
-pub const EMPTY_GET_EAGER_STATE: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "Unexpected empty value variant for get eager state.",
-);
-
-pub const EMPTY_GET_EAGER_STATE_KEYS: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "Unexpected empty value variant for state keys.",
-);
-
 #[derive(Debug, thiserror::Error)]
 #[error("Feature '{feature}' is not supported by the negotiated protocol version '{current_version}', the minimum required version is '{minimum_required_version}'")]
 pub struct UnsupportedFeatureForNegotiatedVersion {
@@ -380,11 +383,6 @@ impl BadProposeRunCompletionAck {
     }
 }
 
-pub const EMPTY_GET_STATE_EPHEMERAL_NOTIFICATION: Error = Error::new_const(
-    codes::PROTOCOL_VIOLATION,
-    "Unexpected empty result variant for get state ephemeral notification.",
-);
-
 #[derive(Debug, thiserror::Error)]
 #[error("Cannot get state '{key}' without recording it in the journal: the input stream is closed, thus Restate cannot answer the request. Getting state without recording it in the journal requires a bidirectional stream between Restate and the service (not available in request/response mode, e.g. AWS Lambda), unless the state value is available in the eager state sent by Restate.")]
 pub struct EphemeralStateGetWithClosedInput {
@@ -396,18 +394,6 @@ impl EphemeralStateGetWithClosedInput {
         Self { key }
     }
 }
-
-pub const INPUT_CLOSED_WHILE_WAITING_EPHEMERAL_NOTIFICATIONS: Error = Error::new_const(
-    codes::INTERNAL,
-    "The input stream was closed while waiting for the result of a get state not recorded in the journal. Getting state without recording it in the journal requires a bidirectional stream between Restate and the service (not available in request/response mode, e.g. AWS Lambda), unless the state value is available in the eager state sent by Restate.",
-);
-
-/// Ephemeral commands should really only be executed within ctx.run, so this is a "proxy safeguard" for that, because ctx.run
-/// are really only started when we're processing (just track AwaitResponse::ExecuteRun usages)
-pub const EPHEMERAL_COMMAND_DURING_REPLAY: Error = Error::new_const(
-    codes::JOURNAL_MISMATCH,
-    "Cannot execute ephemeral commands (e.g. get state without recording it in the journal) during replay, as their result might differ from the original execution. Ephemeral commands can be used only while processing new journal entries, e.g. within a ctx.run closure. This usually means the code uses them outside a ctx.run closure, or the code was changed.",
-);
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("The provided duration for '{0}' is out of bounds: {1:?}")]
