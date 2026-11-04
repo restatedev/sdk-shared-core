@@ -17,7 +17,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-22.04 ]
-        features: [ "all", "" ]
+        features:
+          # All features
+          - "all"
+          # Test all without object store
+          - "request_identity,sha2_random_seed,rust_crypto,sql,tunnel"
+          # Only request identity (used by some sdks)
+          - "request_identity,rust_crypto"
+          # No features (default)
+          - ""
     env:
       RUST_BACKTRACE: full
     steps:
