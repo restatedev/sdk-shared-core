@@ -5,6 +5,10 @@ mod headers;
 mod request_identity;
 mod retries;
 mod service_protocol;
+#[cfg(feature = "sql")]
+pub mod sql;
+#[cfg(feature = "sql")]
+pub mod state;
 #[cfg(feature = "tracing_pretty")]
 pub mod tracing_pretty;
 mod vm;

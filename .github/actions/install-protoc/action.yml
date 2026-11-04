@@ -13,10 +13,15 @@ runs:
         LINK: https://github.com/protocolbuffers/protobuf/releases/download
         PROTOC_VERSION: ${{ inputs.protoc-version }}
       run: |
+        case "$(uname -m)" in
+          x86_64) PROTOC_ARCH=x86_64 ;;
+          aarch64|arm64) PROTOC_ARCH=aarch_64 ;;
+          *) echo "$(uname -m) not supported"; exit 1 ;;
+        esac
         if [ "$RUNNER_OS" == "Linux" ]; then
-          PROTOC_ZIP=protoc-$PROTOC_VERSION-linux-x86_64.zip
+          PROTOC_ZIP=protoc-$PROTOC_VERSION-linux-$PROTOC_ARCH.zip
         elif [ "$RUNNER_OS" == "macOS" ]; then
-          PROTOC_ZIP=protoc-$PROTOC_VERSION-osx-x86_64.zip
+          PROTOC_ZIP=protoc-$PROTOC_VERSION-osx-$PROTOC_ARCH.zip
         else
           echo "$RUNNER_OS not supported"
           exit 1

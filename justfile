@@ -66,8 +66,12 @@ print-target:
 test: (_target-installed target)
     cargo nextest run --no-fail-fast {{ _target-option }} {{ _features }}
 
-# Runs lints and tests
-verify: lint test
+# Builds the benchmarks, without running them: those whose required features are on
+build-benches: (_target-installed target)
+    cargo build {{ _target-option }} {{ _features }} --benches
+
+# Runs lints and tests, and builds the benchmarks
+verify: lint test build-benches
 
 udeps *flags:
     RUSTC_BOOTSTRAP=1 cargo udeps --all-features --all-targets {{ flags }}
