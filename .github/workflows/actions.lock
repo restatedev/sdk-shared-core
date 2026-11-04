@@ -6,7 +6,6 @@ workflows:
     '.github/workflows/ci.yml':
         - 'actions-rust-lang/setup-rust-toolchain@v1.17.0'
         - 'actions/checkout@v4.4.0'
-        - 'extractions/setup-just@v2.0.0'
         - 'extractions/setup-just@v4.0.0'
         - 'taiki-e/install-action@v2.87.31'
     '.github/workflows/cla.yml': []
@@ -40,11 +39,6 @@ dependencies:
         commit: 'sha1-0551596312d4008a6dfbc4d3c38fa20eaef46d2d'
         owner_id: 64203070
         repo_id: 341105718
-    'extractions/setup-just@v2.0.0':
-        ref: 'v2.0.0'
-        commit: 'sha1-dd310ad5a97d8e7b41793f8ef055398d51ad4de6'
-        owner_id: 64203070
-        repo_id: 258510356
     'extractions/setup-just@v4.0.0':
         ref: 'v4.0.0'
         commit: 'sha1-53165ef7e734c5c07cb06b3c8e7b647c5aa16db3'
