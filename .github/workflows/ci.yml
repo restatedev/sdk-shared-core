@@ -70,7 +70,7 @@ jobs:
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
           - os: ubuntu-22.04
             target: wasm32-unknown-unknown
-            features: request_identity
+            features: ""
     env:
       RUST_BACKTRACE: full
     steps:
