@@ -333,7 +333,7 @@ async fn supervise<S: TunnelService>(
                         } else {
                             // The server left the record set: stop dialing it and let
                             // its live connections finish their work.
-                            tracing::info!(target = %target, "Tunnel server no longer resolved; draining its connections");
+                            tracing::debug!(target = %target, "Tunnel server no longer resolved; draining its connections");
                             slot.stop.cancel();
                             false
                         }
@@ -523,7 +523,7 @@ async fn run_slot<S: TunnelService>(
                         established.insert(attempt_id);
                         shared.connected.fetch_add(1, Ordering::SeqCst);
                         if !graceful.is_cancelled() && !force.is_cancelled() {
-                            let first = shared.status.send_if_modified(|state| {
+                            shared.status.send_if_modified(|state| {
                                 if matches!(state, Status::Starting) {
                                     *state = Status::Ready(info.clone());
                                     true
@@ -531,11 +531,8 @@ async fn run_slot<S: TunnelService>(
                                     false
                                 }
                             });
-                            if first {
-                                log_registration_hint(&shared.options, &info);
-                            }
                         }
-                        tracing::info!(attempt_id, target = %target, "Tunnel connection established");
+                        tracing::debug!(attempt_id, target = %target, "Tunnel connection established");
                         shared.emit(Event::Connected { target: target_label.clone(), info });
                     }
                     AttemptEvent::ServerDrain { attempt_id, uptime } => {
@@ -553,7 +550,7 @@ async fn run_slot<S: TunnelService>(
                         if current.is_none() {
                             next_dial = Instant::now();
                         }
-                        tracing::info!(attempt_id, target = %target, "Tunnel server asked to drain; reconnecting");
+                        tracing::debug!(attempt_id, target = %target, "Tunnel server asked to drain; reconnecting");
                         shared.emit(Event::ServerDrain { target: target_label.clone() });
                     }
                 }
@@ -590,7 +587,7 @@ async fn run_slot<S: TunnelService>(
                                     streak_attempts = 0;
                                     streak_started_at = None;
                                 }
-                                tracing::warn!(attempt_id, target = %target, "Tunnel connection ended; reconnecting");
+                                tracing::debug!(attempt_id, target = %target, "Tunnel connection ended; reconnecting");
                                 shared.emit(Event::Disconnected { target: target_label.clone(), reason: None });
                             }
                             AttemptOutcome::Retryable(reason) => {
@@ -663,19 +660,6 @@ fn give_up_reason(
         }
     }
     None
-}
-
-fn log_registration_hint(options: &TunnelEngineOptions, info: &TunnelInfo) {
-    tracing::info!(
-        name = %options.name,
-        environment_id = %options.environment_id,
-        region = %options.region,
-        proxy_url = %info.proxy_url,
-        tunnel_url = %info.tunnel_url,
-        "Connected to Restate Cloud. Register this deployment as {} (or open {})",
-        options.registration_identifier(),
-        options.registration_deep_link()
-    );
 }
 
 async fn run_one_attempt<S: TunnelService>(
