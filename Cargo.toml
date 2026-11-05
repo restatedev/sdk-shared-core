@@ -37,6 +37,10 @@ tunnel = [
     "dep:rustls-native-certs",
     "dep:socket2",
     "dep:tokio",
+    "tokio/macros",
+    "tokio/net",
+    "tokio/sync",
+    "tokio/time",
     "dep:tokio-rustls",
     "dep:tokio-util",
     "dep:uuid",
@@ -59,7 +63,11 @@ sql = [
     "dep:foyer-storage",
     "dep:foyer-tokio",
     "dep:tokio",
+    "tokio/rt-multi-thread",
     "dep:turso_core",
+    # Encryption is off, so aegis is never called: its pure-Rust backend spares
+    # every SDK compiling the bundled C sources with whatever toolchain it has.
+    "turso_core/pure-rust-crypto",
 ]
 # Internal, for the benchmarks in `benches/` (hence the `__`: no API
 # stability): the state's in-memory stores, fault injection and latency
@@ -105,9 +113,7 @@ foyer-common = { version = "=0.22.3", optional = true }
 foyer-memory = { version = "=0.22.3", optional = true }
 foyer-storage = { version = "=0.22.3", optional = true }
 foyer-tokio = { version = "=0.22.3", optional = true }
-# foyer's disk tier runs on tokio; the cache starts a small runtime when the host has none.
-# The tunnel engine runs on the host's runtime and needs the networking features.
-tokio = { version = "1.49", default-features = false, features = ["rt-multi-thread", "io-util", "macros", "net", "rt", "sync", "time"], optional = true }
+tokio = { version = "1.49", default-features = false, features = ["rt"], optional = true }
 object_store = { version = "0.14", optional = true, default-features = false }
 
 # tunnel
