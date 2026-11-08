@@ -266,3 +266,64 @@ fn an_open_session_reads_its_state_while_another_flushes() -> Result<()> {
         Ok(())
     })
 }
+
+/// A reader at the head the owner last flushed takes the owner's state from
+/// the cache: its open gets the head and nothing more, where one without the
+/// cache gets the manifest and every tail entry too. It reads the same state,
+/// and records nothing as the owner's: a reader at a head that the cache does
+/// not know loads it, and so does the next one, and the owner still opens on
+/// its own state.
+#[test]
+fn a_reader_at_the_owners_head_takes_the_owners_state() -> Result<()> {
+    futures::executor::block_on(async {
+        let memory = MemoryKv::default();
+        let store: Arc<dyn KvStore> = Arc::new(memory.clone());
+        let setup = |cache: Option<&Namespace>| Setup {
+            options: StateOptions::default(),
+            cache: cache.cloned(),
+            packs: None,
+        };
+        // The gets that load a state: the head and the tail entries (the
+        // manifest, as any range of a pack, the cache may hold).
+        let loading = || {
+            let stats = memory.stats();
+            stats.kind("head").gets + stats.kind("tail").gets
+        };
+        let owner = fresh_namespace();
+        let mut model = Model::default();
+        let mut rng = Rng::new(0x4ead);
+        let session = Session::open(store.clone(), setup(Some(&owner))).await?;
+        for _ in 0..40 {
+            let ops: Vec<Op> = (0..3).map(|_| Op::random(&mut rng)).collect();
+            session.flush(&ops).await?;
+            model = model.applied(&ops);
+        }
+        drop(session);
+
+        memory.reset_stats();
+        let warm = Session::reader(store.clone(), setup(Some(&owner))).await?;
+        let stats = memory.stats();
+        assert_eq!((stats.gets, stats.kind("head").gets), (1, 1), "{stats:?}");
+        assert_eq!(model.differs(&warm).await?, None);
+
+        memory.reset_stats();
+        let cold = Session::reader(store.clone(), setup(None)).await?;
+        let loaded = loading();
+        assert!(memory.stats().kind("tail").gets > 1, "{:?}", memory.stats());
+        assert_eq!(model.differs(&cold).await?, None);
+
+        let other = fresh_namespace();
+        for _ in 0..2 {
+            memory.reset_stats();
+            let unknown = Session::reader(store.clone(), setup(Some(&other))).await?;
+            assert_eq!(loading(), loaded);
+            assert_eq!(model.differs(&unknown).await?, None);
+        }
+
+        memory.reset_stats();
+        let reopened = Session::open(store.clone(), setup(Some(&owner))).await?;
+        assert_eq!(memory.stats().gets, 1, "{:?}", memory.stats());
+        assert_eq!(model.differs(&reopened).await?, None);
+        Ok(())
+    })
+}

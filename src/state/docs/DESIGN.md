@@ -111,7 +111,9 @@ state, however the owner flushes meanwhile: snapshot isolation, with no
 check and no retry. The packs and the tail its head names stay until the
 owner's second checkpoint after it, so a reader that outlives that fails
 with "is gone", and its handler is retried. A reader may collect garbage
-too. With the cache, a reader reads the ranges the owner cached.
+too. With the cache, a reader reads the ranges the owner cached, and,
+at the head the owner last saw, takes the owner's state rather than
+load it: one get, the head, as the owner's own open.
 
 ## Engine integration
 

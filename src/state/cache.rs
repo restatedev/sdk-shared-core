@@ -349,6 +349,18 @@ impl NamespaceCache {
         self.owner().durable.clone()
     }
 
+    /// The state as of the head `bytes`, if it is the head this owner last
+    /// saw: for a reader, which takes it without changing what the owner
+    /// knows, where an owner's open validates and records.
+    pub(crate) fn durable_at(&self, bytes: Option<&[u8]>) -> Option<Arc<Durable>> {
+        let owner = self.owner();
+        // An absent head is an empty namespace; a real head is never empty.
+        if owner.head.as_deref() != Some(bytes.unwrap_or_default()) {
+            return None;
+        }
+        owner.durable.clone()
+    }
+
     /// Record the durable head `bytes` an open read, and the state as of
     /// it, and, if `committed`, that a flush may build on it unless a flush
     /// runs (that one's outcome decides); nothing, if the owner changed

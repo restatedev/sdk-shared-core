@@ -454,7 +454,9 @@ pub(crate) struct Snapshot {
 impl Snapshot {
     /// Open the namespace: see the module documentation. An owner without a
     /// cache, or whose last flush had an unknown outcome, syncs alongside, so
-    /// that what it reads is durable; a `reader` reads what is stored.
+    /// that what it reads is durable; a `reader` reads what is stored, and
+    /// takes the owner's state from the cache when it read the head the
+    /// owner last saw.
     pub(super) async fn open(
         tiered: Arc<Tiered>,
         options: StateOptions,
@@ -483,7 +485,12 @@ impl Snapshot {
         };
         let validated = owner.map(|owner| owner.validate(head_bytes.as_deref()));
         let known = validated.as_ref().is_some_and(|validated| validated.known);
-        let reused = owner.filter(|_| known).and_then(NamespaceCache::durable);
+        let reused = match (&cache, reader) {
+            // A reader at the head the owner last saw takes the owner's state, which is what loading that
+            // head builds; it reads it, and changes nothing in the cache.
+            (Some(cache), true) => cache.durable_at(head_bytes.as_deref()),
+            _ => owner.filter(|_| known).and_then(NamespaceCache::durable),
+        };
         let mut snapshot = Self {
             tiered,
             options,

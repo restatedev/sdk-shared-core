@@ -387,9 +387,10 @@ version 5, and `C4` the checkpoint of version 4 (its pack `P4` and manifest
 
 1. **Get the head.** If this process's cache holds the state as of exactly
    this head (it was the last to flush, say), reuse it, with its parked SQL
-   engine: done, in one round trip. An owner without a cache, or whose
-   last flush had an unknown outcome, syncs in the same round trip, so
-   that what it reads is durable.
+   engine: done, in one round trip. A reader reuses it too, without the
+   engine, and changes nothing in the cache. An owner without a cache, or
+   whose last flush had an unknown outcome, syncs in the same round trip,
+   so that what it reads is durable.
 2. Otherwise, **get the checkpoint's manifest and the tail past it**,
    together, and apply the tail to the overlay in memory.
 3. **Get large records**, and every frame and patch of a
@@ -445,8 +446,8 @@ in memory and spilling to a local disk file):
 - **Namespace states**: per namespace, the head bytes it last read or
   wrote and the state as of that head, kept by their bytes (256 MiB by
   default). An open that reads the same head bytes reuses the state and
-  reads nothing more; any other head (another process flushed) loads that
-  head's state, from cached ranges where it can.
+  reads nothing more, a reader's too; any other head (another process
+  flushed) loads that head's state, from cached ranges where it can.
 - **Parked engines**: SQL parks its engine at the end of a
   session (64 MiB in all), so the next session skips parsing the schema.
 
