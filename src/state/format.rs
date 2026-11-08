@@ -4,7 +4,7 @@
 //! | Store   | Key                                            | Holds                                                                               |
 //! | ------- | ---------------------------------------------- | ----------------------------------------------------------------------------------- |
 //! | Restate | `v22/head`                                     | The commit point: the version, the checkpoint and the one before, the tail's extent |
-//! | Restate | `v22/tail/<version>/<part>`                    | The mutation the flush of `version` made ([`Entry`]), in parts of up to 1 MiB       |
+//! | Restate | `v22/tail/<version>-<nonce>/<part>`            | The mutation the flush of `version` made ([`Entry`]), in parts of up to 1 MiB       |
 //! | Restate | `v22/manifest/<version>-<nonce>/<part>`        | A checkpoint's [`Manifest`], in parts of 64 KiB                                     |
 //! | Restate | `v22/pack/l0/<version>-<nonce>/<part>`         | A pack in L0: a checkpoint's frames and values, in parts of 64 KiB                  |
 //! | S3      | `l1/<version>-<nonce>`                         | A pack in L1: what a checkpoint moved out of L0, with its own frames and values     |
@@ -14,6 +14,15 @@
 //! ranged get of its frame. A checkpoint's manifest says where each frame
 //! and large record is: in its own pack, or in an older one. It is in Restate
 //! wherever the packs are, so that an open reads it with the tail.
+//!
+//! Every key but the head's names one value for ever: a pack, a manifest and
+//! a tail entry each carry a random nonce in their names, so that what a
+//! flush that is lost wrote is never overwritten by the next writer's, but
+//! left for garbage collection. A tail entry's nonce is its writer's, which
+//! the head records ([`Run`]); a writer puts at most one entry at a version
+//! under a nonce. Heads written before tail
+//! entries had nonces (`SH22`) name theirs `v22/tail/<version>/<part>`, which
+//! a retry overwrites; they are read as a run without a nonce.
 use crate::state::{zstd, PAGE};
 use bytes::Bytes;
 use std::{
@@ -31,7 +40,9 @@ pub(crate) const TAIL_PREFIX: &str = "v22/tail/";
 pub(crate) const PACK_PREFIX: &str = "l1/";
 /// Where L0's packs are, in Restate ([`crate::state::blobs::KvBlobs`]).
 pub(crate) const L0_PREFIX: &str = "l0/";
-const HEAD_MAGIC: &[u8; 4] = b"SH22";
+const HEAD_MAGIC: &[u8; 4] = b"SH23";
+/// A head written before tail entries had nonces: read, never written.
+const LEGACY_HEAD_MAGIC: &[u8; 4] = b"SH22";
 const ENTRY_MAGIC: &[u8; 4] = b"SE22";
 const MANIFEST_MAGIC: &[u8; 4] = b"SM22";
 /// Bytes of a tail entry's part.
@@ -56,14 +67,46 @@ fn too_large(what: &str, bytes: usize) -> io::Error {
     io::Error::other(format!("{what} of {bytes} bytes exceeds {MAX_DECODED}"))
 }
 
-pub(crate) fn tail_key(version: u64, part: u32) -> String {
-    format!("{TAIL_PREFIX}{version}/{part}")
+/// The key of part `part` of the tail entry of `version`, flushed with
+/// `nonce`: `v22/tail/<version>-<nonce>/<part>`, or, for a nonce of 0, an
+/// entry written before nonces, `v22/tail/<version>/<part>`.
+pub(crate) fn tail_key(version: u64, nonce: u64, part: u32) -> String {
+    match nonce {
+        0 => format!("{TAIL_PREFIX}{version}/{part}"),
+        nonce => format!("{TAIL_PREFIX}{version}-{nonce:016x}/{part}"),
+    }
 }
 
-/// The version and part a tail entry's key names.
-pub(crate) fn parse_tail_key(key: &str) -> Option<(u64, u32)> {
-    let (version, part) = key.strip_prefix(TAIL_PREFIX)?.split_once('/')?;
-    Some((version.parse().ok()?, part.parse().ok()?))
+/// What a tail entry's key names (see [`tail_key`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TailKey {
+    pub version: u64,
+    /// 0 for an entry written before nonces, whose key a retry reuses.
+    pub nonce: u64,
+    pub part: u32,
+}
+
+/// What the tail entry's key `key` names.
+pub(crate) fn parse_tail_key(key: &str) -> Option<TailKey> {
+    let (name, part) = key.strip_prefix(TAIL_PREFIX)?.split_once('/')?;
+    let (version, nonce) = match name.split_once('-') {
+        Some((version, nonce)) => (
+            version,
+            u64::from_str_radix(nonce, 16).ok().filter(|&n| n != 0)?,
+        ),
+        None => (name, 0),
+    };
+    Some(TailKey {
+        version: version.parse().ok()?,
+        nonce,
+        part: part.parse().ok()?,
+    })
+}
+
+/// Whether `key` names one value for ever: any key but the head's, and the
+/// tail entries' written before nonces (see the module documentation).
+pub(crate) fn immutable(key: &str) -> bool {
+    key != HEAD_KEY && parse_tail_key(key).is_none_or(|tail| tail.nonce != 0)
 }
 
 pub(crate) fn put_varint(out: &mut Vec<u8>, mut n: u64) {
@@ -116,6 +159,14 @@ impl<'a> Reading<'a> {
             }
         }
         Err(self.invalid())
+    }
+
+    /// Eight bytes, little-endian.
+    pub(super) fn fixed_u64(&mut self) -> io::Result<u64> {
+        let end = self.at + 8;
+        let bytes = self.bytes.get(self.at..end).ok_or_else(|| self.invalid())?;
+        self.at = end;
+        Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
     }
 
     /// A varint of at most `max`.
@@ -270,6 +321,15 @@ impl Checkpoint {
     }
 }
 
+/// The tail entries from version `first` on (to the next run's first) were
+/// written with one random `nonce`, which their keys carry; 0 for entries
+/// written before nonces (see [`tail_key`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Run {
+    pub first: u64,
+    pub nonce: u64,
+}
+
 /// The commit point.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Head {
@@ -287,6 +347,9 @@ pub(crate) struct Head {
     pub tail_first: u64,
     /// The parts of each tail entry kept, from `tail_first` to `version`.
     pub parts: Vec<u32>,
+    /// The nonces of the tail entries kept, by run: the first from
+    /// `tail_first`, each from a later version; none if no entry is kept.
+    pub runs: Vec<Run>,
     /// Bytes of the tail entries since the checkpoint.
     pub tail_bytes: u64,
 }
@@ -302,6 +365,7 @@ impl Head {
             previous: None,
             tail_first: 1,
             parts: Vec::new(),
+            runs: Vec::new(),
             tail_bytes: 0,
         }
     }
@@ -327,11 +391,22 @@ impl Head {
         for &parts in &self.parts {
             put_varint(&mut out, parts.into());
         }
+        put_varint(&mut out, self.runs.len() as u64);
+        for run in &self.runs {
+            put_varint(&mut out, run.first);
+            out.extend_from_slice(&run.nonce.to_le_bytes());
+        }
         out.into()
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> io::Result<Self> {
-        let body = (bytes.strip_prefix(HEAD_MAGIC)).ok_or_else(|| invalid("head"))?;
+        let (legacy, body) = match bytes.strip_prefix(HEAD_MAGIC) {
+            Some(body) => (false, body),
+            None => (
+                true,
+                (bytes.strip_prefix(LEGACY_HEAD_MAGIC)).ok_or_else(|| invalid("head"))?,
+            ),
+        };
         let (id, body) = body.split_first_chunk().ok_or_else(|| invalid("head"))?;
         let mut r = Reading::new(body, "head");
         let frame_pages = r.bounded(MAX_FRAME_PAGES)?;
@@ -347,14 +422,43 @@ impl Head {
         let parts = (0..count)
             .map(|_| u32::try_from(r.varint()?).map_err(|_| r.invalid()))
             .collect::<io::Result<_>>()?;
+        let runs = match legacy {
+            // One run, of entries without a nonce.
+            true => match count {
+                0 => Vec::new(),
+                _ => vec![Run {
+                    first: tail_first,
+                    nonce: 0,
+                }],
+            },
+            false => {
+                let runs = r.bounded(count)?;
+                (0..runs)
+                    .map(|_| {
+                        let first = r.varint()?;
+                        let nonce = r.fixed_u64()?;
+                        Ok(Run { first, nonce })
+                    })
+                    .collect::<io::Result<Vec<Run>>>()?
+            }
+        };
         r.end()?;
+        // The runs cover the tail kept, from its first entry, in order.
+        let covered = match runs.first() {
+            None => count == 0,
+            Some(run) => {
+                run.first == tail_first
+                    && runs.windows(2).all(|pair| pair[0].first < pair[1].first)
+                    && runs.last().is_some_and(|run| run.first <= version)
+            }
+        };
         let at = |c: Option<Checkpoint>| c.map_or(0, |c| c.version());
         let ordered = at(previous) <= at(checkpoint) && at(checkpoint) <= version;
         let kept = previous.is_none() || checkpoint.is_some();
         // The tail kept starts past the previous checkpoint, which covers
         // what went before it.
         let tail = tail_first == at(previous) + 1;
-        if frame_pages == 0 || version == 0 || !ordered || !kept || !tail {
+        if frame_pages == 0 || version == 0 || !ordered || !kept || !tail || !covered {
             return Err(invalid("head"));
         }
         Ok(Self {
@@ -365,6 +469,7 @@ impl Head {
             previous,
             tail_first,
             parts,
+            runs,
             tail_bytes,
         })
     }
@@ -377,11 +482,52 @@ impl Head {
             .unwrap_or(0)
     }
 
+    /// The nonce of version `version`'s tail entry, if the head keeps it (0
+    /// for an entry written before nonces).
+    pub(crate) fn nonce_of(&self, version: u64) -> Option<u64> {
+        if version < self.tail_first || version > self.version {
+            return None;
+        }
+        (self.runs.iter().rev())
+            .find(|run| run.first <= version)
+            .map(|run| run.nonce)
+    }
+
     /// The keys of the parts of version `version`'s tail entry.
     pub(crate) fn entry_keys(&self, version: u64) -> Vec<String> {
+        let Some(nonce) = self.nonce_of(version) else {
+            return Vec::new();
+        };
         (0..self.parts_of(version))
-            .map(|part| tail_key(version, part))
+            .map(|part| tail_key(version, nonce, part))
             .collect()
+    }
+
+    /// The head's own tail entry, at its version, was written with `nonce`:
+    /// a run of its own, unless the entry before it has that nonce too.
+    pub(crate) fn written_by(&mut self, nonce: u64) {
+        if self.runs.last().map(|run| run.nonce) != Some(nonce) {
+            self.runs.push(Run {
+                first: self.version,
+                nonce,
+            });
+        }
+    }
+
+    /// Drop the runs of entries before `tail_first`, which no longer kept:
+    /// the first run kept starts there.
+    pub(crate) fn trim_runs(&mut self) {
+        if self.tail_first > self.version {
+            self.runs.clear();
+            return;
+        }
+        let first = (self.runs.iter())
+            .rposition(|run| run.first <= self.tail_first)
+            .unwrap_or(0);
+        self.runs.drain(..first);
+        if let Some(run) = self.runs.first_mut() {
+            run.first = self.tail_first;
+        }
     }
 }
 

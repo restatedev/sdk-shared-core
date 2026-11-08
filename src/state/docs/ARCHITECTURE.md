@@ -150,12 +150,15 @@ About 80–180 bytes, uncompressed, overwritten by every flush:
 - the checkpoint (its version and nonce, and its manifest's length), and
   the previous one, which readers that opened before the latest checkpoint
   may still read;
-- the first tail entry kept, the tail's bytes since the checkpoint, and the
-  number of parts of each tail entry kept.
+- the first tail entry kept, the tail's bytes since the checkpoint, the
+  number of parts of each tail entry kept, and the nonces in their keys:
+  one per run of entries a writer flushed.
 
-It is the only key whose write commits anything. Every other key is either
-new (a tail entry for the next version) or never changed (a pack, a
-manifest), so a crash midway leaves only keys no head names.
+It is the only key whose write commits anything, and the only one put
+twice. Every other key is new and never changed: a tail entry carries its
+writer's nonce, a pack and a manifest their own. So a crash midway leaves
+only keys no head names, and a cache may keep any key but the head's for
+as long as it likes.
 
 ### Tail entries
 
@@ -169,7 +172,15 @@ entries before it left, from the checkpoint's pages on. A page's
 **chain** is its changes since the checkpoint, in order; a hole, or a
 shrink past it, starts it over from a hole. An entry is never changed; it
 is deleted when the second checkpoint after it is adopted, until which
-readers on the older checkpoint may need it.
+readers on the older checkpoint may need it. Its key has the nonce of the
+writer that flushed it (`v22/tail/<version>-<nonce>/<part>`): an owner's
+process, which keeps one for its flushes so that the head names them in
+one run, or, without a cache, a session. A writer draws another after a
+flush whose outcome is unknown, and at an open of a head older than its
+last flush (the object's state cleared, and made again), so that it never
+puts a key twice. A flush that is lost leaves its entry under a key no
+head names, which garbage collection deletes, and the next entry at that
+version has another key.
 
 ### Checkpoints
 
@@ -385,16 +396,14 @@ version 5, and `C4` the checkpoint of version 4 (its pack `P4` and manifest
 
 **Open**:
 
-1. **Get the head.** If this process's cache keeps the state as of exactly
-   this head (it flushed it, or read it, say), take it, and, for the owner,
-   its parked SQL engine: done, in one round trip, for an owner's open and a
-   reader's alike. An owner without a cache, or with a flush running or
-   whose outcome is unknown, syncs in the same round trip, so that what it
-   reads is durable.
-2. Otherwise, **get the checkpoint's manifest and the tail past it**,
-   together, what the cache lacks of them, and apply the tail to the
-   overlay in memory. If the head was read durably, keep the state, and
-   the tail entries fetched.
+1. **Get the head**, from Restate, never from the cache. An owner without a
+   cache, or with a flush running or whose outcome is unknown, syncs in the
+   same round trip, so that what it reads is durable.
+2. **Get the checkpoint's manifest and the tail past it**, together,
+   through the cache, and apply the tail to the overlay in memory. With a
+   warm cache, the cache holds them all: the open is one round trip, for an
+   owner's state and a reader's alike, and an owner's takes back its parked
+   SQL engine if it was parked at this head.
 3. **Get large records**, and every frame and patch of a
    file of at most 16 pages, such as a small database
    whole, together.
@@ -428,42 +437,41 @@ After every flush that checkpoints (and in the tests, whenever one calls
 2. **Keep** the packs the head's two manifests point into, and the two
    manifests.
 3. **Delete** listed packs and manifests older than the previous
-   checkpoint that neither manifest needs: in Restate, queued and stored by
-   one sync; in S3, one DELETE per pack, sent together.
+   checkpoint that neither manifest needs, and tail entries at versions the
+   checkpoint covers that the head does not name (a lost flush's): in
+   Restate, queued and stored by one sync; in S3, one DELETE per pack, sent
+   together.
 
 Collections may overlap, crash or race the owner: a later head only ever
 names packs its own manifests name, or packs newer than its previous
-checkpoint, so whatever head a collection read, it never deletes what a
-later head needs. A pack a crashed attempt put, which no head names, goes
-once the previous checkpoint passes it.
+checkpoint, and the same tail entries as the collection's head at the
+versions that head's checkpoint covers (a head that is lost, which a
+reader may have read beside its flush, is one flush past a durable one,
+and checkpoints a state before it), so whatever head a collection read, it
+never deletes what a later head needs. A pack a crashed attempt put, which
+no head names, goes once the previous checkpoint passes it; a lost flush's
+tail entry, once a checkpoint covers its version.
 
 ### The cache
 
 One `PageCache` per process ([foyer](https://github.com/foyer-rs/foyer),
 in memory and spilling to a local disk file):
 
-Every read but the head's goes through it: served from it, or fetched and
-kept. Each key names one value forever, so nothing is ever invalidated:
+Every get but the head's goes through it: served from it, or fetched and
+kept; and every put but the head's is kept too. Each key names one value
+for ever, so nothing is ever invalidated:
 
-- **Pack ranges**: frames, patches, values and manifests, and the 64 KiB
-  parts read of packs in Restate, kept by (pack, offset, length). Packs
-  never change.
-- **Tail entries**: by the database's identity and the entry's version, once
-  a durable head names them (a lost flush's entry may be overwritten at its
-  version by the next writer's).
-- **States**: the state as of a head, kept by the head's bytes once it is
-  durable, the newest two of each namespace (256 MiB in all by default). An
-  open that reads those head bytes, an owner's or a reader's, takes the
-  state and reads nothing more; any other head (another process flushed)
-  loads that head's state, from what the cache keeps where it can.
+- **Tail entries, manifests and packs' parts** in Restate, by key: each key
+  carries a nonce (a tail entry its writer's).
+- **Ranges of packs in S3**: frames, patches and values, by (pack, offset,
+  length).
 - **Parked engines**: SQL parks its engine at the end of a
   session (64 MiB in all), so that the next owner's session at the same
   head skips parsing the schema.
 
-A read is durable if the open synced alongside, or if no flush of this
-process ran or was unsettled meanwhile: the only writes the store may show
-before they are durable are this process's own (see
-[DESIGN.md](DESIGN.md#the-cache)).
+The tail entries of heads written before entries had nonces are read from
+Restate at every open, like the head: a retry may have put their keys
+again.
 
 With a warm cache, a handler invocation costs two round trips: get the
 head, and the flush's sync.
@@ -475,7 +483,7 @@ nothing needs repair:
 
 | Interrupted                             | What is left                             | What happens next                         |
 | --------------------------------------- | ---------------------------------------- | ----------------------------------------- |
-| A flush                                 | Its tail entry without the head, or both | The next flush overwrites the tail entry  |
+| A flush                                 | Its tail entry without the head, or both | The entry is garbage, collected later     |
 | A checkpoint                            | A pack and manifest no head names        | Garbage, collected later                  |
 | A collection                            | Some deletes                             | The next collection deletes the rest      |
 | A flush's tail deletes, before its head | The head before, with its tail           | The next checkpoint deletes the rest      |

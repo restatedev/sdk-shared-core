@@ -3,73 +3,52 @@
 //!
 //! A [`PageCache`] is created once per process. Each namespace gets its own
 //! [`NamespaceCache`] handle by key, so one namespace never reads another's
-//! entries.
+//! values.
 //!
 //! # Reads
 //!
-//! A state reads everything but its head through the cache: what it lacks
-//! is fetched from the store and kept, and reading changes nothing else. A
-//! key names one value only, so nothing kept is ever invalidated:
-//!
-//! - **A range of a pack** (a frame, a value, a manifest, a part of a pack
-//!   kept in Restate), by its pack's name, offset and length. A pack is put
-//!   once, under a name no other put uses (see [`crate::state::format`]), so
-//!   a range is kept as soon as it is put or read.
-//! - **A part of a tail entry**, by the database's identity, the entry's
-//!   version and the part. An entry never changes once a durable head names
-//!   it, but a flush that is lost leaves its entry to be overwritten, at
-//!   that version, by the next writer's: only the entries of durable heads
-//!   are kept.
-//! - **A state**, as of a head, by the head's bytes. They name one state once
-//!   the head is durable, and only then: they hold no nonce, so a lost
-//!   flush's head and the next writer's at its version may be the same
-//!   bytes. Only the states of durable heads are kept, the newest two of the
-//!   database ([`KEPT_STATES`]), for any state, an owner's or a reader's,
-//!   that opens on their heads.
-//!
-//! The head is the one key every flush changes: it is never kept, and every
-//! open reads it. Keys start with the namespace's identity, from a per-cache
-//! counter, randomly seeded, and the disk tier starts empty in every process.
-//!
-//! # Durable reads
-//!
-//! The store shows another process's writes only once they are durable
-//! (Restate fences a former owner's). The writes it may show this process
-//! before they are durable are this process's own: a flush's, while it runs,
-//! and after it failed, with an unknown outcome, until a sync settles it. So
-//! what an open reads is durable if it synced alongside (an owner's open
-//! does, while a flush runs or is unsettled), or if no flush ran and none was
-//! unsettled from just before its read to just after it
-//! ([`NamespaceCache::before_read`], [`NamespaceCache::read_durably`]). Only
-//! then does it keep what it read.
+//! A state reads its stores through the cache ([`CachedKv`] for Restate,
+//! [`CachedBlobs`] for S3): a value is served from the cache, or fetched and
+//! kept, and a value put is kept too. Every key but the head's names one value
+//! for ever (see [`crate::state::format`]): a tail entry, a manifest, a pack
+//! all carry a nonce in their names, so nothing kept is ever invalidated, and
+//! what a flush that is lost put is harmless, as no head names it. The head is
+//! the one key every flush changes: it is never kept, and every open reads
+//! it; so are the tail entries of heads written before entries had nonces,
+//! whose keys a retry reuses. An owner's state and a reader's read alike.
 //!
 //! # The writer
 //!
 //! A namespace has one owner at a time, which may run overlapping states in
 //! this process. The namespace knows its last durable flush, so that a state
 //! can tell another flushed since it opened, and is refused rather than
-//! overwrite it; the flush that runs; the flushes with an unknown outcome,
+//! overwrite it; the nonce of the writer's tail entries, one for all its
+//! flushes, so that the head names them in one run; the flush that runs; the flushes with an unknown outcome,
 //! so that the next open syncs first ([`NamespaceCache::unsettled`]); when
 //! the next checkpoint may be tried; and the value parked at a flush (SQL's
 //! engine, say), for the next owner's state at that head.
 //!
-//! Namespaces are kept for a bounded number of bytes of their states, and
-//! parked values within a byte budget, least recently used first; forgetting
-//! either only makes a namespace cold. A namespace with a flush whose
-//! outcome is unknown is kept until a sync settles it.
+//! Values are kept within a byte budget, in memory and on a local disk tier,
+//! namespaces' writers for a bounded number, and parked values within a byte
+//! budget, least recently used first; forgetting any only makes a namespace
+//! cold. A namespace with a flush whose outcome is unknown is kept until a
+//! sync settles it.
 use crate::state::{
-    format::{Head, Location, PackId},
-    store::Durable,
+    blobs::BlobStore,
+    format::{immutable, Head},
+    kv::KvStore,
 };
 use bytes::Bytes;
 use foyer::{
     BlockEngineConfig, Cache, CacheBuilder, Code, DeviceBuilder, FileDeviceBuilder, HybridCache,
-    HybridCacheBuilder, RecoverMode, Spawner,
+    HybridCacheBuilder, HybridCacheProperties, Location, RecoverMode, Spawner,
 };
+use futures::future::BoxFuture;
 use std::{
     any::Any,
     collections::{BTreeMap, HashMap},
     io,
+    ops::Range,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering::Relaxed},
@@ -77,12 +56,19 @@ use std::{
     },
 };
 
-/// Bookkeeping bytes charged per cached range.
+/// Bookkeeping bytes charged per value kept.
 const ENTRY_OVERHEAD: usize = 64;
 
-/// The states a namespace keeps: the newest of its database, which opens
-/// read (an owner's, and readers that opened on the head before it).
-pub(crate) const KEPT_STATES: usize = 2;
+/// The weight of a namespace's writer, for
+/// [`PageCacheConfig::namespace_bytes`].
+pub(crate) const NAMESPACE_WEIGHT: usize = 256;
+
+/// The largest range of a blob kept: a frame, a patch, a value, not a run
+/// of ranges a compaction moves.
+const MAX_KEPT_RANGE: u64 = 1 << 20;
+
+/// The shards of the values' memory tier, each a part of its budget.
+const MEMORY_SHARDS: usize = 8;
 
 /// Sizes and location of a [`PageCache`].
 #[derive(Clone, Debug)]
@@ -90,17 +76,16 @@ pub struct PageCacheConfig {
     /// File of the disk tier, its previous contents discarded; `None` for a
     /// temporary one, which goes away with the process.
     pub file: Option<PathBuf>,
-    /// Bytes of packs' ranges kept in memory.
+    /// Bytes of values kept in memory: tail entries, manifests, ranges of
+    /// packs.
     pub memory: usize,
     /// Bytes of the disk tier.
     pub disk: usize,
     /// Bytes per disk block, the unit the disk tier writes and reclaims.
     pub disk_block: usize,
-    /// Bytes of the namespaces' states kept, so that a session that finds
-    /// its head unchanged reads nothing more: each its head, its checkpoint's
-    /// manifest and its tail applied, as estimated. Least recently used go
-    /// first; the cache has 8 shards, so a state past an eighth of this is
-    /// not kept for long.
+    /// Bytes of the namespaces' writers kept, each weighing 256: least
+    /// recently used go first, and one forgotten only makes its next flush
+    /// wait for an owner's open to read the head again.
     pub namespace_bytes: usize,
     /// Bytes of the values parked for the next session of their
     /// namespace, as they weigh it: SQL's engine, say. Least recently parked go first.
@@ -121,7 +106,7 @@ impl PageCacheConfig {
         }
     }
 
-    /// As [`PageCacheConfig::new`], with the namespaces' states and the parked
+    /// As [`PageCacheConfig::new`], with the namespaces' writers and the parked
     /// values bounded by `memory` too, so that a small cache keeps little,
     /// and disk blocks small enough that a small disk has 4 of them to reclaim.
     pub fn sized(memory: usize, disk: usize) -> Self {
@@ -152,7 +137,7 @@ pub fn parse_size(value: &str) -> Option<usize> {
     number.parse::<usize>().ok()?.checked_mul(unit)
 }
 
-/// Process-wide cache of packs' ranges; clones share it.
+/// Process-wide cache of what states read; clones share it.
 ///
 /// Parked values live here and may refer back to its namespace's handle, so
 /// handles only reach it weakly: dropping the last `PageCache` drops it.
@@ -163,7 +148,7 @@ pub struct PageCache {
 }
 
 struct Shared {
-    ranges: HybridCache<RangeKey, Bytes>,
+    values: HybridCache<ValueKey, Bytes>,
     namespaces: Cache<String, Arc<Mutex<Owner>>>,
     /// Every namespace state a handle still holds, so that one namespace never
     /// has two states while a session uses it, even after LRU eviction.
@@ -201,13 +186,16 @@ impl PageCache {
             .with_capacity(config.disk)
             .build()
             .map_err(io::Error::other)?;
-        let ranges = HybridCacheBuilder::new()
-            .with_name("state-ranges")
+        let values = HybridCacheBuilder::new()
+            .with_name("state-values")
             .memory(config.memory)
-            .with_weighter(|_, range: &Bytes| range.len() + ENTRY_OVERHEAD)
+            .with_shards(MEMORY_SHARDS)
+            .with_weighter(|key: &ValueKey, value: &Bytes| {
+                key.name.len() + value.len() + ENTRY_OVERHEAD
+            })
             .storage()
             .with_engine_config(BlockEngineConfig::new(device).with_block_size(config.disk_block))
-            // Namespace state is not persisted, so earlier entries are unusable.
+            // Namespaces' identities are not persisted, so earlier entries are unusable.
             .with_recover_mode(RecoverMode::None)
             .with_spawner(spawner.clone())
             .build()
@@ -221,9 +209,9 @@ impl PageCache {
         }
         Ok(Self {
             shared: Arc::new(Shared {
-                ranges,
+                values,
                 namespaces: CacheBuilder::new(config.namespace_bytes)
-                    .with_weighter(|_, owner: &Arc<Mutex<Owner>>| owner.lock().unwrap().weight())
+                    .with_weighter(|_, _: &Arc<Mutex<Owner>>| NAMESPACE_WEIGHT)
                     .build(),
                 live: Mutex::default(),
                 unsettled: Mutex::default(),
@@ -258,16 +246,15 @@ impl PageCache {
         NamespaceCache {
             shared: self.shared.clone(),
             parked: Arc::downgrade(&self.parked),
-            key: key.to_owned(),
             id,
             handle: self.shared.ids.fetch_add(1, Relaxed),
             owner,
         }
     }
 
-    /// Bytes of ranges held in memory.
+    /// Bytes of values held in memory.
     pub fn memory_bytes(&self) -> usize {
-        self.shared.ranges.memory().usage()
+        self.shared.values.memory().usage()
     }
 }
 
@@ -276,8 +263,7 @@ impl PageCache {
 pub(crate) struct NamespaceCache {
     shared: Arc<Shared>,
     parked: Weak<Mutex<Parked>>,
-    key: String,
-    /// The namespace's identity, which keys its entries and parked values.
+    /// The namespace's identity, which keys its values and parked values.
     id: u64,
     /// This handle's identity: the state whose flush holds the right to
     /// flush ([`Owner::flushing`]).
@@ -285,34 +271,24 @@ pub(crate) struct NamespaceCache {
     owner: Arc<Mutex<Owner>>,
 }
 
-/// What a namespace's writer was doing just before an open read its head
-/// ([`NamespaceCache::before_read`]).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct BeforeRead {
-    epoch: u64,
-    /// No flush ran, and none was unsettled.
-    quiet: bool,
-}
-
-/// Per-namespace state.
+/// Per-namespace state: its writer's.
 struct Owner {
-    /// Identity of this namespace in the cache, which keys its entries and
+    /// Identity of this namespace in the cache, which keys its values and
     /// parked values.
     id: u64,
-    /// Durable states, each with its head's bytes: the newest of one
-    /// database, at most [`KEPT_STATES`].
-    states: Vec<(Bytes, Arc<Durable>)>,
     /// The version of the writer's last durable flush.
     committed: Option<u64>,
     /// The handle whose flush took the right to flush
     /// ([`NamespaceCache::claim`]) and has not ended: its writes may be
     /// visible, and not durable yet.
     flushing: Option<u64>,
-    /// Counts the flushes that started, landed or failed: an open's read is
-    /// durable if none did meanwhile, and none ran or was unsettled before
-    /// it ([`NamespaceCache::read_durably`]); an open records that a flush
-    /// may build on the head it read only if none did since.
+    /// Counts the flushes that started, landed or failed: an owner's open
+    /// records that a flush may build on the head it read only if none did
+    /// since it read it ([`NamespaceCache::opened`]).
     epoch: u64,
+    /// The nonce in the keys of the tail entries the writer's flushes put
+    /// ([`NamespaceCache::nonce`]), so that no key is ever put twice.
+    nonce: u64,
     /// Flushes with an unknown outcome so far, and how many of them a sync
     /// has settled since.
     unknown: u64,
@@ -355,73 +331,109 @@ impl NamespaceCache {
         self.owner.lock().unwrap()
     }
 
-    /// What the writer is doing, just before an open reads the head: see
-    /// [`Self::read_durably`].
-    pub(crate) fn before_read(&self) -> BeforeRead {
-        let owner = self.owner();
-        BeforeRead {
-            epoch: owner.epoch,
-            quiet: owner.flushing.is_none() && owner.unknown == owner.settled,
+    fn key(&self, name: &str, range: Option<Range<u64>>) -> ValueKey {
+        let (offset, len) = range.map_or((0, u64::MAX), |range| {
+            (range.start, range.end - range.start)
+        });
+        ValueKey {
+            namespace: self.id,
+            name: name.to_owned(),
+            offset,
+            len,
         }
     }
 
-    /// Whether what an open read since `before` is durable: it `synced`
-    /// alongside, or no flush ran or was unsettled from `before` on. Only
-    /// then may it keep what it read.
-    pub(crate) fn read_durably(&self, before: BeforeRead, synced: bool) -> bool {
-        synced || (before.quiet && self.owner().epoch == before.epoch)
+    /// The value kept under `key`, from memory or disk. A disk error is a
+    /// miss.
+    async fn lookup(&self, key: &ValueKey) -> Option<Bytes> {
+        // A hit in memory without a hop to the disk's threads.
+        if let Some(entry) = self.shared.values.memory().get(key) {
+            return Some(entry.value().clone());
+        }
+        match self.shared.values.get(key).await {
+            Ok(entry) => entry.map(|entry| entry.value().clone()),
+            Err(_) => None,
+        }
     }
 
-    /// The durable state as of the head `bytes`, if the namespace keeps it:
-    /// a lookup, which changes nothing.
-    pub(crate) fn state(&self, bytes: &[u8]) -> Option<Arc<Durable>> {
-        let owner = self.owner();
-        (owner.states.iter())
-            .find(|(head, _)| head == bytes)
-            .map(|(_, durable)| durable.clone())
+    /// The value of the key `name`, if kept.
+    pub(crate) async fn value(&self, name: &str) -> Option<Bytes> {
+        self.lookup(&self.key(name, None)).await
     }
 
-    /// Keep `durable`, the state as of the durable head `bytes`, for the
-    /// states that open on that head (see [`KEPT_STATES`]).
-    pub(crate) fn keep(&self, bytes: &Bytes, durable: Arc<Durable>) {
-        let dropped = keep_state(&mut self.owner(), bytes, durable);
-        drop(dropped);
-        self.reweigh();
+    /// Keep `value`, the value of the key `name`.
+    pub(crate) fn keep_value(&self, name: &str, value: &Bytes) {
+        self.keep(self.key(name, None), value);
     }
 
-    /// An owner's open read the durable head of `version`, and `before` was
-    /// what the writer was doing then: a flush may build on that version,
-    /// unless one started since.
-    pub(crate) fn opened(&self, version: u64, before: BeforeRead) {
+    /// Keep `value` under `key`: in memory, or, larger than a shard of the
+    /// memory tier holds (a large tail entry, say), on disk.
+    fn keep(&self, key: ValueKey, value: &Bytes) {
+        let shard = self.shared.values.memory().capacity() / MEMORY_SHARDS;
+        let location = match value.len() > shard {
+            true => Location::OnDisk,
+            false => Location::Default,
+        };
+        let properties = HybridCacheProperties::default().with_location(location);
+        (self.shared.values).insert_with_properties(key, owned(value), properties);
+    }
+
+    /// Bytes `range` of the blob `name`, if kept.
+    pub(crate) async fn range(&self, name: &str, range: Range<u64>) -> Option<Bytes> {
+        self.lookup(&self.key(name, Some(range))).await
+    }
+
+    /// Keep `value`, bytes `range` of the blob `name`.
+    pub(crate) fn keep_range(&self, name: &str, range: Range<u64>, value: &Bytes) {
+        self.keep(self.key(name, Some(range)), value);
+    }
+
+    /// What the writer has done so far, which an owner's open reads before
+    /// the head: see [`Self::opened`].
+    pub(crate) fn epoch(&self) -> u64 {
+        self.owner().epoch
+    }
+
+    /// An owner's open read the durable head of `version` after the writer
+    /// was at `epoch`: a flush may build on that version, unless one started
+    /// since. A head older than the writer's last durable flush is another
+    /// database's (the object's state was cleared, and made again), whose
+    /// next flushes would put keys the writer put in the old one: the writer
+    /// draws another nonce ([`Self::nonce`]).
+    pub(crate) fn opened(&self, version: u64, epoch: u64) {
         let mut owner = self.owner();
-        if owner.epoch == before.epoch && owner.flushing.is_none() {
+        if owner.epoch == epoch && owner.flushing.is_none() {
+            if owner.committed.is_some_and(|committed| version < committed) {
+                owner.nonce = random().max(1);
+            }
             owner.committed = Some(version);
         }
     }
 
-    /// The claimed flush (see [`Self::claim`]) made `bytes`, at `version`,
-    /// durable: the state `durable`, which the namespace keeps.
-    pub(crate) fn flushed(&self, bytes: Bytes, version: u64, durable: Arc<Durable>) {
+    /// The nonce for the keys of the tail entries the writer's flushes put:
+    /// one for all of them, so that the head names them in one run. Each
+    /// flush builds on the writer's last durable one ([`Self::claim`]), so
+    /// they put each version once; the writer draws another after a flush
+    /// whose outcome is unknown ([`Self::forget`]), whose entry may be
+    /// stored, and at an open of an older head ([`Self::opened`]). No two
+    /// values are ever put at one key, which another process may have kept.
+    pub(crate) fn nonce(&self) -> u64 {
+        self.owner().nonce
+    }
+
+    /// The claimed flush (see [`Self::claim`]) made `version` durable.
+    pub(crate) fn flushed(&self, version: u64) {
         let mut owner = self.owner();
-        let dropped = keep_state(&mut owner, &bytes, durable);
         owner.committed = Some(version);
         owner.flushing = None;
         owner.epoch += 1;
-        drop(owner);
-        drop(dropped);
-        self.reweigh();
-    }
-
-    /// Insert the owner again, so that the cache weighs the states it now
-    /// keeps (the weigher locks it: the caller must not hold the lock).
-    fn reweigh(&self) {
-        (self.shared.namespaces).insert(self.key.clone(), self.owner.clone());
     }
 
     /// A flush of this handle's failed or was dropped: its outcome is
     /// unknown. It no longer runs; no flush builds on the last durable one
     /// until an open reads the head again, after a sync; and what was parked
-    /// goes. The states kept stay: each is as of a durable head.
+    /// goes; and the next flush's tail entry has another nonce, as this one's
+    /// may be stored.
     pub(crate) fn forget(&self) {
         let mut owner = self.owner();
         if owner.flushing == Some(self.handle) {
@@ -430,6 +442,7 @@ impl NamespaceCache {
         owner.unknown += 1;
         owner.committed = None;
         owner.epoch += 1;
+        owner.nonce = random().max(1);
         let stale = self.take_any_parked();
         // Under the owner's lock, which a sync settling it takes too.
         let mut unsettled = self.shared.unsettled.lock().unwrap();
@@ -516,108 +529,118 @@ impl NamespaceCache {
     fn take_any_parked(&self) -> Option<ParkedValue> {
         self.parked.upgrade()?.lock().unwrap().take(self.id)
     }
+}
 
-    fn key(&self, at: Location) -> RangeKey {
-        RangeKey {
-            kind: RANGE,
-            namespace: self.id,
-            version: at.pack.version,
-            nonce: at.pack.nonce,
-            offset: at.offset,
-            len: at.len,
+/// A namespace's Restate store, read through its cache: the value of a key
+/// that names one value for ever ([`immutable`]) is served from the cache,
+/// or fetched and kept, and one put is kept too; any other (the head's)
+/// goes to the store, as every write does.
+pub(crate) struct CachedKv {
+    store: Arc<dyn KvStore>,
+    cache: NamespaceCache,
+}
+
+impl CachedKv {
+    pub(crate) fn new(store: Arc<dyn KvStore>, cache: NamespaceCache) -> Self {
+        Self { store, cache }
+    }
+}
+
+impl KvStore for CachedKv {
+    fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, io::Result<Option<Bytes>>> {
+        if !immutable(key) {
+            // Issued now, as the store's contract wants.
+            return self.store.get(key);
         }
+        Box::pin(async move {
+            if let Some(value) = self.cache.value(key).await {
+                return Ok(Some(value));
+            }
+            let value = self.store.get(key).await?;
+            if let Some(value) = &value {
+                self.cache.keep_value(key, value);
+            }
+            Ok(value)
+        })
     }
 
-    /// The key of part `part` (of `parts`) of the tail entry of `version` of
-    /// the database `database`.
-    fn entry_key(&self, database: u64, version: u64, part: u32, parts: u32) -> RangeKey {
-        RangeKey {
-            kind: ENTRY,
-            namespace: self.id,
-            version,
-            nonce: database,
-            offset: part.into(),
-            len: parts.into(),
+    fn put(&self, key: &str, value: Bytes) -> io::Result<()> {
+        self.store.put(key, value.clone())?;
+        if immutable(key) {
+            self.cache.keep_value(key, &value);
         }
+        Ok(())
     }
 
-    /// The value of `key`, from memory or disk. A disk error is a miss.
-    async fn lookup(&self, key: &RangeKey) -> Option<Bytes> {
-        // A hit in memory without a hop to the disk's threads.
-        if let Some(entry) = self.shared.ranges.memory().get(key) {
-            return Some(entry.value().clone());
-        }
-        match self.shared.ranges.get(key).await {
-            Ok(entry) => entry.map(|entry| entry.value().clone()),
-            Err(_) => None,
-        }
+    fn delete(&self, key: &str) -> io::Result<()> {
+        self.store.delete(key)
     }
 
-    /// The bytes at `at`, from memory or disk.
-    pub(crate) async fn get(&self, at: Location) -> Option<Bytes> {
-        self.lookup(&self.key(at)).await
+    fn sync(&self) -> BoxFuture<'_, io::Result<()>> {
+        self.store.sync()
     }
 
-    /// Keep the bytes at `at`, in a pack put.
-    pub(crate) fn insert(&self, at: Location, value: Bytes) {
-        self.shared.ranges.insert(self.key(at), owned(&value));
+    fn keys(&self) -> BoxFuture<'_, io::Result<Vec<String>>> {
+        self.store.keys()
+    }
+}
+
+/// A namespace's pack store (S3), read through its cache: every blob is put
+/// once, under a name never reused, so a range read is served from the
+/// cache, or fetched and kept (up to [`MAX_KEPT_RANGE`]).
+pub(crate) struct CachedBlobs {
+    store: Arc<dyn BlobStore>,
+    cache: NamespaceCache,
+}
+
+impl CachedBlobs {
+    pub(crate) fn new(store: Arc<dyn BlobStore>, cache: NamespaceCache) -> Self {
+        Self { store, cache }
+    }
+}
+
+impl BlobStore for CachedBlobs {
+    fn get_range<'a>(
+        &'a self,
+        key: &'a str,
+        range: Range<u64>,
+    ) -> BoxFuture<'a, io::Result<Option<Bytes>>> {
+        Box::pin(async move {
+            let kept = range.end - range.start <= MAX_KEPT_RANGE;
+            if kept {
+                if let Some(value) = self.cache.range(key, range.clone()).await {
+                    return Ok(Some(value));
+                }
+            }
+            let value = self.store.get_range(key, range.clone()).await?;
+            if let (true, Some(value)) = (kept, &value) {
+                self.cache.keep_range(key, range, value);
+            }
+            Ok(value)
+        })
     }
 
-    /// The parts of the tail entry of `version` of the database `database`,
-    /// which has `parts` of them, if all are kept.
-    pub(crate) async fn entry(
-        &self,
-        database: u64,
-        version: u64,
-        parts: u32,
-    ) -> Option<Vec<Bytes>> {
-        let mut found = Vec::with_capacity(parts as usize);
-        for part in 0..parts {
-            found.push(
-                self.lookup(&self.entry_key(database, version, part, parts))
-                    .await?,
-            );
-        }
-        Some(found)
+    fn put<'a>(&'a self, key: &'a str, value: Bytes) -> BoxFuture<'a, io::Result<()>> {
+        self.store.put(key, value)
     }
 
-    /// Keep `parts`, the tail entry of `version` that a durable head of the
-    /// database `database` names.
-    pub(crate) fn keep_entry(&self, database: u64, version: u64, parts: &[Bytes]) {
-        let count = parts.len() as u32;
-        for (part, value) in (0..count).zip(parts) {
-            let key = self.entry_key(database, version, part, count);
-            self.shared.ranges.insert(key, owned(value));
-        }
+    fn delete<'a>(&'a self, keys: &'a [String]) -> BoxFuture<'a, io::Result<()>> {
+        self.store.delete(keys)
     }
 
-    /// The manifest of the checkpoint whose pack is `pack`, from memory or
-    /// disk: it never changes either.
-    pub(crate) async fn manifest(&self, pack: PackId) -> Option<Bytes> {
-        self.get(manifest_at(pack)).await
-    }
-
-    /// Keep the manifest of the checkpoint whose pack is `pack`.
-    pub(crate) fn insert_manifest(&self, pack: PackId, manifest: Bytes) {
-        self.insert(manifest_at(pack), manifest);
+    fn list<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, io::Result<Vec<String>>> {
+        self.store.list(prefix)
     }
 }
 
 impl Owner {
-    /// Its weight in the namespace cache: about the bytes it keeps.
-    fn weight(&self) -> usize {
-        256 + (self.states.iter())
-            .map(|(head, durable)| head.len() + durable.estimated_bytes())
-            .sum::<usize>()
-    }
-
     fn new(ids: &AtomicU64) -> Self {
         Self {
             id: ids.fetch_add(1, Relaxed),
-            states: Vec::new(),
             committed: None,
             flushing: None,
             epoch: 0,
+            nonce: random().max(1),
             unknown: 0,
             settled: 0,
             backoff: Backoff::default(),
@@ -632,47 +655,12 @@ pub(crate) fn same_state(a: &Head, b: &Head) -> bool {
     a == b || (a.version == 0 && b.version == 0)
 }
 
-/// Keep `durable`, as of the durable head `bytes`, in `owner`: with the
-/// newest states of its database, at most [`KEPT_STATES`]; a namespace made
-/// again drops the old database's. What goes is returned, for the caller to
-/// drop once it holds no lock.
-#[must_use]
-fn keep_state(
-    owner: &mut Owner,
-    bytes: &Bytes,
-    durable: Arc<Durable>,
-) -> Vec<(Bytes, Arc<Durable>)> {
-    if owner.states.iter().any(|(head, _)| head == bytes) {
-        return Vec::new();
-    }
-    let database = durable.head.id;
-    let (mut kept, mut dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut owner.states)
-        .into_iter()
-        .partition(|(_, state)| state.head.id == database);
-    kept.push((owned(bytes), durable));
-    kept.sort_by_key(|(_, state)| state.head.version);
-    let excess = kept.len().saturating_sub(KEPT_STATES);
-    dropped.extend(kept.drain(..excess));
-    owner.states = kept;
-    dropped
-}
-
 /// `value` in an allocation of its own. A value read from the store can be
 /// a slice of a larger receive buffer (eager state is slices of the
 /// invocation's start message), which the cache would otherwise keep
 /// whole, uncounted, for as long as it keeps the value.
 fn owned(value: &Bytes) -> Bytes {
     Bytes::copy_from_slice(value)
-}
-
-/// Where the cache keeps the manifest named like `pack`: past the end of
-/// the pack, where none of its ranges are.
-fn manifest_at(pack: PackId) -> Location {
-    Location {
-        pack,
-        offset: u64::MAX,
-        len: 0,
-    }
 }
 
 /// A random number, for identities.
@@ -752,52 +740,45 @@ impl Parked {
     }
 }
 
-/// A [`RangeKey`] of a range of a pack.
-const RANGE: u8 = 0;
-/// A [`RangeKey`] of a part of a tail entry.
-const ENTRY: u8 = 1;
-
-/// The key of a value read once and kept: its kind and its namespace's
-/// identity, then, for a range of a pack ([`RANGE`]), the pack's name, the
-/// offset and the length: a pack never changes, so these name its bytes
-/// exactly, and a range a checkpoint wrote and a block a read fetched (a
-/// part of a pack kept in Restate) are both kept, each under its own
-/// extent; for a part of a tail entry ([`ENTRY`]), the entry's version, the
-/// database's identity (as `nonce`), the part (as `offset`) and the number
-/// of parts (as `len`).
+/// The key of a value kept: its namespace's identity, and its key in the
+/// store (`name`), whole (`offset` 0, `len` `u64::MAX`), or a range of it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct RangeKey {
-    kind: u8,
+pub(crate) struct ValueKey {
     namespace: u64,
-    version: u64,
-    nonce: u64,
+    name: String,
     offset: u64,
     len: u64,
 }
 
-impl Code for RangeKey {
+impl Code for ValueKey {
     fn encode(&self, writer: &mut impl std::io::Write) -> foyer::Result<()> {
-        self.kind.encode(writer)?;
         self.namespace.encode(writer)?;
-        self.version.encode(writer)?;
-        self.nonce.encode(writer)?;
+        (self.name.len() as u64).encode(writer)?;
+        writer
+            .write_all(self.name.as_bytes())
+            .map_err(foyer::Error::io_error)?;
         self.offset.encode(writer)?;
         self.len.encode(writer)
     }
 
     fn decode(reader: &mut impl std::io::Read) -> foyer::Result<Self> {
+        let namespace = u64::decode(reader)?;
+        let len = u64::decode(reader)?;
+        let mut name = vec![0; len as usize];
+        reader
+            .read_exact(&mut name)
+            .map_err(foyer::Error::io_error)?;
         Ok(Self {
-            kind: u8::decode(reader)?,
-            namespace: u64::decode(reader)?,
-            version: u64::decode(reader)?,
-            nonce: u64::decode(reader)?,
+            namespace,
+            name: String::from_utf8(name)
+                .map_err(|error| foyer::Error::io_error(io::Error::other(error)))?,
             offset: u64::decode(reader)?,
             len: u64::decode(reader)?,
         })
     }
 
     fn estimated_size(&self) -> usize {
-        41
+        32 + self.name.len()
     }
 }
 

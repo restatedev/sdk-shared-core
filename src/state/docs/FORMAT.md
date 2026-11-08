@@ -1,23 +1,30 @@
 # Storage format
 
-Only this format (v22) is implemented. Use a dedicated namespace. Keys,
-encodings and bounds live in [`format.rs`](../format.rs); there is no
-migration or format discovery. Storage is assumed reliable (a value reads back as
+Only this format (v22) is implemented, with heads of two encodings: `SH23`,
+which every flush writes, and `SH22`, written before tail entries had
+nonces, which is read (below). Use a dedicated namespace. Keys, encodings
+and bounds live in [`format.rs`](../format.rs); there is no migration or
+format discovery. Storage is assumed reliable (a value reads back as
 written); every zstd frame carries a checksum, and decoding checks
 structure and the bounds below.
 
 | Store               | Key                                     | Value                                                      |
 | ------------------- | --------------------------------------- | ---------------------------------------------------------- |
 | Restate             | `v22/head`                              | The head, the commit point; absent until the first flush   |
-| Restate             | `v22/tail/<version>/<part>`             | A part of the tail entry of the flush that made `version`  |
+| Restate             | `v22/tail/<version>-<nonce>/<part>`     | A part of the tail entry of the flush that made `version`  |
 | Restate             | `v22/manifest/<version>-<nonce>/<part>` | A part of a checkpoint's manifest; put once, never changed |
 | Restate (`KvBlobs`) | `v22/pack/l0/<version>-<nonce>/<part>`  | A part of a pack in L0; put once, never changed            |
 | S3 (`BlobStore`)    | `l1/<version>-<nonce>`                  | A pack in L1; put once, never changed                      |
 
-The head is the only key whose write commits. `<version>` and `<part>` in a
-tail entry's key are decimal. A pack's `<version>` is the head version
-whose state it holds, and `<nonce>` a random number, each 16 lowercase hex
-digits: no two puts ever use one name. A checkpoint's manifest is in
+The head is the only key whose write commits, and the only one put more
+than once: every other key names one value for ever. `<version>` and
+`<part>` in a tail entry's key are decimal, and `<nonce>` is the random
+number of the writer that flushed it, 16 lowercase hex digits, never 0: a
+flush that is lost leaves its entry, which no head names, for garbage
+collection, and the next entry at that version has a key of its own (see
+the head's runs). A pack's `<version>` is the head version whose state it holds, and
+`<nonce>` a random number, each 16 lowercase hex digits: no two puts ever
+use one name. A checkpoint's manifest is in
 Restate wherever its pack is, under the same `<version>-<nonce>`, cut into
 parts of 64 KiB (the last shorter), numbered in decimal from 0; a
 checkpoint that stores nothing outside its manifest puts no pack. A pack
@@ -34,7 +41,7 @@ manifest.
 
 ## Head
 
-`SH22`, then, uncompressed:
+`SH23`, then, uncompressed:
 
 | Field       | Encoding                                                                                           |
 | ----------- | -------------------------------------------------------------------------------------------------- |
@@ -46,17 +53,37 @@ manifest.
 | Tail first  | The first version whose tail entry is kept; at least 1                                             |
 | Tail bytes  | Bytes of the tail entries since the checkpoint                                                     |
 | Parts       | Per version from tail first to the version, the number of parts of its tail entry                  |
+| Runs        | Count, then per run: its first version, then its nonce, 8 bytes little-endian                      |
 
 The previous checkpoint is older than the checkpoint, or the same version,
 and the checkpoint no newer than the version; there is no previous without
 a checkpoint. A missing head means version 0, nothing stored, and the frame
 size of the options that open it.
 
+The runs name the tail entries kept: a run's entries, from its first
+version to the next run's, have one nonce in their keys. The first run
+starts at tail first, each later one past the one before and at most at
+the version; no run is kept without an entry. A flush starts a run unless
+the entry before it has its nonce, and a checkpoint that drops entries
+drops the runs it emptied.
+
+No two values are ever put at one tail key. A writer draws its nonce at
+random and puts at most one entry at a version under it: it draws another
+after a flush whose outcome it does not know, whose entry may be stored,
+and before it builds on a head older than its last flush (the object's
+state was cleared, and made again).
+
+**A head of before nonces** (`SH22`) has the same fields but the runs. Its
+tail entries are named `v22/tail/<version>/<part>`, which a retry of a lost
+flush overwrites: it reads as one run, of nonce 0, which names them so. A
+flush on it writes an `SH23` head, whose runs name the old entries with
+nonce 0 until a checkpoint drops them.
+
 ## Tail entry
 
 What one flush changed, as it changed it: `SE22`, then, uncompressed (its
 pages are zstd frames of their own), cut into parts of at most 1 MiB, put
-at `v22/tail/<version>/0` onward. The parts, joined, are at most 1 GiB.
+at `v22/tail/<version>-<nonce>/0` onward. The parts, joined, are at most 1 GiB.
 
 | Field   | Encoding                                                                                                                                                                                                                                                                    |
 | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

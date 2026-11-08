@@ -1,34 +1,18 @@
 use super::*;
 use crate::state::{
-    format::{Head, PackId, Tier},
-    simulation::{fresh_namespace_cache, shared_cache},
+    format::{tail_key, Head, HEAD_KEY},
+    simulation::{fresh_namespace_cache, shared_cache, MemoryBlobs, MemoryKv},
 };
 
 fn value(n: usize) -> Bytes {
     Bytes::from(vec![n as u8; n])
 }
 
-/// The range at `offset` of the pack of version 1 of the database `id`.
-fn at(id: u64, offset: u64) -> Location {
-    let pack = PackId {
-        version: 1,
-        nonce: id,
-        tier: Tier::L0,
-    };
-    Location {
-        pack,
-        offset,
-        len: 4,
-    }
-}
-
-/// The state of the database `id` at `version`, with one tail entry per
-/// version, and its head's bytes.
-fn state(id: u64, version: u64) -> (Bytes, Arc<Durable>) {
-    let mut head = Head::new(id, 16);
+/// The head of version `version` of the database 1.
+fn head(version: u64) -> Head {
+    let mut head = Head::new(1, 16);
     head.version = version;
-    head.parts = vec![1; version as usize];
-    (head.encode(), Arc::new(Durable::empty(head)))
+    head
 }
 
 fn parked(head: &Head) -> ParkedValue {
@@ -40,165 +24,232 @@ fn parked(head: &Head) -> ParkedValue {
 }
 
 #[test]
-fn namespaces_never_share_ranges() {
+fn namespaces_never_share_values() {
     futures::executor::block_on(async {
         let (a, b) = (fresh_namespace_cache(), fresh_namespace_cache());
-        a.insert(at(0, 1), value(4));
-        assert_eq!(a.get(at(0, 1)).await, Some(value(4)));
-        assert_eq!(b.get(at(0, 1)).await, None, "same range, other namespace");
-        assert_eq!(a.get(at(9, 1)).await, None, "same offset, other pack");
+        a.keep_value("key", &value(4));
+        assert_eq!(a.value("key").await, Some(value(4)));
+        assert_eq!(b.value("key").await, None, "same key, other namespace");
+        assert_eq!(a.value("other").await, None);
+        // A range is a value of its own, by its extent.
+        a.keep_range("blob", 0..4, &value(4));
+        assert_eq!(a.range("blob", 0..4).await, Some(value(4)));
+        assert_eq!(a.range("blob", 0..5).await, None);
+        assert_eq!(a.value("blob").await, None, "the range, not the blob");
         // A handle by the same key is the same namespace.
         shared_cache()
             .namespace("by-key")
-            .insert(at(0, 7), value(7));
+            .keep_value("key", &value(7));
         assert_eq!(
-            shared_cache().namespace("by-key").get(at(0, 7)).await,
+            shared_cache().namespace("by-key").value("key").await,
             Some(value(7))
         );
     })
 }
 
-/// A state is found by its head's bytes, by any state of the namespace;
-/// looking it up changes nothing the writer knows.
+/// The cached store reads the head from the store at every get, and the
+/// value of every other key once: from the store, or as put.
 #[test]
-fn a_state_is_found_by_its_head_and_finding_it_changes_nothing() {
-    let cache = fresh_namespace_cache();
-    let (one, first) = state(1, 1);
-    let (two, _) = state(1, 2);
-    assert!(cache.state(&one).is_none());
-    cache.keep(&one, first.clone());
-    let before = cache.before_read();
-    assert!(Arc::ptr_eq(&cache.state(&one).unwrap(), &first));
-    assert!(cache.state(&two).is_none(), "another head");
-    assert!(cache.state(b"").is_none(), "an absent head is never kept");
-    assert_eq!(cache.committed(), None);
-    assert!(cache.read_durably(before, false), "lookups start no flush");
+fn the_cached_store_reads_the_head_every_time_and_the_rest_once() {
+    futures::executor::block_on(async {
+        let memory = MemoryKv::default();
+        let store = CachedKv::new(Arc::new(memory.clone()), fresh_namespace_cache());
+        let entry = tail_key(3, 0xabc, 0);
+        let manifest = "v22/manifest/0000000000000002-00000000000000aa/0";
+        store.put(HEAD_KEY, value(1))?;
+        store.put(&entry, value(2))?;
+        // Put beside the cache, as another process would.
+        memory.put(manifest, value(3))?;
+        memory.reset_stats();
+        for _ in 0..2 {
+            assert_eq!(store.get(&entry).await?, Some(value(2)));
+            assert_eq!(store.get(manifest).await?, Some(value(3)));
+            assert_eq!(store.get(HEAD_KEY).await?, Some(value(1)));
+        }
+        let stats = memory.stats();
+        assert_eq!(stats.kind("head").gets, 2, "the head, at every get");
+        assert_eq!(stats.kind("tail").gets, 0, "the entry, as put");
+        assert_eq!(stats.kind("manifest").gets, 1, "the manifest, once");
+        // Another flush changes the head: the next get reads it.
+        memory.put(HEAD_KEY, value(9))?;
+        assert_eq!(store.get(HEAD_KEY).await?, Some(value(9)));
+        // A key with no value is asked for again.
+        memory.reset_stats();
+        assert_eq!(store.get(&tail_key(4, 0xabc, 0)).await?, None);
+        assert_eq!(store.get(&tail_key(4, 0xabc, 0)).await?, None);
+        assert_eq!(memory.stats().kind("tail").gets, 2);
+        Ok::<_, io::Error>(())
+    })
+    .unwrap()
 }
 
-/// A namespace keeps the newest states of its database: an older one goes,
-/// and a database made again drops the old database's.
+/// A tail entry written before entries had nonces has a key a retry may put
+/// again: it is read from the store at every get, as the head is.
 #[test]
-fn a_namespace_keeps_the_newest_states_of_its_database() {
-    let cache = fresh_namespace_cache();
-    let states: Vec<(Bytes, Arc<Durable>)> = (1..=3).map(|version| state(1, version)).collect();
-    for (bytes, durable) in &states {
-        cache.keep(bytes, durable.clone());
+fn the_cached_store_reads_a_tail_entry_without_a_nonce_every_time() {
+    futures::executor::block_on(async {
+        let memory = MemoryKv::default();
+        let store = CachedKv::new(Arc::new(memory.clone()), fresh_namespace_cache());
+        let old = tail_key(3, 0, 0);
+        store.put(&old, value(2))?;
+        memory.put(&old, value(5))?;
+        assert_eq!(store.get(&old).await?, Some(value(5)), "never kept");
+        memory.reset_stats();
+        store.get(&old).await?;
+        assert_eq!(memory.stats().kind("tail").gets, 1);
+        Ok::<_, io::Error>(())
+    })
+    .unwrap()
+}
+
+/// A put the store refuses keeps nothing.
+#[test]
+fn a_put_the_store_refuses_keeps_nothing() {
+    struct Refusing;
+    impl KvStore for Refusing {
+        fn get<'a>(&'a self, _: &'a str) -> BoxFuture<'a, io::Result<Option<Bytes>>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn put(&self, _: &str, _: Bytes) -> io::Result<()> {
+            Err(io::Error::other("refused"))
+        }
+        fn delete(&self, _: &str) -> io::Result<()> {
+            Ok(())
+        }
+        fn sync(&self) -> BoxFuture<'_, io::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
     }
-    let kept = |cache: &NamespaceCache| {
-        (states.iter())
-            .map(|(bytes, _)| cache.state(bytes).is_some())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(kept(&cache), [false, true, true]);
-    // An older one, kept late (a reader on an old head), does not push out
-    // the newer.
-    cache.keep(&states[0].0, states[0].1.clone());
-    assert_eq!(kept(&cache), [false, true, true]);
-    // The namespace is emptied and made again: another database.
-    let (again, made) = state(2, 1);
-    cache.keep(&again, made);
-    assert_eq!(kept(&cache), [false, false, false]);
-    assert!(cache.state(&again).is_some());
+    futures::executor::block_on(async {
+        let cache = fresh_namespace_cache();
+        let store = CachedKv::new(Arc::new(Refusing), cache.clone());
+        let entry = tail_key(3, 0xabc, 0);
+        assert!(store.put(&entry, value(2)).is_err());
+        assert_eq!(cache.value(&entry).await, None);
+    })
 }
 
-/// What an open reads is durable if it synced alongside, or if no flush ran
-/// or was unsettled from just before its read to just after it.
+/// The cached blob store reads a range once, up to the largest kept; a run
+/// a compaction moves is read from the store.
 #[test]
-fn a_read_is_durable_if_no_flush_ran_or_was_unsettled_meanwhile() {
-    let (one, first) = state(1, 1);
-    let cache = fresh_namespace_cache();
-    let quiet = cache.before_read();
-    assert!(cache.read_durably(quiet, false));
-    cache.opened(1, quiet);
-    // A flush starts during a read: it may have read the flush's head.
-    let during = cache.before_read();
-    assert!(cache.claim(1));
-    assert!(!cache.read_durably(during, false));
-    assert!(cache.read_durably(during, true), "unless it synced");
-    // While the flush runs.
-    let running = cache.before_read();
-    assert!(!cache.read_durably(running, false));
-    cache.flushed(one, 1, first);
-    assert!(cache.read_durably(cache.before_read(), false));
-    // A flush with an unknown outcome, until a sync settles it.
-    cache.forget();
-    let unsettled = cache.before_read();
-    assert!(!cache.read_durably(unsettled, false));
-    cache.settled(1);
-    assert!(cache.read_durably(cache.before_read(), false));
+fn the_cached_blobs_read_a_range_once() {
+    futures::executor::block_on(async {
+        let memory = MemoryBlobs::default();
+        let blobs = CachedBlobs::new(Arc::new(memory.clone()), fresh_namespace_cache());
+        let body = Bytes::from(vec![7; (MAX_KEPT_RANGE + 10) as usize]);
+        memory.put("l1/pack", body.clone()).await?;
+        let gets = memory.gets();
+        for _ in 0..2 {
+            let range = blobs.get_range("l1/pack", 10..20).await?;
+            assert_eq!(range, Some(body.slice(10..20)));
+        }
+        assert_eq!(memory.gets() - gets, 1);
+        let whole = 0..MAX_KEPT_RANGE + 10;
+        for _ in 0..2 {
+            let range = blobs.get_range("l1/pack", whole.clone()).await?;
+            assert_eq!(range, Some(body.clone()));
+        }
+        assert_eq!(memory.gets() - gets, 3, "too large to keep");
+        Ok::<_, io::Error>(())
+    })
+    .unwrap()
 }
 
-/// An open records that a flush may build on the head it read, unless a
-/// flush started since: one built on a stale head would overwrite the flush
-/// that landed. The state it read is durable all the same, and kept.
+/// A flush builds only on the writer's last durable flush: one an owner's
+/// open recorded, or one that landed.
 #[test]
-fn an_open_lets_a_flush_build_on_its_head_unless_one_started_since() {
+fn a_flush_builds_only_on_the_last_durable_flush() {
     let cache = fresh_namespace_cache();
-    let (one, first) = state(1, 1);
-    let (two, second) = state(1, 2);
-    // A slow open reads the head of version 1, durably, and loads.
-    let slow = cache.before_read();
-    assert!(cache.read_durably(slow, false));
-    // Meanwhile another state opens on it, and flushes version 2.
-    let fast = cache.before_read();
-    cache.opened(1, fast);
+    assert!(!cache.claim(0), "nothing recorded yet");
+    cache.opened(1, cache.epoch());
     assert!(cache.claim(1));
-    cache.flushed(two.clone(), 2, second.clone());
-    // The slow open's load ends: its state is durable, its head stale.
-    cache.keep(&one, first);
-    cache.opened(1, slow);
-    assert_eq!(cache.committed(), Some(2));
-    assert!(!cache.claim(1), "no flush on the stale head");
-    assert!(cache.state(&one).is_some() && cache.state(&two).is_some());
+    assert!(!cache.claim(1), "another runs");
+    assert_eq!(cache.unsettled(), Some(0), "an open syncs while it runs");
+    cache.flushed(2);
+    assert_eq!(cache.unsettled(), None);
+    assert!(!cache.claim(1), "another state flushed since");
     assert!(cache.claim(2));
 }
 
-/// A flush with an unknown outcome keeps the states, which are all as of
-/// durable heads, and drops what was parked and the version to build on.
+/// An open records that a flush may build on the head it read, unless a
+/// flush started since it read it: one built on a stale head would
+/// overwrite the flush that landed.
 #[test]
-fn a_flush_with_an_unknown_outcome_keeps_the_states_and_drops_the_rest() {
+fn an_open_records_its_head_unless_a_flush_started_since() {
     let cache = fresh_namespace_cache();
-    let (one, first) = state(1, 1);
-    cache.keep(&one, first.clone());
-    cache.opened(1, cache.before_read());
-    cache.park(parked(&first.head));
+    // A slow open reads the head of version 1, and loads.
+    let slow = cache.epoch();
+    // Meanwhile another state opens on it, and flushes version 2.
+    cache.opened(1, cache.epoch());
+    assert!(cache.claim(1));
+    cache.flushed(2);
+    // The slow open's load ends.
+    cache.opened(1, slow);
+    assert_eq!(cache.committed(), Some(2));
+    assert!(!cache.claim(1), "no flush on the stale head");
+}
+
+/// A flush with an unknown outcome drops the version to build on and what
+/// was parked, and makes the next owner's open sync.
+#[test]
+fn a_flush_with_an_unknown_outcome_drops_what_it_may_have_changed() {
+    let cache = fresh_namespace_cache();
+    cache.opened(1, cache.epoch());
+    cache.park(parked(&head(1)));
     assert!(cache.claim(1));
     cache.forget();
     assert_eq!(cache.committed(), None);
     assert_eq!(cache.unsettled(), Some(1));
-    assert!(cache.state(&one).is_some());
-    assert!(cache.take_parked(&first.head).is_none());
+    assert!(cache.take_parked(&head(1)).is_none());
+    cache.settled(1);
+    assert_eq!(cache.unsettled(), None);
 }
 
-/// A value parked at a head is taken only at that head; at another, it goes.
+/// The writer names its flushes' tail entries with one nonce, so that the
+/// head names them in one run; and draws another after a flush whose
+/// outcome is unknown, whose entry may be stored, and at an open of a head
+/// older than its last durable flush: another database's, at versions whose
+/// keys it put in the old one.
+#[test]
+fn the_writer_draws_another_nonce_where_a_key_could_come_again() {
+    let cache = fresh_namespace_cache();
+    let first = cache.nonce();
+    assert_ne!(first, 0, "nonce 0 names the entries of before nonces");
+    cache.opened(1, cache.epoch());
+    assert!(cache.claim(1));
+    cache.flushed(2);
+    cache.opened(2, cache.epoch());
+    assert_eq!(cache.nonce(), first, "its own head");
+    cache.opened(5, cache.epoch());
+    assert_eq!(cache.nonce(), first, "a newer head: another writer flushed");
+    assert!(cache.claim(5));
+    cache.forget();
+    let second = cache.nonce();
+    assert_ne!(second, first, "the lost flush's entry may be stored");
+    cache.settled(1);
+    cache.opened(5, cache.epoch());
+    assert_eq!(cache.nonce(), second);
+    cache.opened(0, cache.epoch());
+    assert_ne!(
+        cache.nonce(),
+        second,
+        "the state was cleared, and made again"
+    );
+}
+
+/// A value parked at a head is taken only at that head; at another, it
+/// goes. An absent head (an empty database) is the same state whatever
+/// identity each open drew for it.
 #[test]
 fn a_value_parked_at_another_head_is_dropped() {
     let cache = fresh_namespace_cache();
-    let (_, first) = state(1, 1);
-    let (_, second) = state(1, 2);
-    cache.park(parked(&first.head));
-    assert!(cache.take_parked(&first.head).is_some());
-    cache.park(parked(&first.head));
-    assert!(cache.take_parked(&second.head).is_none());
-    assert!(cache.take_parked(&first.head).is_none(), "dropped");
-}
-
-/// A tail entry's parts are kept by the database, the version and the
-/// number of parts: another database's entry at that version is another.
-#[test]
-fn tail_entries_are_kept_by_database_and_version() {
-    futures::executor::block_on(async {
-        let (a, b) = (fresh_namespace_cache(), fresh_namespace_cache());
-        let parts = [value(5), value(6)];
-        a.keep_entry(1, 3, &parts);
-        assert_eq!(a.entry(1, 3, 2).await, Some(parts.to_vec()));
-        assert_eq!(a.entry(2, 3, 2).await, None, "another database");
-        assert_eq!(a.entry(1, 4, 2).await, None, "another version");
-        assert_eq!(a.entry(1, 3, 3).await, None, "another entry");
-        assert_eq!(b.entry(1, 3, 2).await, None, "another namespace");
-        // Not a range of a pack, however alike its numbers.
-        assert_eq!(a.get(at(1, 0)).await, None);
-    })
+    cache.park(parked(&head(1)));
+    assert!(cache.take_parked(&head(1)).is_some());
+    cache.park(parked(&head(1)));
+    assert!(cache.take_parked(&head(2)).is_none());
+    assert!(cache.take_parked(&head(1)).is_none(), "dropped");
+    cache.park(parked(&Head::new(5, 16)));
+    assert!(cache.take_parked(&Head::new(6, 16)).is_some());
 }
 
 /// A flush dropped before it claimed leaves another state's flush running.
@@ -209,7 +260,7 @@ fn a_flush_that_never_claimed_leaves_the_running_one() {
         4 << 20,
     ));
     let (flushing, dropped) = (cache.namespace("a"), cache.namespace("a"));
-    flushing.opened(1, flushing.before_read());
+    flushing.opened(1, flushing.epoch());
     assert!(flushing.claim(1));
     dropped.forget();
     dropped.settled(1);
@@ -223,7 +274,7 @@ fn a_flush_that_never_claimed_leaves_the_running_one() {
 /// engine does); dropping the last `PageCache` still frees everything.
 #[test]
 fn dropping_the_cache_frees_parked_values() -> crate::state::Result<()> {
-    use crate::state::{kv::KvStore, simulation::*};
+    use crate::state::simulation::*;
     futures::executor::block_on(async {
         let cache = open_cache(cache_config(1 << 20, 16 << 20));
         let store: Arc<dyn KvStore> = Arc::new(MemoryKv::default());
@@ -252,16 +303,12 @@ fn values_read_as_slices_of_a_larger_buffer_are_kept_alone() {
         let buffer = Bytes::from(vec![9; 1 << 20]);
         let inside = |value: &Bytes| buffer.as_ptr_range().contains(&value.as_ptr());
         let slice = buffer.slice(4096..8192);
-        cache.insert(at(0, 1), slice.clone());
-        let cached = cache.get(at(0, 1)).await.expect("cached");
-        assert_eq!(cached, slice);
-        assert!(!inside(&cached));
-        cache.keep_entry(1, 1, std::slice::from_ref(&slice));
-        let entry = cache.entry(1, 1, 1).await.expect("kept");
-        assert!(!inside(&entry[0]));
-        let (_, durable) = state(1, 1);
-        cache.keep(&slice, durable);
-        assert!(!inside(&cache.owner().states[0].0));
+        cache.keep_value("key", &slice);
+        let kept = cache.value("key").await.expect("kept");
+        assert_eq!(kept, slice);
+        assert!(!inside(&kept));
+        cache.keep_range("blob", 0..4096, &slice);
+        assert!(!inside(&cache.range("blob", 0..4096).await.expect("kept")));
     })
 }
 
@@ -270,7 +317,7 @@ fn values_read_as_slices_of_a_larger_buffer_are_kept_alone() {
 #[test]
 fn an_unsettled_namespace_is_never_evicted() {
     let cache = crate::state::simulation::open_cache(PageCacheConfig {
-        namespace_bytes: 1024,
+        namespace_bytes: 4 * NAMESPACE_WEIGHT,
         ..crate::state::simulation::cache_config(1 << 20, 4 << 20)
     });
     cache.namespace("failed").forget();
@@ -282,31 +329,6 @@ fn an_unsettled_namespace_is_never_evicted() {
     drop(failed);
     others(&cache);
     assert_eq!(cache.namespace("failed").unsettled(), None);
-}
-
-/// Namespaces are kept by the bytes of their states: of many, a budget
-/// of a few keeps few.
-#[test]
-fn namespaces_are_kept_by_the_bytes_of_their_states() {
-    let cache = crate::state::simulation::open_cache(PageCacheConfig {
-        namespace_bytes: 512 << 10,
-        ..crate::state::simulation::cache_config(1 << 20, 4 << 20)
-    });
-    let head = |n: u64| state(n, 1).0;
-    for n in 0..64 {
-        let (bytes, durable) = state(n, 1);
-        let mut durable = Durable::clone(&durable);
-        durable
-            .records
-            .insert("value".into(), Bytes::from(vec![0; 16 << 10]));
-        cache
-            .namespace(&n.to_string())
-            .keep(&bytes, Arc::new(durable));
-    }
-    let kept = (0..64)
-        .filter(|&n| cache.namespace(&n.to_string()).state(&head(n)).is_some())
-        .count();
-    assert!((8..48).contains(&kept), "{kept} of 64 kept");
 }
 
 #[test]

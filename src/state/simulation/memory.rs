@@ -262,7 +262,7 @@ impl MemoryKv {
     pub fn tail_entries(&self) -> BTreeSet<u64> {
         let inner = self.inner.lock().unwrap();
         (inner.values.keys())
-            .filter_map(|key| Some(parse_tail_key(key)?.0))
+            .filter_map(|key| Some(parse_tail_key(key)?.version))
             .collect()
     }
 

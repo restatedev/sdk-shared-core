@@ -261,15 +261,10 @@ impl Chain {
         }
         Ok(image)
     }
-
-    fn bytes(&self) -> usize {
-        self.0.iter().flatten().map(Bytes::len).sum()
-    }
 }
 
 /// The state as of a head: its checkpoint's manifest, and its tail entries,
-/// applied. Immutable once made, so that the cache may keep it for the
-/// owner's next open.
+/// applied.
 #[derive(Clone, Debug)]
 pub(crate) struct Durable {
     pub head: Head,
@@ -281,23 +276,6 @@ pub(crate) struct Durable {
 }
 
 impl Durable {
-    /// About the bytes it takes in memory: the values and pages it holds,
-    /// and the manifest's locations.
-    pub(crate) fn estimated_bytes(&self) -> usize {
-        const LOCATION: usize = 40;
-        let files = (self.manifest.files.values())
-            .map(|file| (file.frames.len() + file.patches.len()) * LOCATION)
-            .sum::<usize>();
-        let pages = (self.files.values())
-            .flat_map(|file| file.pages.values())
-            .map(|chain| chain.bytes() + LOCATION)
-            .sum::<usize>();
-        let records = (self.records.iter())
-            .map(|(name, value)| name.len() + value.len() + LOCATION)
-            .sum::<usize>();
-        files + pages + records
-    }
-
     /// The state of `head` with nothing in it.
     pub(crate) fn empty(head: Head) -> Self {
         Self {
@@ -450,14 +428,17 @@ pub(crate) struct Snapshot {
     /// the state shares them.
     frames: Arc<Mutex<HashMap<Location, Arc<Bytes>>>>,
     fetching: Arc<Mutex<Fetching>>,
+    /// The nonce in the keys of this session's tail entries without a cache,
+    /// drawn at open: no other session's flush, lost or not, puts one of
+    /// them. With a cache, the writer's ([`NamespaceCache::nonce`]).
+    nonce: u64,
 }
 
 impl Snapshot {
     /// Open the namespace: see the module documentation. An owner without a
     /// cache, or with a flush running or unsettled, syncs alongside, so that
-    /// what it reads is durable; a `reader` reads what is stored. Any state
-    /// takes the state as of the head it read from the cache, or loads it,
-    /// and keeps what it loaded if it read it durably.
+    /// what it reads is durable; a `reader` reads what is stored. Either
+    /// reads the head from the store, and what it names through the cache.
     pub(super) async fn open(
         tiered: Arc<Tiered>,
         options: StateOptions,
@@ -468,11 +449,11 @@ impl Snapshot {
             return refuse(format!("frame_pages {} is invalid", options.frame_pages));
         }
         let owner = cache.as_ref().filter(|_| !reader);
-        let before = cache.as_ref().map(NamespaceCache::before_read);
+        let epoch = owner.map(NamespaceCache::epoch);
         let unsettled = owner.and_then(NamespaceCache::unsettled);
-        let synced = !reader && (owner.is_none() || unsettled.is_some());
+        let settle = !reader && (owner.is_none() || unsettled.is_some());
         let settle = async {
-            match synced {
+            match settle {
                 true => tiered.restate.sync().await,
                 false => Ok(()),
             }
@@ -481,19 +462,9 @@ impl Snapshot {
         if let (Some(owner), Some(unknown)) = (owner, unsettled) {
             owner.settled(unknown);
         }
-        let durably = match (&cache, before) {
-            (Some(cache), Some(before)) => cache.read_durably(before, synced),
-            _ => false,
-        };
         let head = match &head_bytes {
             Some(bytes) => Head::decode(bytes)?,
             None => Head::new(cache::random(), options.frame_pages),
-        };
-        // An absent head is a database not made yet, whose empty state has an
-        // identity of its own: never kept, nor taken.
-        let kept = match (&cache, &head_bytes) {
-            (Some(cache), Some(bytes)) => cache.state(bytes),
-            _ => None,
         };
         let mut snapshot = Self {
             tiered,
@@ -504,20 +475,12 @@ impl Snapshot {
             unchanged: false,
             frames: Arc::default(),
             fetching: Arc::default(),
+            nonce: cache::random().max(1),
         };
-        snapshot.durable = match kept {
-            Some(durable) => durable,
-            None => {
-                let loaded = Arc::new(snapshot.load(head, durably).await?);
-                if let (Some(cache), Some(bytes), true) = (&cache, &head_bytes, durably) {
-                    cache.keep(bytes, loaded.clone());
-                }
-                loaded
-            }
-        };
-        if let (Some(owner), Some(before)) = (owner, before) {
+        snapshot.durable = Arc::new(snapshot.load(head).await?);
+        if let (Some(owner), Some(epoch)) = (owner, epoch) {
             let version = snapshot.version();
-            owner.opened(version, before);
+            owner.opened(version, epoch);
             snapshot.unchanged = owner.committed() == Some(version);
         }
         Ok(snapshot)
@@ -525,15 +488,14 @@ impl Snapshot {
 
     /// The state of `head`: its checkpoint's manifest and its tail together,
     /// then the values the manifest stores and small files' frames together.
-    /// With `durable`, the head is: the tail entries read are kept.
-    async fn load(&self, head: Head, durable: bool) -> io::Result<Durable> {
+    async fn load(&self, head: Head) -> io::Result<Durable> {
         let manifest = async {
             match &head.checkpoint {
                 Some(checkpoint) => self.manifest(checkpoint).await,
                 None => Ok(Manifest::default()),
             }
         };
-        let tail = self.tail(&head, head.checkpointed() + 1, durable);
+        let tail = self.tiered.tail(&head, head.checkpointed() + 1);
         let (manifest, entries) = futures::try_join!(manifest, tail)?;
         let values: Vec<Location> = (manifest.records.values())
             .filter_map(|value| match value {
@@ -697,54 +659,16 @@ impl Snapshot {
         frames.insert(at, image);
     }
 
-    /// The tail entries of `head` from `first` on, fetched together: each
-    /// from the cache, or from Restate, then kept if `durable` (the head is).
-    async fn tail(&self, head: &Head, first: u64, durable: bool) -> io::Result<Vec<Entry>> {
-        let first = first.max(head.tail_first);
-        try_join_all((first..=head.version).map(|version| async move {
-            let kept = match &self.cache {
-                Some(cache) => cache.entry(head.id, version, head.parts_of(version)).await,
-                None => None,
-            };
-            let parts = match kept {
-                Some(parts) => parts,
-                None => {
-                    let parts = self.tiered.entry(head, version).await?;
-                    if let (true, Some(cache)) = (durable, &self.cache) {
-                        cache.keep_entry(head.id, version, &parts);
-                    }
-                    parts
-                }
-            };
-            Entry::decode(&parts)
-        }))
-        .await
-    }
-
-    /// The manifest of `checkpoint`, from the cache or Restate.
+    /// The manifest of `checkpoint`.
     async fn manifest(&self, checkpoint: &Checkpoint) -> io::Result<Manifest> {
-        if let Some(cache) = &self.cache {
-            if let Some(encoded) = cache.manifest(checkpoint.pack).await {
-                return Manifest::decode(&encoded);
-            }
-        }
-        let encoded = self.tiered.encoded_manifest(checkpoint).await?;
-        if let Some(cache) = &self.cache {
-            cache.insert_manifest(checkpoint.pack, encoded.clone());
-        }
-        Manifest::decode(&encoded)
+        self.tiered.manifest(checkpoint).await
     }
 
-    /// The bytes at `at`, in a pack: from the cache, or the pack store.
-    /// Where the store reads in blocks (the parts of a pack kept in
-    /// Restate), it fetches and caches the blocks `at` overlaps, so that
-    /// its neighbours in them are read from the cache too.
+    /// The bytes at `at`, in a pack. Where the store reads in blocks (the
+    /// parts of a pack kept in Restate), it fetches the blocks `at`
+    /// overlaps, which the cache keeps, so that its neighbours in them are
+    /// read from the cache too.
     async fn raw(&self, at: Location) -> io::Result<Bytes> {
-        if let Some(cache) = &self.cache {
-            if let Some(value) = cache.get(at).await {
-                return Ok(value);
-            }
-        }
         let Some(block) = self.tiered.block(at.pack) else {
             return self.fetch(at, false).await;
         };
@@ -811,15 +735,9 @@ impl Snapshot {
         Ok(out)
     }
 
-    /// The range, or with `block` the block, `at` of a pack: from the
-    /// cache, or fetched, once for every read that awaits it, and cached.
+    /// The range, or with `block` the block, `at` of a pack: fetched (through
+    /// the cache), once for every read of this state that awaits it.
     async fn fetch(&self, at: Location, block: bool) -> io::Result<Bytes> {
-        let cache = self.cache.clone();
-        if let (true, Some(cache)) = (block, &cache) {
-            if let Some(value) = cache.get(at).await {
-                return Ok(value);
-            }
-        }
         let fetch = {
             let mut fetching = self.fetching.lock().unwrap();
             if let Some(fetch) = fetching.get(&at).and_then(WeakShared::upgrade) {
@@ -831,12 +749,7 @@ impl Snapshot {
                         true => tiered.get_block(at.pack, at.offset / at.len).await,
                         false => tiered.get(at.pack, at.range()).await,
                     };
-                    let value = value.map_err(Arc::new)?;
-                    // A pack never changes, and its name is never reused.
-                    if let Some(cache) = cache {
-                        cache.insert(at, value.clone());
-                    }
-                    Ok(value)
+                    value.map_err(Arc::new)
                 }
                 .boxed()
                 .shared();
@@ -1019,6 +932,8 @@ impl Snapshot {
             ..held.clone()
         };
         head.parts.push(parts.len() as u32);
+        let nonce = (self.cache.as_ref()).map_or(self.nonce, NamespaceCache::nonce);
+        head.written_by(nonce);
         let mut deletes = Vec::new();
         if let Some(staged) = &staged {
             // The tail the checkpoint before covered goes; the tail this one
@@ -1030,6 +945,7 @@ impl Snapshot {
                 head.parts
                     .drain(..(before.version() + 1 - held.tail_first) as usize);
                 head.tail_first = before.version() + 1;
+                head.trim_runs();
             }
             head.previous = held.checkpoint;
             head.checkpoint = Some(staged.checkpoint);
@@ -1040,16 +956,12 @@ impl Snapshot {
         if cache.is_some_and(|cache| !cache.claim(self.version())) {
             return refuse("another state flushed since this one opened; reopen".into());
         }
-        let written = cache.map(|_| parts.clone());
         if let Err(error) = self.tiered.write(&next.head, parts, &deletes).await {
             return Err(self.failed(error));
         }
-        let head_bytes = next.head.encode();
         let next = Arc::new(next);
-        if let (Some(cache), Some(written)) = (cache, written) {
-            // Durable now, its entry and its state, which the next states read.
-            cache.keep_entry(next.head.id, next.head.version, &written);
-            cache.flushed(head_bytes.clone(), next.head.version, next.clone());
+        if let Some(cache) = cache {
+            cache.flushed(next.head.version);
         }
         let report = FlushReport {
             #[cfg(test)]
@@ -1206,7 +1118,7 @@ impl Snapshot {
                             Err(patch) => {
                                 let location = put(&mut body, &patch);
                                 let page = Bytes::copy_from_slice(&image[at(page)]);
-                                written.push((location, patch, Some(Arc::new(page))));
+                                written.push((location, Some(Arc::new(page))));
                                 location
                             }
                         };
@@ -1218,7 +1130,7 @@ impl Snapshot {
             }
             let whole = zstd::compress(&image, &[], Bytes::copy_from_slice)?;
             let location = put(&mut body, &whole);
-            written.push((location, whole, Some(Arc::new(Bytes::from(image)))));
+            written.push((location, Some(Arc::new(Bytes::from(image)))));
             indexed.frames[index as usize] = Some(location);
             frames += 1;
         }
@@ -1231,7 +1143,7 @@ impl Snapshot {
             }
             let frame = zstd::compress(value, &[], Bytes::copy_from_slice)?;
             let at = put(body, &frame);
-            written.push((at, frame, None));
+            written.push((at, None));
             Ok(Value::Stored(at))
         };
         for (name, value) in &durable.records {
@@ -1276,7 +1188,7 @@ impl Snapshot {
         let mut moved = HashMap::new();
         for (at, raw) in moving.into_iter().zip(fetched) {
             moved.insert(at, put(&mut body, &raw));
-            written.push((moved[&at], raw, None));
+            written.push((moved[&at], None));
         }
         manifest.relocate(&moved);
         for held in manifest.packs() {
@@ -1310,17 +1222,8 @@ impl Snapshot {
         if !body.is_empty() {
             self.tiered.put_pack(pack, body.into()).await?;
         }
-        self.tiered.put_manifest(pack, encoded.clone()).await?;
-        // The pack's name is never reused, and no head names it before it is
-        // durable: what it holds may be kept, its manifest too (the next
-        // writer's open reads it).
-        if let Some(cache) = &self.cache {
-            cache.insert_manifest(pack, encoded);
-        }
-        for (at, raw, image) in written {
-            if let Some(cache) = &self.cache {
-                cache.insert(at, raw);
-            }
+        self.tiered.put_manifest(pack, encoded).await?;
+        for (at, image) in written {
             if let Some(image) = image {
                 self.keep(at, image);
             }
@@ -1349,6 +1252,7 @@ impl Snapshot {
             unchanged: false,
             frames: self.frames.clone(),
             fetching: self.fetching.clone(),
+            nonce: self.nonce,
         }
     }
 }

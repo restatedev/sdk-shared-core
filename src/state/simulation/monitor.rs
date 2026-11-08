@@ -67,6 +67,8 @@ struct Known {
     tail: BTreeMap<String, Bytes>,
     /// Tail parts a failed write, or a crash, may or may not have changed.
     unknown: BTreeSet<String>,
+    /// The keys with a nonce of every tail part ever put: each is put once.
+    tail_put: BTreeSet<String>,
     /// The head, unless a failed write left it unknown.
     head: Option<Head>,
     head_unknown: bool,
@@ -88,7 +90,8 @@ struct Known {
 /// A key of the store, as the monitor tells them apart.
 enum Key {
     Head,
-    Tail(u64),
+    /// A tail entry's: its version, and whether its key has a nonce.
+    Tail(u64, bool),
     Pack(String, u64),
     Manifest(String, u64),
     Other,
@@ -98,8 +101,8 @@ fn key(key: &str) -> Key {
     if key == HEAD_KEY {
         return Key::Head;
     }
-    if let Some((version, _)) = parse_tail_key(key) {
-        return Key::Tail(version);
+    if let Some(tail) = parse_tail_key(key) {
+        return Key::Tail(tail.version, tail.nonce != 0);
     }
     let part = |prefix: &str| {
         let (name, part) = key.strip_prefix(prefix)?.rsplit_once('/')?;
@@ -159,14 +162,15 @@ impl Known {
                 let version = head.as_ref().map_or(0, |head| head.version);
                 self.head = head;
                 self.head_unknown = false;
-                let past = |key: &String| parse_tail_key(key).is_some_and(|(v, _)| v > version);
+                let past =
+                    |key: &String| parse_tail_key(key).is_some_and(|tail| tail.version > version);
                 let lost: Vec<String> = self.tail.keys().filter(|key| past(key)).cloned().collect();
                 for key in lost {
                     self.tail.remove(&key);
                     self.unknown.insert(key);
                 }
             }
-            Key::Tail(_) => {
+            Key::Tail(..) => {
                 self.unknown.remove(at);
                 match value {
                     Some(value) => self.tail.insert(at.to_owned(), value),
@@ -182,7 +186,7 @@ impl Known {
     fn forget(&mut self, at: &str) {
         match key(at) {
             Key::Head => self.head_unknown = true,
-            Key::Tail(_) => {
+            Key::Tail(..) => {
                 self.tail.remove(at);
                 self.unknown.insert(at.to_owned());
             }
@@ -222,7 +226,12 @@ impl Known {
         self.checked += 1;
         match key(at) {
             Key::Head => self.check_head(value),
-            Key::Tail(version) => {
+            Key::Tail(version, nonce) => {
+                // A key with a nonce names one value for ever: a lost flush's
+                // entry is left for garbage collection, never put over.
+                if nonce && !self.tail_put.insert(at.to_owned()) {
+                    self.violation(format!("tail entry {at} put again"));
+                }
                 let Some(head) = self.held() else {
                     return;
                 };
@@ -463,7 +472,10 @@ impl Known {
             return;
         };
         match key(at) {
-            Key::Tail(version) => {
+            Key::Tail(version, _) => {
+                // Whatever head a state read, it deletes no entry past its
+                // checkpoint, which a later head may name: a lost flush's
+                // entry waits for a checkpoint too.
                 if version > head.checkpointed() {
                     self.violation(format!("tail entry {version} deleted, not checkpointed"));
                 }

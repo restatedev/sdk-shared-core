@@ -558,3 +558,32 @@ fn a_crashed_flushs_extra_tail_parts_are_collected() -> Result<()> {
         Ok(())
     })
 }
+
+/// A lost flush leaves its tail entry, under a key with its writer's nonce
+/// that no head names and no other flush puts: a collection deletes it once
+/// a checkpoint covers its version, and keeps the entries the head names.
+#[test]
+fn a_lost_flushs_tail_entry_is_collected() -> Result<()> {
+    futures::executor::block_on(async {
+        let memory = Arc::new(MemoryKv::default());
+        let state = State::open(memory.clone()).await?;
+        let mut mutation = state.mutation();
+        mutation.set_record("outbox", vec![0; 8].into())?;
+        mutation.flush().await?;
+        // Another writer's flush of version 2, lost: its entry stays.
+        let lost = crate::state::format::tail_key(2, 0xdead, 0);
+        memory.put(&lost, Bytes::from_static(b"lost"))?;
+        memory.sync().await?;
+        for n in 1..4u8 {
+            let mut mutation = state.mutation();
+            mutation.set_record("outbox", vec![n; 8].into())?;
+            mutation.checkpoint();
+            mutation.flush().await?;
+        }
+        let keys = memory.keys();
+        assert!(!keys.contains(&lost), "{keys:?}");
+        let reopened = State::open(memory.clone()).await?;
+        assert_eq!(reopened.record("outbox"), Bytes::from(vec![3; 8]));
+        Ok(())
+    })
+}
