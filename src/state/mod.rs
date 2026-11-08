@@ -35,7 +35,7 @@
 //! |---|---|---|
 //! | A mutation | Pages written and records set in it, in memory | No: dropping it discards them |
 //! | Head | `v22/head`: the version, the checkpoint and the one before, the tail's extent | Yes, after an acknowledged flush |
-//! | Tail | `v22/tail/<version>/<part>`: the mutation a flush made: records, pages (each a zstd frame against the page before it) | Yes, until a checkpoint after the next one |
+//! | Tail | `v22/tail/<version>-<nonce>/<part>`: the mutation a flush made: records, pages (each a zstd frame against the page before it), under its writer's nonce | Yes, until a checkpoint after the next one |
 //! | Manifests | `v22/manifest/<version>-<nonce>/<part>`: where a checkpoint's frames and records are | Yes, while the head names its checkpoint |
 //! | Packs | `v22/pack/l0/<version>-<nonce>/<part>` in Restate, `l1/<version>-<nonce>` in the blob store: frames of [`StateOptions::frame_pages`] pages, large records | Yes, until no checkpoint the head names needs it |
 //!
@@ -52,13 +52,15 @@
 //! checkpoint more. Only one flushes: a flush is refused if another state
 //! of the owner flushed since this one opened.
 //!
-//! The [`PageCache`] is the process's: it keeps ranges of packs in memory
-//! and on a local disk tier under one budget for every namespace it opens,
-//! under their location, for as long as it likes: a pack never changes. It
-//! remembers the head this owner made durable, and the state as of it, so a
-//! steady-state open and flush are each one round trip. The SQL engine is
-//! parked there for the next state of the namespace ([`State::park`]), which
-//! takes it back when nothing changed. The disk tier's I/O runs on tokio.
+//! The [`PageCache`] is the process's: every get but the head's goes
+//! through it, served from it or fetched and kept, and every put but the
+//! head's is kept, in memory and on a local disk tier under one budget for
+//! every namespace it opens. Every key but the head's names one value for
+//! ever (a tail entry, a manifest and a pack each carry a nonce), so nothing
+//! kept is invalidated, and a steady-state open, an owner's or a reader's,
+//! and a flush are each one round trip. The SQL engine is parked there for
+//! the next owner's state at the same head ([`State::park`]). The disk
+//! tier's I/O runs on tokio.
 //!
 //! # Example
 //!
@@ -109,7 +111,7 @@ pub(crate) use {
     store::Checkpointed,
 };
 
-use crate::state::cache::{Backoff, NamespaceCache, ParkedValue};
+use crate::state::cache::{same_state, Backoff, NamespaceCache, ParkedValue};
 use crate::state::store::Snapshot;
 use crate::state::tail::Tiered;
 use bytes::Bytes;
@@ -306,9 +308,11 @@ impl Drop for Shared {
         let Some(cache) = self.cache.as_ref().filter(|_| !self.reader) else {
             return;
         };
-        let version = self.snapshot().version();
+        let snapshot = self.snapshot();
         if let Some(value) = self.parked.get_mut().unwrap().take() {
-            if value.version == version && cache.committed() == Some(version) {
+            if same_state(&value.head, snapshot.head())
+                && cache.committed() == Some(snapshot.version())
+            {
                 cache.park(value);
             }
         }
@@ -354,14 +358,13 @@ impl State {
             cache,
             reader,
         } = open;
-        let tail = Arc::new(Tiered::new(store, packs));
+        let tail = Arc::new(Tiered::new(store, packs, cache.as_ref()));
         let snapshot = Snapshot::open(tail.clone(), options, cache.clone(), reader);
         let snapshot = snapshot.await?;
         let parked = match &cache {
-            Some(cache) if snapshot.unchanged => cache.take_parked(),
+            Some(cache) if snapshot.unchanged => cache.take_parked(snapshot.head()),
             _ => None,
         };
-        let parked = parked.filter(|value| value.version == snapshot.version());
         let backoff = cache
             .as_ref()
             .map(NamespaceCache::backoff)
@@ -435,7 +438,7 @@ impl State {
         let cache = self.shared.cache.as_ref().unwrap();
         let parked = ParkedValue {
             value: Box::new(value),
-            version: self.version(),
+            head: self.shared.snapshot().head().clone(),
             weight,
         };
         cache.park(parked);
@@ -555,7 +558,8 @@ impl Open {
     /// Open a reader of a namespace that another owns, alongside it: a
     /// state whose mutations refuse to flush. It reads the state as of open, whatever the owner flushes meanwhile,
     /// until the owner's second checkpoint after it. With a cache
-    /// ([`Self::cached`]), it reads the ranges of packs the owner cached.
+    /// ([`Self::cached`]), it reads through it as an owner's state does: the
+    /// state as of the head it read, if kept, and what else the cache keeps.
     pub(crate) fn reader(self) -> Self {
         Self {
             reader: true,

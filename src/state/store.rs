@@ -42,6 +42,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
     io,
+    ops::Range,
     sync::{Arc, Mutex},
 };
 
@@ -261,15 +262,10 @@ impl Chain {
         }
         Ok(image)
     }
-
-    fn bytes(&self) -> usize {
-        self.0.iter().flatten().map(Bytes::len).sum()
-    }
 }
 
 /// The state as of a head: its checkpoint's manifest, and its tail entries,
-/// applied. Immutable once made, so that the cache may keep it for the
-/// owner's next open.
+/// applied.
 #[derive(Clone, Debug)]
 pub(crate) struct Durable {
     pub head: Head,
@@ -281,23 +277,6 @@ pub(crate) struct Durable {
 }
 
 impl Durable {
-    /// About the bytes it takes in memory: the values and pages it holds,
-    /// and the manifest's locations.
-    pub(crate) fn estimated_bytes(&self) -> usize {
-        const LOCATION: usize = 40;
-        let files = (self.manifest.files.values())
-            .map(|file| (file.frames.len() + file.patches.len()) * LOCATION)
-            .sum::<usize>();
-        let pages = (self.files.values())
-            .flat_map(|file| file.pages.values())
-            .map(|chain| chain.bytes() + LOCATION)
-            .sum::<usize>();
-        let records = (self.records.iter())
-            .map(|(name, value)| name.len() + value.len() + LOCATION)
-            .sum::<usize>();
-        files + pages + records
-    }
-
     /// The state of `head` with nothing in it.
     pub(crate) fn empty(head: Head) -> Self {
         Self {
@@ -440,21 +419,27 @@ pub(crate) struct Snapshot {
     options: StateOptions,
     /// The namespace in the process's [`crate::state::PageCache`].
     cache: Option<NamespaceCache>,
-    /// A reader's: it changes nothing in the cache.
+    /// A reader's: it never flushes, and reads as an owner's state does.
     reader: bool,
     pub(crate) durable: Arc<Durable>,
-    /// Nothing changed since this owner last saw the namespace.
+    /// An owner's, at the writer's last durable flush: no other state
+    /// flushed since.
     pub(crate) unchanged: bool,
     /// Frames decoded, by location: packs never change, so every view of
     /// the state shares them.
     frames: Arc<Mutex<HashMap<Location, Arc<Bytes>>>>,
     fetching: Arc<Mutex<Fetching>>,
+    /// The nonce in the keys of this session's tail entries without a cache,
+    /// drawn at open: no other session's flush, lost or not, puts one of
+    /// them. With a cache, the writer's ([`NamespaceCache::nonce`]).
+    nonce: u64,
 }
 
 impl Snapshot {
     /// Open the namespace: see the module documentation. An owner without a
-    /// cache, or whose last flush had an unknown outcome, syncs alongside, so
-    /// that what it reads is durable; a `reader` reads what is stored.
+    /// cache, or with a flush running or unsettled, syncs alongside, so that
+    /// what it reads is durable; a `reader` reads what is stored. Either
+    /// reads the head from the store, and what it names through the cache.
     pub(super) async fn open(
         tiered: Arc<Tiered>,
         options: StateOptions,
@@ -465,6 +450,7 @@ impl Snapshot {
             return refuse(format!("frame_pages {} is invalid", options.frame_pages));
         }
         let owner = cache.as_ref().filter(|_| !reader);
+        let epoch = owner.map(NamespaceCache::epoch);
         let unsettled = owner.and_then(NamespaceCache::unsettled);
         let settle = !reader && (owner.is_none() || unsettled.is_some());
         let settle = async {
@@ -481,9 +467,6 @@ impl Snapshot {
             Some(bytes) => Head::decode(bytes)?,
             None => Head::new(cache::random(), options.frame_pages),
         };
-        let validated = owner.map(|owner| owner.validate(head_bytes.as_deref()));
-        let known = validated.as_ref().is_some_and(|validated| validated.known);
-        let reused = owner.filter(|_| known).and_then(NamespaceCache::durable);
         let mut snapshot = Self {
             tiered,
             options,
@@ -493,16 +476,13 @@ impl Snapshot {
             unchanged: false,
             frames: Arc::default(),
             fetching: Arc::default(),
+            nonce: cache::random().max(1),
         };
-        snapshot.durable = match reused {
-            Some(durable) => durable,
-            None => Arc::new(snapshot.load(head).await?),
-        };
-        if let (Some(owner), Some(validated)) = (owner, validated) {
+        snapshot.durable = Arc::new(snapshot.load(head).await?);
+        if let (Some(owner), Some(epoch)) = (owner, epoch) {
             let version = snapshot.version();
-            snapshot.unchanged = known && owner.committed() == Some(version);
-            let committed = (!known).then_some(version);
-            owner.record(&validated, head_bytes, committed, snapshot.durable.clone());
+            owner.opened(version, epoch);
+            snapshot.unchanged = owner.committed() == Some(version);
         }
         Ok(snapshot)
     }
@@ -680,30 +660,16 @@ impl Snapshot {
         frames.insert(at, image);
     }
 
-    /// The manifest of `checkpoint`, from the cache or Restate.
+    /// The manifest of `checkpoint`.
     async fn manifest(&self, checkpoint: &Checkpoint) -> io::Result<Manifest> {
-        if let Some(cache) = &self.cache {
-            if let Some(encoded) = cache.manifest(checkpoint.pack).await {
-                return Manifest::decode(&encoded);
-            }
-        }
-        let encoded = self.tiered.encoded_manifest(checkpoint).await?;
-        if let Some(cache) = &self.cache {
-            cache.insert_manifest(checkpoint.pack, encoded.clone());
-        }
-        Manifest::decode(&encoded)
+        self.tiered.manifest(checkpoint).await
     }
 
-    /// The bytes at `at`, in a pack: from the cache, or the pack store.
-    /// Where the store reads in blocks (the parts of a pack kept in
-    /// Restate), it fetches and caches the blocks `at` overlaps, so that
-    /// its neighbours in them are read from the cache too.
+    /// The bytes at `at`, in a pack. Where the store reads in blocks (the
+    /// parts of a pack kept in Restate), it fetches the blocks `at`
+    /// overlaps, which the cache keeps, so that its neighbours in them are
+    /// read from the cache too.
     async fn raw(&self, at: Location) -> io::Result<Bytes> {
-        if let Some(cache) = &self.cache {
-            if let Some(value) = cache.get(at).await {
-                return Ok(value);
-            }
-        }
         let Some(block) = self.tiered.block(at.pack) else {
             return self.fetch(at, false).await;
         };
@@ -735,8 +701,8 @@ impl Snapshot {
     }
 
     /// The bytes at each of `ats`, sorted by pack and offset, for a
-    /// compaction: ranges of a pack close together are fetched as one run,
-    /// which is not cached whole (each range is, where it moves to).
+    /// compaction: ranges of a pack close together are fetched as one run.
+    /// Each range is kept where it moves to, as its new pack is put.
     async fn raw_runs(&self, ats: &[Location]) -> io::Result<Vec<Bytes>> {
         let mut runs: Vec<(Location, Vec<usize>)> = Vec::new();
         for (i, at) in ats.iter().enumerate() {
@@ -770,15 +736,9 @@ impl Snapshot {
         Ok(out)
     }
 
-    /// The range, or with `block` the block, `at` of a pack: from the
-    /// cache, or fetched, once for every read that awaits it, and cached.
+    /// The range, or with `block` the block, `at` of a pack: fetched (through
+    /// the cache), once for every read of this state that awaits it.
     async fn fetch(&self, at: Location, block: bool) -> io::Result<Bytes> {
-        let cache = self.cache.clone();
-        if let (true, Some(cache)) = (block, &cache) {
-            if let Some(value) = cache.get(at).await {
-                return Ok(value);
-            }
-        }
         let fetch = {
             let mut fetching = self.fetching.lock().unwrap();
             if let Some(fetch) = fetching.get(&at).and_then(WeakShared::upgrade) {
@@ -790,12 +750,7 @@ impl Snapshot {
                         true => tiered.get_block(at.pack, at.offset / at.len).await,
                         false => tiered.get(at.pack, at.range()).await,
                     };
-                    let value = value.map_err(Arc::new)?;
-                    // A pack never changes, and its name is never reused.
-                    if let Some(cache) = cache {
-                        cache.insert(at, value.clone());
-                    }
-                    Ok(value)
+                    value.map_err(Arc::new)
                 }
                 .boxed()
                 .shared();
@@ -978,6 +933,8 @@ impl Snapshot {
             ..held.clone()
         };
         head.parts.push(parts.len() as u32);
+        let nonce = (self.cache.as_ref()).map_or(self.nonce, NamespaceCache::nonce);
+        head.written_by(nonce);
         let mut deletes = Vec::new();
         if let Some(staged) = &staged {
             // The tail the checkpoint before covered goes; the tail this one
@@ -989,6 +946,7 @@ impl Snapshot {
                 head.parts
                     .drain(..(before.version() + 1 - held.tail_first) as usize);
                 head.tail_first = before.version() + 1;
+                head.trim_runs();
             }
             head.previous = held.checkpoint;
             head.checkpoint = Some(staged.checkpoint);
@@ -1002,10 +960,9 @@ impl Snapshot {
         if let Err(error) = self.tiered.write(&next.head, parts, &deletes).await {
             return Err(self.failed(error));
         }
-        let head_bytes = next.head.encode();
         let next = Arc::new(next);
         if let Some(cache) = cache {
-            cache.flushed(head_bytes.clone(), next.head.version, next.clone());
+            cache.flushed(next.head.version);
         }
         let report = FlushReport {
             #[cfg(test)]
@@ -1162,7 +1119,7 @@ impl Snapshot {
                             Err(patch) => {
                                 let location = put(&mut body, &patch);
                                 let page = Bytes::copy_from_slice(&image[at(page)]);
-                                written.push((location, patch, Some(Arc::new(page))));
+                                written.push((location, Some(Arc::new(page))));
                                 location
                             }
                         };
@@ -1174,7 +1131,7 @@ impl Snapshot {
             }
             let whole = zstd::compress(&image, &[], Bytes::copy_from_slice)?;
             let location = put(&mut body, &whole);
-            written.push((location, whole, Some(Arc::new(Bytes::from(image)))));
+            written.push((location, Some(Arc::new(Bytes::from(image)))));
             indexed.frames[index as usize] = Some(location);
             frames += 1;
         }
@@ -1187,7 +1144,7 @@ impl Snapshot {
             }
             let frame = zstd::compress(value, &[], Bytes::copy_from_slice)?;
             let at = put(body, &frame);
-            written.push((at, frame, None));
+            written.push((at, None));
             Ok(Value::Stored(at))
         };
         for (name, value) in &durable.records {
@@ -1232,7 +1189,7 @@ impl Snapshot {
         let mut moved = HashMap::new();
         for (at, raw) in moving.into_iter().zip(fetched) {
             moved.insert(at, put(&mut body, &raw));
-            written.push((moved[&at], raw, None));
+            written.push((moved[&at], None));
         }
         manifest.relocate(&moved);
         for held in manifest.packs() {
@@ -1264,19 +1221,11 @@ impl Snapshot {
             promoted,
         };
         if !body.is_empty() {
-            self.tiered.put_pack(pack, body.into()).await?;
+            let ranges: Vec<Range<u64>> = written.iter().map(|(at, _)| at.range()).collect();
+            self.tiered.put_pack(pack, body.into(), &ranges).await?;
         }
-        self.tiered.put_manifest(pack, encoded.clone()).await?;
-        // The pack's name is never reused, and no head names it before it is
-        // durable: what it holds may be kept, its manifest too (the next
-        // writer's open reads it).
-        if let Some(cache) = &self.cache {
-            cache.insert_manifest(pack, encoded);
-        }
-        for (at, raw, image) in written {
-            if let Some(cache) = &self.cache {
-                cache.insert(at, raw);
-            }
+        self.tiered.put_manifest(pack, encoded).await?;
+        for (at, image) in written {
             if let Some(image) = image {
                 self.keep(at, image);
             }
@@ -1305,6 +1254,7 @@ impl Snapshot {
             unchanged: false,
             frames: self.frames.clone(),
             fetching: self.fetching.clone(),
+            nonce: self.nonce,
         }
     }
 }

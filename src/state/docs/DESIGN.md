@@ -111,7 +111,9 @@ state, however the owner flushes meanwhile: snapshot isolation, with no
 check and no retry. The packs and the tail its head names stay until the
 owner's second checkpoint after it, so a reader that outlives that fails
 with "is gone", and its handler is retried. A reader may collect garbage
-too. With the cache, a reader reads the ranges the owner cached.
+too. With the cache, a reader reads as an owner's state does (see
+[The cache](#the-cache)): with what the head names kept, its open is one
+get, the head.
 
 ## Engine integration
 
@@ -154,46 +156,68 @@ own), served by `KvIo`:
   `ROLLBACK`) fails and ends the session before anything is durable, and so
   does dropping a call's future.
 
-## Owner cache
+## The cache
 
 One `PageCache` per process. A state opens in it under its namespace's key
 (`State::open(store).cached(&cache, key)`), and keeps that namespace's part of
 it (a `NamespaceCache`, inside the crate).
 
-**Packs.** A pack never changes, and its name is never reused, so the cache
-keeps its ranges (frames, patches, values, manifests, and the parts read
-of packs kept in Restate) under (namespace, pack, offset, length) in memory, spilling to a local disk file
-([foyer](https://github.com/foyer-rs/foyer)), one budget for all namespaces,
-for as long as it likes. There is nothing to invalidate: no versions, no
-generations, no epochs, no read marks. A range of a pack that never became
-durable is harmless: no head will ever name it. The namespace is a
-per-cache counter, randomly seeded, drawn per namespace handle, and the disk tier starts
-empty in every process. A memory hit is served without foyer's disk hop,
-and concurrent reads of one range share one get, held weakly, so a
-cancelled read cancels the get.
+**Reads.** A state's stores are wrapped in the cache (`CachedKv` for
+Restate, `CachedBlobs` for S3): every get but the head's is served from the
+cache, or fetched and kept, and every put but the head's is kept too (a pack
+in S3 by the ranges its checkpoint wrote, by which states read it). That
+is the whole of it, and it holds because every key but the head's names one
+value for ever: a tail entry carries the nonce of the writer that flushed
+it, a manifest and a pack their own, and none is put twice. So there is
+nothing to invalidate (no versions, no generations, no read marks), and
+what a lost flush put is harmless: no head names it, and the next writer's
+keys are others. The head is the one key every flush changes: every open
+reads it from Restate, and every state, an owner's or a reader's, reads
+what it names the same way. Values are kept by (namespace, key) in Restate,
+and by (namespace, key, range) in S3, where a read takes a frame or a
+value, not a run a compaction moves (kept up to 1 MiB); in memory, and on a
+local disk file ([foyer](https://github.com/foyer-rs/foyer)), one budget for
+all namespaces. A value larger than a shard of the memory tier (a large
+tail entry, say) goes to disk alone. The namespace's part of the keys is a
+per-cache counter, randomly seeded, drawn per namespace, and the disk tier
+starts empty in every process. A memory hit is served without foyer's disk
+hop.
 
-**Per-namespace state:** the head bytes this owner last read or wrote, the
-state as of that head, the version of its last durable flush, and the values
-parked there (`State::park`: an engine, say). Open compares the head it
-reads with the one it remembers: the same bytes, and this owner continues
-as it left, with its parked engine, reading nothing more; any other head,
-and it loads that head's state, from the cache where it can, and drops the
-parked values. A head holds the database's random identity, drawn when it
-was made, so a namespace emptied (its object's state cleared) and made
-again never matches the old one. A flush whose outcome is unknown forgets
-the head, and the next open syncs first. Namespaces are kept by the bytes
-of their states (`PageCacheConfig::namespace_bytes`, 256 MiB, least
-recently used first): a namespace evicted only loads its state again.
+**Before nonces.** The tail entries of a head written before entries had
+nonces have keys a retry of a lost flush puts again: the cache reads them
+from Restate at every open, as the head, until a checkpoint drops them.
 
-**States of one owner.** States may overlap, such as a writer and readers
-for a virtual object's shared handlers. A flush is refused when another
-state flushed since this one opened, rather than replacing the head that
-state wrote. Each reads its own head.
+**Requests.** Concurrent reads of one range in a state share one get, held
+weakly, so a cancelled read cancels the get. Across states, nothing waits on
+another's request: a request goes through one invocation's store (in
+Restate, its journal), and completes only while that invocation runs, so a
+state waiting on another's would wait forever once that one's attempt
+ended. What one state fetched, the next finds kept.
+
+**The writer.** States of one owner may overlap in a process, such as two
+sessions of one invocation. The namespace knows the version of its last
+durable flush: an owner's open records the head it read, unless a flush
+started since it read it, and a flush is refused unless it builds on that
+version, rather than overwrite the head another state wrote. It holds the
+nonce of the writer's tail entries: one for all its flushes, so that the
+head names them in one run (each run is about 10 bytes of a head every
+flush rewrites); another after a flush whose outcome is unknown, and at an
+open of a head older than its last durable flush (the object's state
+cleared, and made again), so that it never puts a key twice. It knows the
+flush that runs, and the flushes with an unknown outcome, so that the next
+owner's open syncs first; and when the next checkpoint may be tried. A
+flush whose outcome is unknown forgets the version to build on and what
+was parked. Writers are kept for a bounded number of namespaces
+(`PageCacheConfig::namespace_bytes`, least recently used first): a
+namespace forgotten waits for an owner's open to read its head again before
+it flushes, and one with an unknown outcome is kept until a sync settles
+it.
 
 **Engine reuse.** A session that ends cleanly (after a successful flush, or
-read-only) parks its engine, but only if that engine holds the owner's latest
-durable flush (an overlapping state's engine may be older) and its SQL
-changed no per-connection state (`PRAGMA`, `ATTACH`, `DETACH`, the temp schema).
+read-only) parks its engine at its head, but only if that head is the
+writer's latest durable flush (an overlapping state's engine may be older)
+and its SQL changed no per-connection state (`PRAGMA`, `ATTACH`, `DETACH`, the temp schema).
+The next owner's state at that head takes it; at another head, it goes.
 Only the database is kept: the next session connects afresh, so connection
 counters (`last_insert_rowid()`, `changes()`) and settings never carry over.
 This keeps the parsed schema warm, which saves each session parsing it again
@@ -214,8 +238,8 @@ one-thread runtime of its own. It is the only background work.
 | Flush, cold      | 1, plus 1 to get the frames (or patches) of the pages it writes, where the state lacks them                                    | The same                           |
 | Checkpoint       | Up to 3 more, for what the state lacks: frames it rebuilds or patches, ranges it compacts; a promotion, 1 PUT before the flush | A pack, a manifest                 |
 | Collection       | 1 to list the packs and manifests; if any is older than the previous checkpoint, 1 for both manifests, then the deletes        | The deletes                        |
-| Open, with cache | 1, the head, when nothing changed since this owner's flush                                                                     | None                               |
-| Cold open        | Up to 3: the head; the manifest and the tail (from Restate); the large values, and a small database whole                      | None                               |
+| Open, with cache | 1, the head, when the cache holds what the head names (an owner's open or a reader's)                                          | None                               |
+| Cold open        | Up to 3: the head; the manifest and the tail (what the cache lacks); the large values, and a small database whole              | None                               |
 | Cold page read   | 1 ranged get of its frame (and its patch, together); for a page in the overlay, of its reference                               | None                               |
 
 Measurements: [ARCHITECTURE.md](ARCHITECTURE.md#6-numbers).

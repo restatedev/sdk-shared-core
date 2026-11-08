@@ -1,6 +1,9 @@
 //! The requests a state makes: the head, the tail and the checkpoints'
 //! manifests in Restate, and the packs in two tiers: L0 in Restate
-//! ([`KvBlobs`], by part), L1 in S3 (a [`BlobStore`], if there is one).
+//! ([`KvBlobs`], by part), L1 in S3 (a [`BlobStore`], if there is one), all
+//! through the process's cache, if the state has one ([`CachedKv`],
+//! [`CachedBlobs`]): every get but the head's is served from it, or fetched
+//! and kept.
 //!
 //! **A flush** puts its tail entry and the head, then syncs: one round trip,
 //! which Restate fences. A flush that adopts a checkpoint deletes, in the
@@ -10,16 +13,22 @@
 //! **Zombies.** A pack's name is unique (its version and a random nonce), so
 //! an attempt that Restate fenced may still put packs, but never one that a
 //! head names, and never over another's: they are garbage, as are a crashed
-//! attempt's.
+//! attempt's. So is a lost flush's tail entry, whose key has its writer's
+//! nonce: the next entry at that version has another, as a writer draws
+//! another nonce after a flush whose outcome is unknown.
 //!
 //! **Garbage** ([`Tiered::collect_garbage`]): a pack older than the head's
 //! previous checkpoint that neither of its checkpoints names is deleted, and
-//! so is the manifest of a checkpoint older than the previous one. Any
-//! state may collect, an owner's or a reader's, and so may a zombie:
-//! whatever head it holds, every pack a later head names is either named by
-//! its head's checkpoints or newer than the previous one.
+//! so is the manifest of a checkpoint older than the previous one, and any
+//! tail entry at a version the head's checkpoint covers that the head does
+//! not name. Any state may collect, an owner's or a reader's, and so may a
+//! zombie: whatever head it holds, every pack a later head names is either
+//! named by its head's checkpoints or newer than the previous one, and every
+//! tail entry a later head names at a version its checkpoint covers is one
+//! it names too.
 use crate::state::{
     blobs::{BlobStore, KvBlobs, KV_PART},
+    cache::{CachedBlobs, CachedKv, NamespaceCache},
     format::{
         parse_tail_key, Checkpoint, Entry, Head, Manifest, PackId, Tier, HEAD_KEY, L0_PREFIX,
         PACK_PREFIX,
@@ -38,15 +47,32 @@ pub(crate) struct Tiered {
     /// L1: the packs in S3, where there is one.
     l1: Option<Arc<dyn BlobStore>>,
     manifests: KvBlobs,
+    /// The process's cache, if the state has one, which keeps the ranges a
+    /// checkpoint puts in L1 ([`Self::put_pack`]).
+    cache: Option<NamespaceCache>,
 }
 
 impl Tiered {
-    pub(super) fn new(restate: Arc<dyn KvStore>, l1: Option<Arc<dyn BlobStore>>) -> Self {
+    /// The stores of a state, read through `cache`, if any (see
+    /// [`CachedKv`]).
+    pub(super) fn new(
+        restate: Arc<dyn KvStore>,
+        l1: Option<Arc<dyn BlobStore>>,
+        cache: Option<&NamespaceCache>,
+    ) -> Self {
+        let (restate, l1) = match cache {
+            Some(cache) => (
+                Arc::new(CachedKv::new(restate, cache.clone())) as Arc<dyn KvStore>,
+                l1.map(|l1| Arc::new(CachedBlobs::new(l1, cache.clone())) as Arc<dyn BlobStore>),
+            ),
+            None => (restate, l1),
+        };
         Self {
             l0: KvBlobs::new(restate.clone()),
             l1,
             manifests: KvBlobs::manifests(restate.clone()),
             restate,
+            cache: cache.cloned(),
         }
     }
 
@@ -133,8 +159,22 @@ impl Tiered {
         self.manifests.put(&pack.name(), manifest).await
     }
 
-    pub(super) async fn put_pack(&self, pack: PackId, body: Bytes) -> io::Result<()> {
-        self.store(pack.tier)?.put(&pack.key(), body).await
+    /// Put `pack`, whose `body` holds, at `ranges`, what states read of it:
+    /// a checkpoint's frames, patches and values. L0's parts are kept as they
+    /// are put ([`CachedKv`]); L1 is read by range, so the cache keeps those
+    /// ranges, as reads of them would.
+    pub(super) async fn put_pack(
+        &self,
+        pack: PackId,
+        body: Bytes,
+        ranges: &[Range<u64>],
+    ) -> io::Result<()> {
+        let key = pack.key();
+        self.store(pack.tier)?.put(&key, body.clone()).await?;
+        if let (Tier::L1, Some(cache)) = (pack.tier, &self.cache) {
+            cache.keep_ranges(&key, &body, ranges);
+        }
+        Ok(())
     }
 
     /// Put a flush's tail entry (`parts`) and its head, and delete the tail
@@ -219,14 +259,22 @@ impl Tiered {
         };
         // Restate's deletes are queued, and stored by one sync.
         let mut queued = (self.manifests).queue_delete(&keys, |name| manifests.contains(name))?;
-        // Parts of tail entries the checkpoint covers that the head does not
-        // name: a crashed flush's, past the parts its retry put.
+        // Tail entries at versions the checkpoint covers that the head does
+        // not name: a lost flush's, whose nonce is not the head's, and, for
+        // entries written before nonces, which a retry overwrote, a crashed
+        // flush's parts past those its retry put. Only there: a head that is
+        // lost (a reader's, opened beside the flush) has a last entry that
+        // the next writer's at that version replaces, but its checkpoint
+        // holds a state every later head descends from.
         for key in &keys {
-            if let Some((version, part)) = parse_tail_key(key) {
-                if version <= head.checkpointed() && part >= head.parts_of(version) {
-                    self.restate.delete(key)?;
-                    queued = true;
-                }
+            let Some(tail) = parse_tail_key(key) else {
+                continue;
+            };
+            let named = head.nonce_of(tail.version) == Some(tail.nonce)
+                && tail.part < head.parts_of(tail.version);
+            if tail.version <= head.checkpointed() && !named {
+                self.restate.delete(key)?;
+                queued = true;
             }
         }
         let doomed: BTreeSet<&str> = (garbage.iter())

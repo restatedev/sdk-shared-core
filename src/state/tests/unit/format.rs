@@ -23,6 +23,16 @@ fn a_head_decodes_as_encoded_and_not_truncated() {
         previous: Some(checkpoint(2)),
         tail_first: 3,
         parts: vec![1, 0, 2, 1, 1, 0, 1],
+        runs: vec![
+            Run {
+                first: 3,
+                nonce: 0xaaaa,
+            },
+            Run {
+                first: 6,
+                nonce: 0xbbbb,
+            },
+        ],
         tail_bytes: 4096,
         ..Head::new(0x1234_5678_9abc, 16)
     };
@@ -49,9 +59,114 @@ fn a_head_decodes_as_encoded_and_not_truncated() {
         ..head.clone()
     };
     assert!(Head::decode(&short.encode()).is_err());
-    assert_eq!(head.entry_keys(9), [tail_key(9, 0)]);
+    // Runs that do not cover the tail kept, in order, from its first entry.
+    for runs in [
+        vec![],
+        vec![Run { first: 4, nonce: 1 }],
+        vec![Run { first: 3, nonce: 1 }, Run { first: 3, nonce: 2 }],
+        vec![
+            Run { first: 3, nonce: 1 },
+            Run {
+                first: 10,
+                nonce: 2,
+            },
+        ],
+    ] {
+        let wrong = Head {
+            runs: runs.clone(),
+            ..head.clone()
+        };
+        assert!(Head::decode(&wrong.encode()).is_err(), "{runs:?}");
+    }
+    assert_eq!(head.entry_keys(9), [tail_key(9, 0xbbbb, 0)]);
     assert!(head.entry_keys(8).is_empty());
-    assert_eq!(head.entry_keys(5), [tail_key(5, 0), tail_key(5, 1)]);
+    assert_eq!(
+        head.entry_keys(5),
+        [tail_key(5, 0xaaaa, 0), tail_key(5, 0xaaaa, 1)]
+    );
+    assert!(head.entry_keys(2).is_empty() && head.entry_keys(10).is_empty());
+}
+
+/// A head written before tail entries had nonces (`SH22`, without runs)
+/// reads as one run of entries without a nonce, named as they were.
+#[test]
+fn a_head_written_before_nonces_names_its_entries_as_they_were() {
+    let head = Head {
+        version: 5,
+        checkpoint: Some(checkpoint(4)),
+        previous: Some(checkpoint(3)),
+        tail_first: 4,
+        parts: vec![1, 2],
+        runs: vec![Run { first: 4, nonce: 0 }],
+        tail_bytes: 300,
+        ..Head::new(7, 16)
+    };
+    // Its bytes: the magic of then, and no runs (an empty list is one byte).
+    let encoded = Head {
+        runs: Vec::new(),
+        ..head.clone()
+    }
+    .encode();
+    let legacy = [b"SH22".as_slice(), &encoded[4..encoded.len() - 1]].concat();
+    assert_eq!(Head::decode(&legacy).unwrap(), head);
+    assert_eq!(head.entry_keys(5), ["v22/tail/5/0", "v22/tail/5/1"]);
+    // An empty tail (checkpointed at its version) has no run.
+    let empty = Head {
+        version: 3,
+        checkpoint: Some(checkpoint(3)),
+        previous: Some(checkpoint(3)),
+        tail_first: 4,
+        parts: Vec::new(),
+        runs: Vec::new(),
+        ..head.clone()
+    };
+    let encoded = empty.encode();
+    let legacy = [b"SH22".as_slice(), &encoded[4..encoded.len() - 1]].concat();
+    assert_eq!(Head::decode(&legacy).unwrap(), empty);
+    assert_eq!(Head::decode(&encoded).unwrap(), empty);
+}
+
+/// A writer's flushes share a run; another writer's, or a nonce drawn
+/// again, start one; a checkpoint that drops the entries before it drops
+/// their runs.
+#[test]
+fn runs_follow_the_nonces_and_the_tail_kept() {
+    let mut head = Head {
+        version: 1,
+        parts: vec![1],
+        runs: vec![Run {
+            first: 1,
+            nonce: 0xa,
+        }],
+        ..Head::new(7, 16)
+    };
+    for (version, nonce) in [(2, 0xa), (3, 0xa), (4, 0xb), (5, 0xc), (6, 0xc)] {
+        head.version = version;
+        head.parts.push(1);
+        head.written_by(nonce);
+    }
+    let firsts = |head: &Head| {
+        head.runs
+            .iter()
+            .map(|run| (run.first, run.nonce))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(firsts(&head), [(1, 0xa), (4, 0xb), (5, 0xc)]);
+    assert_eq!(Head::decode(&head.encode()).unwrap(), head);
+    // The entries before 4 go.
+    head.parts.drain(..3);
+    head.tail_first = 4;
+    head.trim_runs();
+    assert_eq!(firsts(&head), [(4, 0xb), (5, 0xc)]);
+    // And then those before 6: the run of 5 is kept, from 6.
+    head.parts.drain(..2);
+    head.tail_first = 6;
+    head.trim_runs();
+    assert_eq!(firsts(&head), [(6, 0xc)]);
+    // As a head names them: past the previous checkpoint.
+    head.previous = Some(checkpoint(5));
+    head.checkpoint = Some(checkpoint(6));
+    assert_eq!(Head::decode(&head.encode()).unwrap(), head);
 }
 
 fn location(pack: PackId, offset: u64, len: u64) -> Location {
@@ -125,6 +240,24 @@ fn keys_parse_as_made() {
     let pack = checkpoint(12).pack;
     assert_eq!(PackId::parse(&pack.key()), Some(pack));
     assert_eq!(PackId::parse("checkpoint/zz-1"), None);
-    assert_eq!(parse_tail_key(&tail_key(7, 2)), Some((7, 2)));
+    let tail = |version, nonce, part| {
+        Some(TailKey {
+            version,
+            nonce,
+            part,
+        })
+    };
+    assert_eq!(parse_tail_key(&tail_key(7, 0xabc, 2)), tail(7, 0xabc, 2));
+    assert_eq!(parse_tail_key(&tail_key(7, 0, 2)), tail(7, 0, 2));
+    assert_eq!(parse_tail_key("v22/tail/7-0000000000000000/2"), None);
     assert_eq!(parse_tail_key(HEAD_KEY), None);
+    // Every key names one value for ever, but the head's and the tail
+    // entries' written before nonces.
+    assert!(!immutable(HEAD_KEY));
+    assert!(!immutable(&tail_key(7, 0, 2)));
+    assert!(immutable(&tail_key(7, 0xabc, 2)));
+    assert!(immutable("v22/pack/l0/00000000000000aa-00000000000000bb/0"));
+    assert!(immutable(
+        "v22/manifest/00000000000000aa-00000000000000bb/0"
+    ));
 }

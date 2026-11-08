@@ -688,7 +688,7 @@ impl Engine {
         drop(self.connection.take());
     }
 
-    /// Leave an idle engine at a flushed state to the owner cache, and
+    /// Leave an idle engine at a flushed state to the cache, and
     /// whether it did. Only an engine at the owner's latest acknowledged
     /// flush qualifies: one that an overlapping session left behind holds an
     /// older state.
