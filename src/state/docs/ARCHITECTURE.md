@@ -8,7 +8,7 @@ an S3, with measured sizes and costs, and with the layouts this one
 replaced.
 
 Two docs go further: [DESIGN.md](DESIGN.md) has the rules this one leaves
-out (retries, readers, the owner cache, the SQL engine, limits), and
+out (retries, readers, the cache, the SQL engine, limits), and
 [FORMAT.md](FORMAT.md) the byte encodings.
 
 ## 1. The data model
@@ -385,14 +385,16 @@ version 5, and `C4` the checkpoint of version 4 (its pack `P4` and manifest
 
 **Open**:
 
-1. **Get the head.** If this process's cache holds the state as of exactly
-   this head (it was the last to flush, say), reuse it, with its parked SQL
-   engine: done, in one round trip. A reader reuses it too, without the
-   engine, and changes nothing in the cache. An owner without a cache, or
-   whose last flush had an unknown outcome, syncs in the same round trip,
-   so that what it reads is durable.
+1. **Get the head.** If this process's cache keeps the state as of exactly
+   this head (it flushed it, or read it, say), take it, and, for the owner,
+   its parked SQL engine: done, in one round trip, for an owner's open and a
+   reader's alike. An owner without a cache, or with a flush running or
+   whose outcome is unknown, syncs in the same round trip, so that what it
+   reads is durable.
 2. Otherwise, **get the checkpoint's manifest and the tail past it**,
-   together, and apply the tail to the overlay in memory.
+   together, what the cache lacks of them, and apply the tail to the
+   overlay in memory. If the head was read durably, keep the state, and
+   the tail entries fetched.
 3. **Get large records**, and every frame and patch of a
    file of at most 16 pages, such as a small database
    whole, together.
@@ -440,16 +442,28 @@ once the previous checkpoint passes it.
 One `PageCache` per process ([foyer](https://github.com/foyer-rs/foyer),
 in memory and spilling to a local disk file):
 
+Every read but the head's goes through it: served from it, or fetched and
+kept. Each key names one value forever, so nothing is ever invalidated:
+
 - **Pack ranges**: frames, patches, values and manifests, and the 64 KiB
   parts read of packs in Restate, kept by (pack, offset, length). Packs
-  never change, so nothing is ever invalidated.
-- **Namespace states**: per namespace, the head bytes it last read or
-  wrote and the state as of that head, kept by their bytes (256 MiB by
-  default). An open that reads the same head bytes reuses the state and
-  reads nothing more, a reader's too; any other head (another process
-  flushed) loads that head's state, from cached ranges where it can.
+  never change.
+- **Tail entries**: by the database's identity and the entry's version, once
+  a durable head names them (a lost flush's entry may be overwritten at its
+  version by the next writer's).
+- **States**: the state as of a head, kept by the head's bytes once it is
+  durable, the newest two of each namespace (256 MiB in all by default). An
+  open that reads those head bytes, an owner's or a reader's, takes the
+  state and reads nothing more; any other head (another process flushed)
+  loads that head's state, from what the cache keeps where it can.
 - **Parked engines**: SQL parks its engine at the end of a
-  session (64 MiB in all), so the next session skips parsing the schema.
+  session (64 MiB in all), so that the next owner's session at the same
+  head skips parsing the schema.
+
+A read is durable if the open synced alongside, or if no flush of this
+process ran or was unsettled meanwhile: the only writes the store may show
+before they are durable are this process's own (see
+[DESIGN.md](DESIGN.md#the-cache)).
 
 With a warm cache, a handler invocation costs two round trips: get the
 head, and the flush's sync.

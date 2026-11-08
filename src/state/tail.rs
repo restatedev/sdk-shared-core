@@ -21,8 +21,7 @@
 use crate::state::{
     blobs::{BlobStore, KvBlobs, KV_PART},
     format::{
-        parse_tail_key, Checkpoint, Entry, Head, Manifest, PackId, Tier, HEAD_KEY, L0_PREFIX,
-        PACK_PREFIX,
+        parse_tail_key, Checkpoint, Head, Manifest, PackId, Tier, HEAD_KEY, L0_PREFIX, PACK_PREFIX,
     },
     kv::KvStore,
 };
@@ -67,19 +66,14 @@ impl Tiered {
         self.restate.get(HEAD_KEY).await
     }
 
-    /// The tail entries of `head` from `first` on, fetched together.
-    pub(super) async fn tail(&self, head: &Head, first: u64) -> io::Result<Vec<Entry>> {
-        let first = first.max(head.tail_first);
-        let gets = (first..=head.version).map(|version| async move {
-            let keys = head.entry_keys(version);
-            let parts = try_join_all(keys.into_iter().map(|key| async move {
-                (self.restate.get(&key).await?)
-                    .ok_or_else(|| io::Error::other(format!("{key} is gone")))
-            }))
-            .await?;
-            Entry::decode(&parts)
-        });
-        try_join_all(gets).await
+    /// The parts of `head`'s tail entry of `version`, fetched together.
+    pub(super) async fn entry(&self, head: &Head, version: u64) -> io::Result<Vec<Bytes>> {
+        let keys = head.entry_keys(version);
+        try_join_all(keys.into_iter().map(|key| async move {
+            (self.restate.get(&key).await?)
+                .ok_or_else(|| io::Error::other(format!("{key} is gone")))
+        }))
+        .await
     }
 
     /// Bytes `range` of `pack`.

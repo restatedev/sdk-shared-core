@@ -267,14 +267,13 @@ fn an_open_session_reads_its_state_while_another_flushes() -> Result<()> {
     })
 }
 
-/// A reader at the head the owner last flushed takes the owner's state from
-/// the cache: its open gets the head and nothing more, where one without the
-/// cache gets the manifest and every tail entry too. It reads the same state,
-/// and records nothing as the owner's: a reader at a head that the cache does
-/// not know loads it, and so does the next one, and the owner still opens on
-/// its own state.
+/// A state takes the state as of the head it read from the cache, an
+/// owner's or a reader's alike: a reader at the head the owner flushed opens
+/// with one get, the head, where one without the cache gets the manifest and
+/// every tail entry too. A reader at a head the cache lacks loads it, and
+/// keeps it for the next; the owner still opens on its own state.
 #[test]
-fn a_reader_at_the_owners_head_takes_the_owners_state() -> Result<()> {
+fn a_state_takes_the_state_its_head_names_from_the_cache() -> Result<()> {
     futures::executor::block_on(async {
         let memory = MemoryKv::default();
         let store: Arc<dyn KvStore> = Arc::new(memory.clone());
@@ -284,7 +283,7 @@ fn a_reader_at_the_owners_head_takes_the_owners_state() -> Result<()> {
             packs: None,
         };
         // The gets that load a state: the head and the tail entries (the
-        // manifest, as any range of a pack, the cache may hold).
+        // manifest, as any range of a pack, a namespace keeps).
         let loading = || {
             let stats = memory.stats();
             stats.kind("head").gets + stats.kind("tail").gets
@@ -313,17 +312,115 @@ fn a_reader_at_the_owners_head_takes_the_owners_state() -> Result<()> {
         assert_eq!(model.differs(&cold).await?, None);
 
         let other = fresh_namespace();
-        for _ in 0..2 {
-            memory.reset_stats();
-            let unknown = Session::reader(store.clone(), setup(Some(&other))).await?;
-            assert_eq!(loading(), loaded);
-            assert_eq!(model.differs(&unknown).await?, None);
-        }
+        memory.reset_stats();
+        let first = Session::reader(store.clone(), setup(Some(&other))).await?;
+        assert_eq!(loading(), loaded);
+        assert_eq!(model.differs(&first).await?, None);
+        memory.reset_stats();
+        let next = Session::reader(store.clone(), setup(Some(&other))).await?;
+        assert_eq!(memory.stats().gets, 1, "{:?}", memory.stats());
+        assert_eq!(model.differs(&next).await?, None);
 
         memory.reset_stats();
         let reopened = Session::open(store.clone(), setup(Some(&owner))).await?;
         assert_eq!(memory.stats().gets, 1, "{:?}", memory.stats());
         assert_eq!(model.differs(&reopened).await?, None);
+        Ok(())
+    })
+}
+
+/// A state at a head the cache lacks reads only the tail entries the cache
+/// lacks: those this process flushed, or read, are kept. Here another
+/// process flushed the last three.
+#[test]
+fn a_state_reads_only_the_tail_entries_the_cache_lacks() -> Result<()> {
+    futures::executor::block_on(async {
+        let memory = MemoryKv::default();
+        let store: Arc<dyn KvStore> = Arc::new(memory.clone());
+        // Small entries, far from any checkpoint.
+        let setup = |cache: Option<&Namespace>| Setup {
+            options: StateOptions {
+                checkpoint_entries: 1000,
+                ..StateOptions::default()
+            },
+            cache: cache.cloned(),
+            packs: None,
+        };
+        let here = fresh_namespace();
+        let mut model = Model::default();
+        let session = Session::open(store.clone(), setup(Some(&here))).await?;
+        for n in 0..20 {
+            let ops = [Op::Write(n % 4, Some(page(n)))];
+            session.flush(&ops).await?;
+            model = model.applied(&ops);
+        }
+        drop(session);
+        let elsewhere = Session::open(store.clone(), setup(None)).await?;
+        for n in 20..23 {
+            let ops = [Op::Write(n % 4, Some(page(n)))];
+            elsewhere.flush(&ops).await?;
+            model = model.applied(&ops);
+        }
+        drop(elsewhere);
+
+        memory.reset_stats();
+        let reader = Session::reader(store.clone(), setup(Some(&here))).await?;
+        let stats = memory.stats();
+        assert_eq!(stats.kind("tail").gets, 3, "{stats:?}");
+        assert_eq!(stats.kind("manifest").gets, 0, "{stats:?}");
+        assert_eq!(model.differs(&reader).await?, None);
+
+        memory.reset_stats();
+        let cold = Session::reader(store.clone(), setup(None)).await?;
+        assert_eq!(memory.stats().kind("tail").gets, 23);
+        assert_eq!(model.differs(&cold).await?, None);
+        Ok(())
+    })
+}
+
+/// A reader opens beside a running flush: the store shows the flush's head,
+/// not yet durable, and the reader keeps nothing it read. The flush is lost,
+/// another process flushes at its versions, and the namespace's states read
+/// what that one flushed.
+#[test]
+fn a_reader_beside_a_running_flush_keeps_nothing_it_may_lose() -> Result<()> {
+    futures::executor::block_on(async {
+        let memory = MemoryKv::default();
+        let fault = Arc::new(FaultKv::new(memory.clone(), 0));
+        let store: Arc<dyn KvStore> = fault.clone();
+        let (a, b) = (fresh_namespace(), fresh_namespace());
+        let mut model = Model::default();
+        flush(&store, Some(&a), &mut model, &[Op::Write(0, Some(page(1)))]).await?;
+
+        let first = Session::open(store.clone(), options(Some(&a))).await?;
+        let stuck = fault.arm(Failpoint {
+            cancel: true,
+            ..failing_sync()
+        });
+        let write = [Op::Write(0, Some(page(2)))];
+        let running = Box::pin(first.flush(&write));
+        let Either::Right((_, running)) = futures::future::select(running, stuck).await else {
+            panic!("the flush did not wait on its sync");
+        };
+        // The reader reads what the running flush wrote.
+        let failed = model.applied(&write);
+        let reader = Session::reader(store.clone(), options(Some(&a))).await?;
+        assert_eq!(failed.differs(&reader).await?, None);
+        drop(reader);
+        drop(running);
+        fault.disarm();
+        // Nothing synced the flush's writes: they are lost.
+        memory.crash();
+        let session = Session::open(store.clone(), options(None)).await?;
+        assert_eq!(model.differs(&session).await?, None, "the flush is lost");
+        drop(session);
+
+        // Another process flushes, at the versions the lost flush used.
+        flush(&store, Some(&b), &mut model, &[Op::Write(0, Some(page(3)))]).await?;
+        let reader = Session::reader(store.clone(), options(Some(&a))).await?;
+        assert_eq!(model.differs(&reader).await?, None);
+        let session = Session::open(store.clone(), options(Some(&a))).await?;
+        assert_eq!(model.differs(&session).await?, None);
         Ok(())
     })
 }

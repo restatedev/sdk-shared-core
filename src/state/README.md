@@ -68,7 +68,7 @@ writes since the last sync.
   head, tail, checkpoints, manifests and packs and how they change over
   time, L0 and L1, the numbers, and the layouts this one replaced
 - [Design](docs/DESIGN.md): the rules the architecture leaves out: retries,
-  readers, the SQL engine, the owner cache, costs and limits
+  readers, the SQL engine, the cache, costs and limits
 - [Storage format](docs/FORMAT.md): exact encodings
 - [SQL](../sql/README.md): the database on the state, with the storage
   tests and benchmarks that run SQL workloads

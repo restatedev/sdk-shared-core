@@ -22,8 +22,21 @@ fn at(id: u64, offset: u64) -> Location {
     }
 }
 
-fn durable() -> Arc<Durable> {
-    Arc::new(Durable::empty(Head::new(1, 16)))
+/// The state of the database `id` at `version`, with one tail entry per
+/// version, and its head's bytes.
+fn state(id: u64, version: u64) -> (Bytes, Arc<Durable>) {
+    let mut head = Head::new(id, 16);
+    head.version = version;
+    head.parts = vec![1; version as usize];
+    (head.encode(), Arc::new(Durable::empty(head)))
+}
+
+fn parked(head: &Head) -> ParkedValue {
+    ParkedValue {
+        value: Box::new(()),
+        head: head.clone(),
+        weight: 1,
+    }
 }
 
 #[test]
@@ -45,75 +58,147 @@ fn namespaces_never_share_ranges() {
     })
 }
 
-/// What an open does: validate the head it read, then record it, and, if
-/// it was not known, that a flush may build on `version`. Whether it was
-/// known.
-fn open(cache: &NamespaceCache, head: Option<Bytes>, version: u64) -> bool {
-    let validated = cache.validate(head.as_deref());
-    let committed = (!validated.known).then_some(version);
-    cache.record(&validated, head, committed, durable());
-    validated.known
-}
-
-/// The same head is known; another one forgets this owner's flush, and
-/// keeps the ranges, which never change.
+/// A state is found by its head's bytes, by any state of the namespace;
+/// looking it up changes nothing the writer knows.
 #[test]
-fn another_head_forgets_the_flush_not_the_ranges() {
-    futures::executor::block_on(async {
-        let head = |n: u8| Bytes::from(vec![b'S', b'H', b'2', b'0', n]);
-        let cache = fresh_namespace_cache();
-        assert!(!open(&cache, None, 0), "a fresh owner knows nothing");
-        assert!(open(&cache, None, 0), "an absent head, as recorded");
-        assert!(!open(&cache, Some(head(1)), 3), "not after another");
-        cache.insert(at(0, 1), value(4));
-        assert!(cache.validate(Some(&head(1))).known);
-        assert_eq!(cache.committed(), Some(3));
-
-        // Another writer flushed: the ranges stay.
-        assert!(!cache.validate(Some(&head(2))).known);
-        assert_eq!(cache.committed(), None);
-        assert_eq!(cache.get(at(0, 1)).await, Some(value(4)));
-
-        // A flush with an unknown outcome forgets the head, and makes the
-        // next open sync.
-        open(&cache, Some(head(3)), 5);
-        cache.forget();
-        assert!(!cache.validate(Some(&head(3))).known);
-        assert_eq!(cache.unsettled(), Some(1));
-        cache.settled(1);
-        assert_eq!(cache.unsettled(), None);
-
-        // A flush runs: an open syncs, and does not let another flush build
-        // on the head it reads, until the flush ends.
-        open(&cache, Some(head(4)), 6);
-        assert!(cache.claim(6));
-        assert_eq!(cache.unsettled(), Some(1));
-        open(&cache, Some(head(5)), 7);
-        assert!(!cache.claim(7));
-        cache.flushed(head(5), 7, durable());
-        assert_eq!(cache.unsettled(), None);
-        assert!(cache.claim(7));
-    })
-}
-
-/// An open whose load overlapped another state's flush records nothing:
-/// the head it read is stale, and a flush on top of it would overwrite the
-/// one that landed.
-#[test]
-fn a_stale_open_records_nothing() {
-    let head = |n: u8| Bytes::from(vec![b'S', b'H', b'2', b'0', n]);
+fn a_state_is_found_by_its_head_and_finding_it_changes_nothing() {
     let cache = fresh_namespace_cache();
-    // A slow open reads the head of version 1, and loads.
-    let slow = cache.validate(Some(&head(1)));
-    // Meanwhile another state opens on it, and flushes version 2.
-    open(&cache, Some(head(1)), 1);
+    let (one, first) = state(1, 1);
+    let (two, _) = state(1, 2);
+    assert!(cache.state(&one).is_none());
+    cache.keep(&one, first.clone());
+    let before = cache.before_read();
+    assert!(Arc::ptr_eq(&cache.state(&one).unwrap(), &first));
+    assert!(cache.state(&two).is_none(), "another head");
+    assert!(cache.state(b"").is_none(), "an absent head is never kept");
+    assert_eq!(cache.committed(), None);
+    assert!(cache.read_durably(before, false), "lookups start no flush");
+}
+
+/// A namespace keeps the newest states of its database: an older one goes,
+/// and a database made again drops the old database's.
+#[test]
+fn a_namespace_keeps_the_newest_states_of_its_database() {
+    let cache = fresh_namespace_cache();
+    let states: Vec<(Bytes, Arc<Durable>)> = (1..=3).map(|version| state(1, version)).collect();
+    for (bytes, durable) in &states {
+        cache.keep(bytes, durable.clone());
+    }
+    let kept = |cache: &NamespaceCache| {
+        (states.iter())
+            .map(|(bytes, _)| cache.state(bytes).is_some())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(kept(&cache), [false, true, true]);
+    // An older one, kept late (a reader on an old head), does not push out
+    // the newer.
+    cache.keep(&states[0].0, states[0].1.clone());
+    assert_eq!(kept(&cache), [false, true, true]);
+    // The namespace is emptied and made again: another database.
+    let (again, made) = state(2, 1);
+    cache.keep(&again, made);
+    assert_eq!(kept(&cache), [false, false, false]);
+    assert!(cache.state(&again).is_some());
+}
+
+/// What an open reads is durable if it synced alongside, or if no flush ran
+/// or was unsettled from just before its read to just after it.
+#[test]
+fn a_read_is_durable_if_no_flush_ran_or_was_unsettled_meanwhile() {
+    let (one, first) = state(1, 1);
+    let cache = fresh_namespace_cache();
+    let quiet = cache.before_read();
+    assert!(cache.read_durably(quiet, false));
+    cache.opened(1, quiet);
+    // A flush starts during a read: it may have read the flush's head.
+    let during = cache.before_read();
     assert!(cache.claim(1));
-    cache.flushed(head(2), 2, durable());
-    // The slow open's load ends.
-    cache.record(&slow, Some(head(1)), Some(1), durable());
+    assert!(!cache.read_durably(during, false));
+    assert!(cache.read_durably(during, true), "unless it synced");
+    // While the flush runs.
+    let running = cache.before_read();
+    assert!(!cache.read_durably(running, false));
+    cache.flushed(one, 1, first);
+    assert!(cache.read_durably(cache.before_read(), false));
+    // A flush with an unknown outcome, until a sync settles it.
+    cache.forget();
+    let unsettled = cache.before_read();
+    assert!(!cache.read_durably(unsettled, false));
+    cache.settled(1);
+    assert!(cache.read_durably(cache.before_read(), false));
+}
+
+/// An open records that a flush may build on the head it read, unless a
+/// flush started since: one built on a stale head would overwrite the flush
+/// that landed. The state it read is durable all the same, and kept.
+#[test]
+fn an_open_lets_a_flush_build_on_its_head_unless_one_started_since() {
+    let cache = fresh_namespace_cache();
+    let (one, first) = state(1, 1);
+    let (two, second) = state(1, 2);
+    // A slow open reads the head of version 1, durably, and loads.
+    let slow = cache.before_read();
+    assert!(cache.read_durably(slow, false));
+    // Meanwhile another state opens on it, and flushes version 2.
+    let fast = cache.before_read();
+    cache.opened(1, fast);
+    assert!(cache.claim(1));
+    cache.flushed(two.clone(), 2, second.clone());
+    // The slow open's load ends: its state is durable, its head stale.
+    cache.keep(&one, first);
+    cache.opened(1, slow);
     assert_eq!(cache.committed(), Some(2));
     assert!(!cache.claim(1), "no flush on the stale head");
-    assert!(cache.validate(Some(&head(2))).known);
+    assert!(cache.state(&one).is_some() && cache.state(&two).is_some());
+    assert!(cache.claim(2));
+}
+
+/// A flush with an unknown outcome keeps the states, which are all as of
+/// durable heads, and drops what was parked and the version to build on.
+#[test]
+fn a_flush_with_an_unknown_outcome_keeps_the_states_and_drops_the_rest() {
+    let cache = fresh_namespace_cache();
+    let (one, first) = state(1, 1);
+    cache.keep(&one, first.clone());
+    cache.opened(1, cache.before_read());
+    cache.park(parked(&first.head));
+    assert!(cache.claim(1));
+    cache.forget();
+    assert_eq!(cache.committed(), None);
+    assert_eq!(cache.unsettled(), Some(1));
+    assert!(cache.state(&one).is_some());
+    assert!(cache.take_parked(&first.head).is_none());
+}
+
+/// A value parked at a head is taken only at that head; at another, it goes.
+#[test]
+fn a_value_parked_at_another_head_is_dropped() {
+    let cache = fresh_namespace_cache();
+    let (_, first) = state(1, 1);
+    let (_, second) = state(1, 2);
+    cache.park(parked(&first.head));
+    assert!(cache.take_parked(&first.head).is_some());
+    cache.park(parked(&first.head));
+    assert!(cache.take_parked(&second.head).is_none());
+    assert!(cache.take_parked(&first.head).is_none(), "dropped");
+}
+
+/// A tail entry's parts are kept by the database, the version and the
+/// number of parts: another database's entry at that version is another.
+#[test]
+fn tail_entries_are_kept_by_database_and_version() {
+    futures::executor::block_on(async {
+        let (a, b) = (fresh_namespace_cache(), fresh_namespace_cache());
+        let parts = [value(5), value(6)];
+        a.keep_entry(1, 3, &parts);
+        assert_eq!(a.entry(1, 3, 2).await, Some(parts.to_vec()));
+        assert_eq!(a.entry(2, 3, 2).await, None, "another database");
+        assert_eq!(a.entry(1, 4, 2).await, None, "another version");
+        assert_eq!(a.entry(1, 3, 3).await, None, "another entry");
+        assert_eq!(b.entry(1, 3, 2).await, None, "another namespace");
+        // Not a range of a pack, however alike its numbers.
+        assert_eq!(a.get(at(1, 0)).await, None);
+    })
 }
 
 /// A flush dropped before it claimed leaves another state's flush running.
@@ -124,7 +209,7 @@ fn a_flush_that_never_claimed_leaves_the_running_one() {
         4 << 20,
     ));
     let (flushing, dropped) = (cache.namespace("a"), cache.namespace("a"));
-    open(&flushing, None, 1);
+    flushing.opened(1, flushing.before_read());
     assert!(flushing.claim(1));
     dropped.forget();
     dropped.settled(1);
@@ -171,8 +256,12 @@ fn values_read_as_slices_of_a_larger_buffer_are_kept_alone() {
         let cached = cache.get(at(0, 1)).await.expect("cached");
         assert_eq!(cached, slice);
         assert!(!inside(&cached));
-        cache.record(&cache.validate(None), Some(slice.clone()), None, durable());
-        assert!(!inside(cache.owner().head.as_ref().unwrap()));
+        cache.keep_entry(1, 1, std::slice::from_ref(&slice));
+        let entry = cache.entry(1, 1, 1).await.expect("kept");
+        assert!(!inside(&entry[0]));
+        let (_, durable) = state(1, 1);
+        cache.keep(&slice, durable);
+        assert!(!inside(&cache.owner().states[0].0));
     })
 }
 
@@ -203,17 +292,19 @@ fn namespaces_are_kept_by_the_bytes_of_their_states() {
         namespace_bytes: 512 << 10,
         ..crate::state::simulation::cache_config(1 << 20, 4 << 20)
     });
+    let head = |n: u64| state(n, 1).0;
     for n in 0..64 {
-        let mut state = Durable::empty(Head::new(n, 16));
-        state
+        let (bytes, durable) = state(n, 1);
+        let mut durable = Durable::clone(&durable);
+        durable
             .records
             .insert("value".into(), Bytes::from(vec![0; 16 << 10]));
-        let namespace = cache.namespace(&n.to_string());
-        let validated = namespace.validate(None);
-        namespace.record(&validated, None, Some(1), Arc::new(state));
+        cache
+            .namespace(&n.to_string())
+            .keep(&bytes, Arc::new(durable));
     }
     let kept = (0..64)
-        .filter(|n| cache.namespace(&n.to_string()).durable().is_some())
+        .filter(|&n| cache.namespace(&n.to_string()).state(&head(n)).is_some())
         .count();
     assert!((8..48).contains(&kept), "{kept} of 64 kept");
 }
