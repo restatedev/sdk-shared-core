@@ -9,7 +9,9 @@
 //!
 //! A state reads its stores through the cache ([`CachedKv`] for Restate,
 //! [`CachedBlobs`] for S3): a value is served from the cache, or fetched and
-//! kept, and a value put is kept too. Every key but the head's names one value
+//! kept, and what a state puts is kept too: a value in Restate as it is put,
+//! a pack in S3 by the ranges its checkpoint wrote, by which states read it
+//! ([`NamespaceCache::keep_ranges`]). Every key but the head's names one value
 //! for ever (see [`crate::state::format`]): a tail entry, a manifest, a pack
 //! all carry a nonce in their names, so nothing kept is ever invalidated, and
 //! what a flush that is lost put is harmless, as no head names it. The head is
@@ -378,6 +380,18 @@ impl NamespaceCache {
         (self.shared.values).insert_with_properties(key, owned(value), properties);
     }
 
+    /// Keep bytes `ranges` of `body`, the blob `name` as put, by which
+    /// states read it (a checkpoint's frames, patches and values), each up
+    /// to the extent a read keeps ([`MAX_KEPT_RANGE`]).
+    pub(crate) fn keep_ranges(&self, name: &str, body: &Bytes, ranges: &[Range<u64>]) {
+        for range in ranges {
+            if range.end - range.start <= MAX_KEPT_RANGE && range.end <= body.len() as u64 {
+                let value = body.slice(range.start as usize..range.end as usize);
+                self.keep_range(name, range.clone(), &value);
+            }
+        }
+    }
+
     /// Bytes `range` of the blob `name`, if kept.
     pub(crate) async fn range(&self, name: &str, range: Range<u64>) -> Option<Bytes> {
         self.lookup(&self.key(name, Some(range))).await
@@ -587,7 +601,9 @@ impl KvStore for CachedKv {
 
 /// A namespace's pack store (S3), read through its cache: every blob is put
 /// once, under a name never reused, so a range read is served from the
-/// cache, or fetched and kept (up to [`MAX_KEPT_RANGE`]).
+/// cache, or fetched and kept (up to [`MAX_KEPT_RANGE`]). A put keeps nothing
+/// here, as states read a pack by ranges: the checkpoint that puts it keeps
+/// those ([`NamespaceCache::keep_ranges`]).
 pub(crate) struct CachedBlobs {
     store: Arc<dyn BlobStore>,
     cache: NamespaceCache,

@@ -164,7 +164,8 @@ it (a `NamespaceCache`, inside the crate).
 
 **Reads.** A state's stores are wrapped in the cache (`CachedKv` for
 Restate, `CachedBlobs` for S3): every get but the head's is served from the
-cache, or fetched and kept, and every put but the head's is kept too. That
+cache, or fetched and kept, and every put but the head's is kept too (a pack
+in S3 by the ranges its checkpoint wrote, by which states read it). That
 is the whole of it, and it holds because every key but the head's names one
 value for ever: a tail entry carries the nonce of the writer that flushed
 it, a manifest and a pack their own, and none is put twice. So there is

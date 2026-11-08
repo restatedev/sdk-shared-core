@@ -114,6 +114,40 @@ fn a_full_l0_is_promoted_to_s3_in_one_put() -> Result<()> {
     })
 }
 
+/// A promotion keeps in the process's cache the ranges it puts in S3, by
+/// which states read them: the namespace's next states, a reader's too, read
+/// its frames without a GET.
+#[test]
+fn a_promotions_ranges_are_kept_as_it_puts_them() -> Result<()> {
+    futures::executor::block_on(async {
+        let (store, s3) = (Arc::new(MemoryKv::default()), MemoryBlobs::default());
+        let setup = Setup {
+            options: options(),
+            cache: Some(fresh_namespace()),
+            packs: Some(s3.clone()),
+        };
+        let state = setup.open(store.clone()).await?;
+        // 8 pages (about 32 KiB) a flush, until a checkpoint finds L0 full.
+        let mut flushes = 0;
+        loop {
+            let report = write(&state, flushes * 8..(flushes + 1) * 8, 0).await?;
+            flushes += 1;
+            if report.checkpoint.is_some_and(|c| c.promoted) {
+                break;
+            }
+            assert!(flushes < 6, "no promotion");
+        }
+        let gets = s3.gets();
+        let reader = setup.open(store.clone()).reader().await?;
+        let file = reader.file();
+        for n in 0..flushes * 8 {
+            assert_eq!(file.read(n).await?, Some(noise(n)), "page {n}");
+        }
+        assert_eq!(s3.gets() - gets, 0, "every range read from the cache");
+        Ok(())
+    })
+}
+
 /// A checkpoint that would take L0 past `l0_bytes` on its own goes to L1:
 /// one large write never lands in Restate whole.
 #[test]

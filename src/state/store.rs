@@ -42,6 +42,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
     io,
+    ops::Range,
     sync::{Arc, Mutex},
 };
 
@@ -700,8 +701,8 @@ impl Snapshot {
     }
 
     /// The bytes at each of `ats`, sorted by pack and offset, for a
-    /// compaction: ranges of a pack close together are fetched as one run,
-    /// which is not cached whole (each range is, where it moves to).
+    /// compaction: ranges of a pack close together are fetched as one run.
+    /// Each range is kept where it moves to, as its new pack is put.
     async fn raw_runs(&self, ats: &[Location]) -> io::Result<Vec<Bytes>> {
         let mut runs: Vec<(Location, Vec<usize>)> = Vec::new();
         for (i, at) in ats.iter().enumerate() {
@@ -1220,7 +1221,8 @@ impl Snapshot {
             promoted,
         };
         if !body.is_empty() {
-            self.tiered.put_pack(pack, body.into()).await?;
+            let ranges: Vec<Range<u64>> = written.iter().map(|(at, _)| at.range()).collect();
+            self.tiered.put_pack(pack, body.into(), &ranges).await?;
         }
         self.tiered.put_manifest(pack, encoded).await?;
         for (at, image) in written {

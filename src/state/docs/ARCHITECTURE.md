@@ -458,7 +458,8 @@ One `PageCache` per process ([foyer](https://github.com/foyer-rs/foyer),
 in memory and spilling to a local disk file):
 
 Every get but the head's goes through it: served from it, or fetched and
-kept; and every put but the head's is kept too. Each key names one value
+kept; and every put but the head's is kept too (a pack in S3 by the ranges
+its checkpoint wrote, by which states read it). Each key names one value
 for ever, so nothing is ever invalidated:
 
 - **Tail entries, manifests and packs' parts** in Restate, by key: each key

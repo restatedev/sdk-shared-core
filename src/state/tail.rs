@@ -47,6 +47,9 @@ pub(crate) struct Tiered {
     /// L1: the packs in S3, where there is one.
     l1: Option<Arc<dyn BlobStore>>,
     manifests: KvBlobs,
+    /// The process's cache, if the state has one, which keeps the ranges a
+    /// checkpoint puts in L1 ([`Self::put_pack`]).
+    cache: Option<NamespaceCache>,
 }
 
 impl Tiered {
@@ -69,6 +72,7 @@ impl Tiered {
             l1,
             manifests: KvBlobs::manifests(restate.clone()),
             restate,
+            cache: cache.cloned(),
         }
     }
 
@@ -155,8 +159,22 @@ impl Tiered {
         self.manifests.put(&pack.name(), manifest).await
     }
 
-    pub(super) async fn put_pack(&self, pack: PackId, body: Bytes) -> io::Result<()> {
-        self.store(pack.tier)?.put(&pack.key(), body).await
+    /// Put `pack`, whose `body` holds, at `ranges`, what states read of it:
+    /// a checkpoint's frames, patches and values. L0's parts are kept as they
+    /// are put ([`CachedKv`]); L1 is read by range, so the cache keeps those
+    /// ranges, as reads of them would.
+    pub(super) async fn put_pack(
+        &self,
+        pack: PackId,
+        body: Bytes,
+        ranges: &[Range<u64>],
+    ) -> io::Result<()> {
+        let key = pack.key();
+        self.store(pack.tier)?.put(&key, body.clone()).await?;
+        if let (Tier::L1, Some(cache)) = (pack.tier, &self.cache) {
+            cache.keep_ranges(&key, &body, ranges);
+        }
+        Ok(())
     }
 
     /// Put a flush's tail entry (`parts`) and its head, and delete the tail
