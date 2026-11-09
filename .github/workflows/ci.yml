@@ -49,11 +49,11 @@ jobs:
             target: aarch64-unknown-linux-musl
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
           - cmd: build
-            os: macos-14
+            os: macos-latest
             target: aarch64-apple-darwin
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
           - cmd: build
-            os: macos-14
+            os: macos-latest
             target: x86_64-apple-darwin
             features: request_identity,sha2_random_seed,rust_crypto,sql,object_store
           - cmd: build
