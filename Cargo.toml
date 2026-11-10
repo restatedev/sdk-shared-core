@@ -73,10 +73,18 @@ sql = [
 # stability): the state's in-memory stores, fault injection and latency
 # simulator, which tests always have.
 __bench = ["sql"]
-# Blobs in an object store (S3, GCS, Azure, a directory):
-# `state::ObjectStoreBlobs`, for `sql::Open::checkpoints`. Enable the backend
-# on `object_store` itself (its feature `aws` for S3).
-object_store = ["sql", "dep:object_store"]
+# Checkpoints' packs in an object store, L1 (`src/state/l1.rs`):
+# `state::ObjectStoreL1` names one from a URL (`from_url`) or the environment
+# (`from_env`, `RESTATE_SQL_OBJECT_STORE`), and gives each database its own
+# `state::ObjectStoreBlobs`, for `sql::Open::checkpoints`. A directory
+# (`file://`) always; each cloud provider with its own feature below.
+object_store = ["sql", "dep:object_store", "object_store/fs", "dep:url", "dep:sha2"]
+# S3, and what speaks its API (MinIO, R2, ...): `s3://`, credentials from `AWS_*`.
+object_store_aws = ["object_store", "object_store/aws"]
+# Google Cloud Storage: `gs://`, credentials from `GOOGLE_*`.
+object_store_gcp = ["object_store", "object_store/gcp"]
+# Azure Blob Storage: `az://`, credentials from `AZURE_*`.
+object_store_azure = ["object_store", "object_store/azure"]
 
 [dependencies]
 thiserror = "2.0"
@@ -97,7 +105,7 @@ jsonwebtoken = { version = "10.3", default-features = false, optional = true }
 
 http = { version = "1.3", optional = true }
 
-# Sessions (features `sql`, `object_store`, `__bench`).
+# Sessions (features `sql`, `object_store*`, `__bench`).
 turso_core = { version = "=0.8.2", default-features = false, features = ["fs", "uuid", "json"], optional = true }
 futures = { version = "0.3", optional = true }
 # The engine retains an owned schema lock across open-time I/O. Allow that
@@ -115,6 +123,7 @@ foyer-storage = { version = "=0.22.3", optional = true }
 foyer-tokio = { version = "=0.22.3", optional = true }
 tokio = { version = "1.49", default-features = false, features = ["rt"], optional = true }
 object_store = { version = "0.14", optional = true, default-features = false }
+url = { version = "2.5", optional = true }
 
 # tunnel
 futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }

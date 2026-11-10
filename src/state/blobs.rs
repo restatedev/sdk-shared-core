@@ -3,7 +3,8 @@
 //! `object_store`), if the state has one.
 //!
 //! ```rust,ignore
-//! let packs = ObjectStoreBlobs::new(s3, "objects/42"); // the feature `object_store`
+//! let l1 = ObjectStoreL1::from_env()?; // the feature `object_store`, once per process
+//! let packs = l1.blobs("objects/42"); // or ObjectStoreBlobs::new(store, prefix)
 //! let state = State::open(restate).checkpoints(Arc::new(packs)).await?;
 //! ```
 //!
@@ -203,8 +204,10 @@ mod object {
     const PARTS_IN_FLIGHT: usize = 4;
 
     /// A [`BlobStore`] in an object store, under a prefix of its own (one per
-    /// namespace: the object's key, say): S3 through `object_store`'s
-    /// feature `aws`.
+    /// namespace: the object's service and key, say): S3 through the feature
+    /// `object_store_aws`. `ObjectStoreL1::blobs` gives each namespace its
+    /// own prefix; one shared would let a namespace's garbage collection
+    /// delete another's packs.
     pub struct ObjectStoreBlobs {
         store: Arc<dyn ObjectStore>,
         prefix: String,
