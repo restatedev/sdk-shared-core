@@ -503,13 +503,18 @@ the feature `object_store`): from a URL, or from `RESTATE_SQL_OBJECT_STORE`.
 URL's path. `s3://` needs the feature `object_store_aws`, `gs://`
 `object_store_gcp`, `az://` `object_store_azure`; `file://` needs none.
 Credentials and options come from each provider's variables (`AWS_*`,
-`GOOGLE_*`, `AZURE_*`). An S3-compatible store, MinIO say, is `s3://bucket/path`
+`GOOGLE_*`, `AZURE_*`), as `object_store` reads them: for S3, not `~/.aws`
+profiles or SSO. An S3-compatible store, MinIO say, is `s3://bucket/path`
 with `AWS_ENDPOINT=http://minio:9000` (and `AWS_ALLOW_HTTP=true` without TLS):
 requests then go path-style to that endpoint.
 
 Once a database has promoted, its manifests name packs in L1, which never
 move back to L0: every later session of it needs the same store, base and
-namespace, or its reads of those packs fail.
+namespace, or its reads of those packs fail. A namespace must be unique
+among the databases under a base (the service as well as the key), and a
+base belongs to one Restate cluster: two clusters' databases of the same
+namespace would share a directory, and each one's garbage collection
+deletes the other's packs.
 
 What changes, once a database outgrows L0:
 

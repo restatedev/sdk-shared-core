@@ -204,7 +204,7 @@ mod object {
     const PARTS_IN_FLIGHT: usize = 4;
 
     /// A [`BlobStore`] in an object store, under a prefix of its own (one per
-    /// namespace: the object's key, say): S3 through the feature
+    /// namespace: the object's service and key, say): S3 through the feature
     /// `object_store_aws`. `ObjectStoreL1::blobs` gives each namespace its
     /// own prefix; one shared would let a namespace's garbage collection
     /// delete another's packs.

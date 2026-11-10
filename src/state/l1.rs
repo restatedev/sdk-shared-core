@@ -71,16 +71,23 @@ impl ObjectStoreL1 {
     }
 
     /// The object store `url` names, with the base its path gives:
-    /// `s3://bucket/path`, `gs://bucket/path`, `az://container/path` (or the
-    /// providers' `https://` URLs), or `file:///a/directory`. Credentials and
-    /// options come from the provider's own variables (`AWS_*`, `GOOGLE_*`,
-    /// `AZURE_*`), as each one's SDK reads them: an S3-compatible store
-    /// (MinIO, say) is `s3://bucket/path` with `AWS_ENDPOINT` naming it.
+    /// `s3://bucket/path`, `gs://bucket/path`, `az://container/path`, or
+    /// `file:///a/directory`. Credentials and options come from the
+    /// environment, as `object_store`'s builders read it, not as each
+    /// provider's own SDK does. For S3: `AWS_*` variables, then web identity
+    /// (IRSA), ECS and EKS Pod Identity, then the instance metadata service;
+    /// never `~/.aws` profiles or SSO. For GCS: `GOOGLE_*` variables, then
+    /// the application default credentials file, then the metadata server.
+    /// For Azure: `AZURE_*` variables. An S3-compatible store (MinIO, say) is
+    /// `s3://bucket/path` with `AWS_ENDPOINT` naming it.
     ///
-    /// Making the store does no I/O. Its requests are reqwest's, so a
-    /// database whose packs are in S3, GCS or Azure must be polled inside a
-    /// tokio runtime's context (`Handle::enter` will do), as everything
-    /// reqwest does is.
+    /// Making the store sends no request; GCS reads its credentials file, if
+    /// any. Its requests are reqwest's, so a database whose packs are in
+    /// S3, GCS or Azure must be polled inside the context of a tokio runtime
+    /// with IO and time enabled, which is running: a multi-thread runtime
+    /// (`Handle::enter` will do), or a current-thread one inside its
+    /// `block_on`. Entered but not driven, a request never completes;
+    /// without time enabled, its retries panic.
     pub fn from_url(url: &str) -> io::Result<Self> {
         let fail = |why: &dyn std::fmt::Display| io::Error::other(format!("{url}: {why}"));
         let parsed = url::Url::parse(url).map_err(|e| fail(&e))?;
@@ -139,10 +146,16 @@ impl ObjectStoreL1 {
         }
     }
 
-    /// The packs of `namespace` (the key of what its Restate state holds, an
-    /// object's, say), in a directory of their own: for
+    /// The packs of `namespace`, in a directory of their own: for
     /// [`crate::sql::Open::checkpoints`]. Every session of the database must
     /// use the same store, base and namespace.
+    ///
+    /// A namespace must be unique among the databases sharing the base:
+    /// name the service as well as the key (`Ledger/42`, not `42`), as two
+    /// services' objects may share a key. And a base belongs to one Restate
+    /// cluster: two clusters' databases of the same namespace would share a
+    /// directory, and each one's garbage collection deletes the other's
+    /// packs.
     pub fn blobs(&self, namespace: &str) -> ObjectStoreBlobs {
         ObjectStoreBlobs::new(self.store.clone(), self.prefix(namespace))
     }
