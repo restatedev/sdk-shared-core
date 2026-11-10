@@ -78,7 +78,7 @@ __bench = ["sql"]
 # (`from_env`, `RESTATE_SQL_OBJECT_STORE`), and gives each database its own
 # `state::ObjectStoreBlobs`, for `sql::Open::checkpoints`. A directory
 # (`file://`) always; each cloud provider with its own feature below.
-object_store = ["sql", "dep:object_store", "object_store/fs", "dep:url"]
+object_store = ["sql", "dep:object_store", "object_store/fs", "dep:url", "dep:sha2"]
 # S3, and what speaks its API (MinIO, R2, ...): `s3://`, credentials from `AWS_*`.
 object_store_aws = ["object_store", "object_store/aws"]
 # Google Cloud Storage: `gs://`, credentials from `GOOGLE_*`.

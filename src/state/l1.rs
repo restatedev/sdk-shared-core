@@ -21,7 +21,8 @@
 //!
 //! Each namespace gets its own directory in the store, `<base>/<segment>`,
 //! where the segment is the namespace escaped to one path segment
-//! ([`segment`]). No namespace's packs are then under another's, so one
+//! ([`segment`]: `Ledger/a` is `_4cedger_2fa`, a long one is hashed). No
+//! namespace's packs are then under another's, so one
 //! namespace's garbage collection, which deletes what it lists under its own
 //! directory and does not need, never sees another's packs.
 //!
@@ -32,6 +33,7 @@ use super::ObjectStoreBlobs;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreScheme};
+use sha2::{Digest, Sha256};
 use std::fmt::Write;
 use std::io;
 use std::sync::Arc;
@@ -174,21 +176,56 @@ impl ObjectStoreL1 {
     }
 }
 
-/// `namespace` as one path segment, injectively: letters, digits, `-` and
-/// `_` as they are, every other byte as `.` and two hex digits (`Ledger/a`
-/// is `Ledger.2Fa`), and the empty namespace as `.empty`, which no other's
-/// escaping makes. Never empty, nothing an object store escapes, and no `/`,
-/// so it is one directory, and no other namespace's is inside it.
+/// The longest [`segment`]: one path component fits any filesystem (255
+/// bytes), and a key (1024 bytes in S3, GCS and Azure) keeps room for the
+/// base and a pack's name.
+const MAX_SEGMENT: usize = 128;
+
+/// How much of an escaped namespace a hashed [`segment`] keeps, so that a
+/// person can still tell which database a directory is.
+const HASHED_PREFIX: usize = 48;
+
+/// `namespace` as one path segment, injectively, so no namespace's packs
+/// are ever under another's:
+///
+/// - Lowercase letters, digits and `-` as they are, and every other byte,
+///   uppercase letters included, as `_` and two lowercase hex digits:
+///   `Ledger/a` is `_4cedger_2fa`. All lowercase, so namespaces that differ
+///   only in case stay apart on a case-insensitive filesystem (macOS,
+///   Windows), where a `file://` store may be. The escape is `_`, not `.`,
+///   so that a directory is never hidden.
+/// - The empty namespace as `_empty`.
+/// - One whose escape would pass [`MAX_SEGMENT`] as the start of its escape
+///   and `_h` and its SHA-256: `_h` and `_em` are no escape (`h` and `m`
+///   are no hex digits), so neither form is ever another namespace's escape.
+///
+/// Never empty, never `.` or `..`, nothing an object store escapes, and no
+/// `/`, so it is one directory, and no other namespace's is inside it.
 pub(crate) fn segment(namespace: &str) -> String {
     if namespace.is_empty() {
-        return ".empty".to_owned();
+        return "_empty".to_owned();
     }
+    // Each escaped byte ends a boundary between whole escapes.
     let mut out = String::with_capacity(namespace.len());
+    let mut boundaries = Vec::with_capacity(namespace.len());
     for byte in namespace.bytes() {
         match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' => out.push(byte as char),
-            _ => write!(out, ".{byte:02X}").unwrap(),
+            b'a'..=b'z' | b'0'..=b'9' | b'-' => out.push(byte as char),
+            _ => write!(out, "_{byte:02x}").unwrap(),
         }
+        boundaries.push(out.len());
+    }
+    if out.len() <= MAX_SEGMENT {
+        return out;
+    }
+    let keep = (boundaries.into_iter())
+        .take_while(|&end| end <= HASHED_PREFIX)
+        .last()
+        .unwrap_or(0);
+    out.truncate(keep);
+    out.push_str("_h");
+    for byte in Sha256::digest(namespace.as_bytes()) {
+        write!(out, "{byte:02x}").unwrap();
     }
     out
 }
@@ -205,11 +242,15 @@ mod tests {
     #[test]
     fn a_namespace_is_one_segment_its_store_keeps_as_it_is() {
         for (namespace, escaped) in [
-            ("Ledger/a", "Ledger.2Fa"),
-            ("Ledger/a%20b/notes", "Ledger.2Fa.2520b.2Fnotes"),
-            ("Ledger/../l1", "Ledger.2F.2E.2E.2Fl1"),
-            ("Ledger/", "Ledger.2F"),
-            ("", ".empty"),
+            ("Ledger/a", "_4cedger_2fa"),
+            ("Ledger/a%20b/notes", "_4cedger_2fa_2520b_2fnotes"),
+            ("Ledger/../l1", "_4cedger_2f_2e_2e_2fl1"),
+            ("Ledger/", "_4cedger_2f"),
+            ("orders-42", "orders-42"),
+            ("my_svc.v2", "my_5fsvc_2ev2"),
+            ("", "_empty"),
+            (".", "_2e"),
+            ("..", "_2e_2e"),
         ] {
             assert_eq!(segment(namespace), escaped);
             assert_eq!(Path::from(escaped).as_ref(), escaped);
@@ -218,10 +259,42 @@ mod tests {
 
     #[test]
     fn namespaces_never_share_a_segment() {
-        // `.` is escaped too, so an escape never reads as a namespace's own text.
-        assert_ne!(segment("a.2Fb"), segment("a/b"));
+        // `_` is escaped too, so an escape never reads as a namespace's own text.
+        assert_ne!(segment("a_2fb"), segment("a/b"));
         assert_ne!(segment("a/l1"), segment("a"));
-        assert_ne!(segment(".empty"), segment(""));
+        assert_ne!(segment("_empty"), segment(""));
+    }
+
+    /// On a case-insensitive filesystem (macOS, Windows), a `file://` store's
+    /// directories differing only in case are one: every segment is lowercase.
+    #[test]
+    fn namespaces_differing_in_case_differ_in_lowercase() {
+        for (a, b) in [("Ledger/A", "Ledger/a"), ("LEDGER", "ledger"), ("Ä", "ä")] {
+            assert_eq!(segment(a), segment(a).to_lowercase());
+            assert_ne!(segment(a), segment(b));
+        }
+    }
+
+    /// A namespace whose escape would not fit a path component, or a key
+    /// beside its base, is hashed: a readable start, then its SHA-256.
+    #[test]
+    fn a_long_namespace_is_hashed() {
+        // `Orders/` escapes to 11 bytes and each `日` (3 bytes) to 9: 272.
+        let long = format!("Orders/{}", "日".repeat(29));
+        let hashed = segment(&long);
+        assert!(hashed.len() <= super::MAX_SEGMENT, "{hashed}");
+        assert!(hashed.starts_with("_4frders_2f"), "{hashed}");
+        let (start, hash) = hashed.rsplit_once("_h").unwrap();
+        assert!(start.len() <= super::HASHED_PREFIX, "{start}");
+        assert_eq!(hash.len(), 64);
+        assert_eq!(Path::from(hashed.as_str()).as_ref(), hashed);
+        // Namespaces that share their first bytes, or differ only past them.
+        assert_ne!(segment(&format!("{long}x")), hashed);
+        assert_ne!(segment(&format!("{long}X")), segment(&format!("{long}x")));
+        // An escape exactly at the limit is kept; one byte more is hashed.
+        let at_limit = "a".repeat(super::MAX_SEGMENT);
+        assert_eq!(segment(&at_limit), at_limit);
+        assert!(segment(&format!("{at_limit}a")).contains("_h"));
     }
 
     #[test]
@@ -246,19 +319,21 @@ mod tests {
     #[test]
     fn a_namespace_goes_under_the_urls_path() {
         let l1 = ObjectStoreL1::from_url("file:///var/lib/sessions").unwrap();
-        assert_eq!(l1.prefix("Ledger/a"), "var/lib/sessions/Ledger.2Fa");
+        assert_eq!(l1.prefix("Ledger/a"), "var/lib/sessions/_4cedger_2fa");
         let root = ObjectStoreL1::new(Arc::new(InMemory::new()), "").unwrap();
-        assert_eq!(root.prefix("Ledger/a"), "Ledger.2Fa");
+        assert_eq!(root.prefix("Ledger/a"), "_4cedger_2fa");
     }
 
-    /// Each namespace lists only its own packs, whatever the base, the
-    /// empty namespace included.
+    /// Each namespace lists only its own packs, whatever the base: the empty
+    /// namespace, ones differing in case, and long, hashed ones included.
     #[test]
     fn a_namespace_lists_only_its_own_packs() {
         futures::executor::block_on(async {
             for base in ["", "packs"] {
                 let l1 = ObjectStoreL1::new(Arc::new(InMemory::new()), base).unwrap();
-                let namespaces = ["", "a", "l1", "a/l1"];
+                let long = format!("Orders/{}", "日".repeat(29));
+                let longer = format!("{long}/a");
+                let namespaces = ["", "a", "A", "l1", "a/l1", &long, &longer];
                 for namespace in namespaces {
                     let blobs = l1.blobs(namespace);
                     blobs.put("l1/1-x", Bytes::from_static(b"1")).await.unwrap();
@@ -287,6 +362,6 @@ mod tests {
     #[test]
     fn an_s3_url_builds_a_store_under_its_path() {
         let l1 = ObjectStoreL1::from_url("s3://bucket/packs").unwrap();
-        assert_eq!(l1.prefix("Ledger/a"), "packs/Ledger.2Fa");
+        assert_eq!(l1.prefix("Ledger/a"), "packs/_4cedger_2fa");
     }
 }
