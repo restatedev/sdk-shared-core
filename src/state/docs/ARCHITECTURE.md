@@ -497,6 +497,20 @@ store. Only the packs L0 outgrows move. The head, the tail, the manifests
 and L0 stay in Restate, so an open never needs S3 to find anything, and a
 database under `l0_bytes` never touches S3.
 
+An SDK names the store once per process with `ObjectStoreL1` (`src/state/l1.rs`,
+the feature `object_store`): from a URL, or from `RESTATE_SQL_OBJECT_STORE`.
+`l1.blobs(namespace)` is each database's L1, a directory of its own under the
+URL's path. `s3://` needs the feature `object_store_aws`, `gs://`
+`object_store_gcp`, `az://` `object_store_azure`; `file://` needs none.
+Credentials and options come from each provider's variables (`AWS_*`,
+`GOOGLE_*`, `AZURE_*`). An S3-compatible store, MinIO say, is `s3://bucket/path`
+with `AWS_ENDPOINT=http://minio:9000` (and `AWS_ALLOW_HTTP=true` without TLS):
+requests then go path-style to that endpoint.
+
+Once a database has promoted, its manifests name packs in L1, which never
+move back to L0: every later session of it needs the same store, base and
+namespace, or its reads of those packs fail.
+
 What changes, once a database outgrows L0:
 
 - **A promotion uploads its pack** before the flush puts its head, so a

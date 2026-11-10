@@ -91,6 +91,8 @@ pub(crate) mod blobs;
 mod cache;
 mod format;
 pub(crate) mod kv;
+#[cfg(feature = "object_store")]
+mod l1;
 #[cfg(any(test, feature = "__bench"))]
 pub mod simulation;
 mod store;
@@ -104,6 +106,8 @@ pub use cache::parse_size;
 pub use cache::{PageCache, PageCacheConfig};
 pub(crate) use format::{MAX_FILE_BYTES, MAX_NAME_BYTES, MAX_RECORD_BYTES};
 pub use kv::KvStore;
+#[cfg(feature = "object_store")]
+pub use l1::{ObjectStoreL1, OBJECT_STORE_VAR};
 pub(crate) use store::FlushReport;
 #[cfg(test)]
 pub(crate) use {
