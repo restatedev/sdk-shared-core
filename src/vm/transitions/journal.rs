@@ -35,6 +35,47 @@ fn should_ignore_payload_equality(global_ignore: bool, options: PayloadOptions) 
     global_ignore || options.unstable_serialization
 }
 
+/// The code of the failure that completes a run an earlier attempt left without a completion.
+pub(crate) const INTERRUPTED_RUN_CODE: u16 = 500;
+pub(crate) const INTERRUPTED_RUN_MESSAGE: &str = "the attempt ended before the run completed";
+
+/// Fail `run`, a run of an earlier attempt that this attempt skips, if it has no completion.
+///
+/// Its attempt ended while it ran (a crash, a lost connection, a suspension), and this attempt does not
+/// replay it, so no completion would ever come: the failure tells the journal that it ended.
+fn fail_interrupted_run(
+    context: &mut Context,
+    async_results: &mut AsyncResultsState,
+    run: RunCommandMessage,
+) {
+    let completion_id = run.result_completion_id;
+    if async_results.non_deterministic_find_id(&NotificationId::CompletionId(completion_id)) {
+        return;
+    }
+    trace!(
+        "Failing run '{}' (completion id {completion_id}), which an earlier attempt left without a completion",
+        run.name
+    );
+    let failure = TerminalFailure {
+        code: INTERRUPTED_RUN_CODE,
+        message: INTERRUPTED_RUN_MESSAGE.to_owned(),
+        metadata: vec![],
+    };
+    if context.negotiated_protocol_version >= Version::V7 {
+        // The runtime acks the proposal rather than sending the completion back: the ack takes it from here.
+        async_results.cache_run_completion(
+            completion_id,
+            NotificationResult::Failure(failure.clone().into()),
+        );
+    }
+    context.output.send(&ProposeRunCompletionMessage {
+        result_completion_id: completion_id,
+        result: Some(propose_run_completion_message::Result::Failure(
+            failure.into(),
+        )),
+    });
+}
+
 pub(crate) struct SysInput;
 
 impl TransitionAndReturn<Context, SysInput> for State {
@@ -65,11 +106,17 @@ impl TransitionAndReturn<Context, SysInput> for State {
                 State::Replaying {
                     mut commands,
                     run_state,
-                    async_results,
+                    mut async_results,
                     eager_state,
                 } => {
                     let skipped = commands.len() as u32;
-                    commands.clear();
+                    for (i, command) in commands.drain(..).enumerate() {
+                        if command.ty() == MessageType::RunCommand {
+                            // The input command is at index 0.
+                            let run = command.decode_to::<RunCommandMessage>(i as i64 + 1)?;
+                            fail_interrupted_run(context, &mut async_results, run);
+                        }
+                    }
                     context.journal.skip_to(skipped);
                     State::Replaying {
                         commands,
