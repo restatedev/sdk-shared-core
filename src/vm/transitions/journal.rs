@@ -101,7 +101,10 @@ impl TransitionAndReturn<Context, SysInput> for State {
         })?;
 
         // Skip journal replay when enabled
-        let s = if context.journal_replay == JournalReplay::Disabled {
+        let s = if let JournalReplay::Disabled {
+            fail_interrupted_runs,
+        } = context.journal_replay
+        {
             match s {
                 State::Replaying {
                     mut commands,
@@ -111,7 +114,7 @@ impl TransitionAndReturn<Context, SysInput> for State {
                 } => {
                     let skipped = commands.len() as u32;
                     for (i, command) in commands.drain(..).enumerate() {
-                        if command.ty() == MessageType::RunCommand {
+                        if fail_interrupted_runs && command.ty() == MessageType::RunCommand {
                             // The input command is at index 0.
                             let run = command.decode_to::<RunCommandMessage>(i as i64 + 1)?;
                             fail_interrupted_run(context, &mut async_results, run);

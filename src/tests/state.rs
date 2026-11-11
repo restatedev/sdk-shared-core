@@ -1501,7 +1501,9 @@ mod journal_replay_disabled {
 
     fn options() -> VMOptions {
         VMOptions {
-            journal_replay: JournalReplay::Disabled,
+            journal_replay: JournalReplay::Disabled {
+                fail_interrupted_runs: true,
+            },
             ..Default::default()
         }
     }
@@ -1633,6 +1635,36 @@ mod journal_replay_disabled {
                 })),
             }
         );
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"done")
+        );
+        assert_eq!(output.next_decoded::<EndMessage>().unwrap(), EndMessage {});
+        assert_eq!(output.next(), None);
+    }
+
+    /// Without the option, a run an earlier attempt left without a completion stays so.
+    #[test]
+    fn interrupted_run_is_left_without_the_option() {
+        let mut output = VMTestCase::with_vm_options(VMOptions {
+            journal_replay: JournalReplay::Disabled {
+                fail_interrupted_runs: false,
+            },
+            ..Default::default()
+        })
+        .input(StartMessage {
+            id: Bytes::from_static(b"abc"),
+            debug_id: "abc".to_owned(),
+            known_entries: 2,
+            ..Default::default()
+        })
+        .input(input_entry_message(b"Till"))
+        .input(RunCommandMessage {
+            result_completion_id: 1,
+            name: "model".to_owned(),
+        })
+        .run(end_handler);
+
         assert_that!(
             output.next_decoded::<OutputCommandMessage>().unwrap(),
             is_output_with_success(b"done")
