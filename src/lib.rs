@@ -340,7 +340,12 @@ pub enum JournalReplay {
     /// Skip it: the handler runs again from the start and every command executes anew,
     /// reading current state. Effects of earlier attempts may repeat (at least once), and
     /// awakeables are unsupported.
-    Disabled,
+    Disabled {
+        /// Fail the runs an earlier attempt left without a completion (the attempt ended while
+        /// running them), with code 500, as the attempt skips the journal: tooling then shows
+        /// them ended rather than pending for ever. Their failure is never read.
+        fail_interrupted_runs: bool,
+    },
 }
 
 /// How repeated deliveries of the same signal are handed out to handles.

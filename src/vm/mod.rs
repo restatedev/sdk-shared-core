@@ -1000,7 +1000,7 @@ impl super::VM for CoreVM {
     )]
     fn sys_awakeable(&mut self) -> VMResult<AwakeableHandle> {
         invocation_debug_logs!(self, "Executing 'Create awakeable'");
-        if self.options.journal_replay == JournalReplay::Disabled {
+        if matches!(self.options.journal_replay, JournalReplay::Disabled { .. }) {
             // Signal ids of skipped attempts are unknown, so a new one could collide.
             self.do_transition(HitError(Error::new(
                 errors::codes::UNSUPPORTED_FEATURE,

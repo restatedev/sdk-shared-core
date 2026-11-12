@@ -1496,12 +1496,14 @@ mod named_commands {
 
 mod journal_replay_disabled {
     use super::*;
-    use crate::tests::{input_entry_message, suspended_waiting_completion};
+    use crate::tests::{input_entry_message, is_output_with_success, suspended_waiting_completion};
     use crate::{JournalReplay, VMOptions};
 
     fn options() -> VMOptions {
         VMOptions {
-            journal_replay: JournalReplay::Disabled,
+            journal_replay: JournalReplay::Disabled {
+                fail_interrupted_runs: true,
+            },
             ..Default::default()
         }
     }
@@ -1576,6 +1578,130 @@ mod journal_replay_disabled {
                 ..Default::default()
             }
         );
+    }
+
+    fn end_handler(vm: &mut CoreVM) {
+        vm.sys_input().unwrap();
+        vm.sys_write_output(
+            NonEmptyValue::Success(Bytes::from_static(b"done")),
+            PayloadOptions::default(),
+        )
+        .unwrap();
+        vm.sys_end().unwrap();
+    }
+
+    /// A run that an earlier attempt left without a completion is failed, and the runtime's ack of
+    /// that failure is taken.
+    #[test]
+    fn interrupted_run_is_failed() {
+        let mut output = VMTestCase::with_vm_options(options())
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 2,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"Till"))
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "model".to_owned(),
+            })
+            .run_without_closing_input(|vm, encoder| {
+                vm.sys_input().unwrap();
+                vm.notify_input(
+                    encoder.encode(&ProposeRunCompletionAckMessage { completion_id: 1 }),
+                );
+                vm.notify_input_closed();
+                vm.sys_write_output(
+                    NonEmptyValue::Success(Bytes::from_static(b"done")),
+                    PayloadOptions::default(),
+                )
+                .unwrap();
+                vm.sys_end().unwrap();
+            });
+
+        let (header, proposal) = output
+            .next_with_header_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_eq!(header.requested_ack(), Some(true));
+        assert_eq!(
+            proposal,
+            ProposeRunCompletionMessage {
+                result_completion_id: 1,
+                result: Some(propose_run_completion_message::Result::Failure(Failure {
+                    code: 500,
+                    message: "the attempt ended before the run completed".to_owned(),
+                    ..Default::default()
+                })),
+            }
+        );
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"done")
+        );
+        assert_eq!(output.next_decoded::<EndMessage>().unwrap(), EndMessage {});
+        assert_eq!(output.next(), None);
+    }
+
+    /// Without the option, a run an earlier attempt left without a completion stays so.
+    #[test]
+    fn interrupted_run_is_left_without_the_option() {
+        let mut output = VMTestCase::with_vm_options(VMOptions {
+            journal_replay: JournalReplay::Disabled {
+                fail_interrupted_runs: false,
+            },
+            ..Default::default()
+        })
+        .input(StartMessage {
+            id: Bytes::from_static(b"abc"),
+            debug_id: "abc".to_owned(),
+            known_entries: 2,
+            ..Default::default()
+        })
+        .input(input_entry_message(b"Till"))
+        .input(RunCommandMessage {
+            result_completion_id: 1,
+            name: "model".to_owned(),
+        })
+        .run(end_handler);
+
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"done")
+        );
+        assert_eq!(output.next_decoded::<EndMessage>().unwrap(), EndMessage {});
+        assert_eq!(output.next(), None);
+    }
+
+    /// A run of an earlier attempt that has its completion is left as it is.
+    #[test]
+    fn completed_run_is_left_alone() {
+        let mut output = VMTestCase::with_vm_options(options())
+            .input(StartMessage {
+                id: Bytes::from_static(b"abc"),
+                debug_id: "abc".to_owned(),
+                known_entries: 3,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"Till"))
+            .input(RunCommandMessage {
+                result_completion_id: 1,
+                name: "model".to_owned(),
+            })
+            .input(RunCompletionNotificationMessage {
+                completion_id: 1,
+                result: Some(run_completion_notification_message::Result::Value(
+                    Bytes::from_static(b"123").into(),
+                )),
+            })
+            .run(end_handler);
+
+        assert_that!(
+            output.next_decoded::<OutputCommandMessage>().unwrap(),
+            is_output_with_success(b"done")
+        );
+        assert_eq!(output.next_decoded::<EndMessage>().unwrap(), EndMessage {});
+        assert_eq!(output.next(), None);
     }
 
     #[test]
