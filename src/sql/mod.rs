@@ -590,12 +590,14 @@ impl Database {
     /// returns. A reader commits nothing, and a session that a failure ended
     /// cannot. A call dropped before it returns ends the session.
     async fn call<T>(&self, call: impl AsyncFnOnce(&mut Engine) -> Result<T>) -> Result<T> {
-        // Closing drops the call where it waits, which ends the session ([`Call`]).
-        let closed = std::pin::pin!(self.closing.cancelled());
+        // Closing drops the call where it waits, which ends the session
+        // ([`Call`]); a call that returned as the database closed returns
+        // its result.
         let run = std::pin::pin!(self.run(call));
-        match futures::future::select(closed, run).await {
-            futures::future::Either::Left(((), _)) => Err(CLOSED.into()),
-            futures::future::Either::Right((result, _)) => result,
+        let closed = std::pin::pin!(self.closing.cancelled());
+        match futures::future::select(run, closed).await {
+            futures::future::Either::Left((result, _)) => result,
+            futures::future::Either::Right(((), _)) => Err(CLOSED.into()),
         }
     }
 

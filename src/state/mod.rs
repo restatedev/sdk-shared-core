@@ -122,6 +122,7 @@ use bytes::Bytes;
 use std::{
     any::Any,
     future::{Future, IntoFuture},
+    io,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -277,8 +278,11 @@ impl Drop for Collecting<'_> {
 /// `work` as a task of the multi-thread tokio runtime this is polled in, if
 /// there is one, awaited: dropping the await aborts the task (and drops what
 /// it waits for, such as a request). Without one (a current-thread runtime,
-/// or none), `work` runs here.
-async fn on_runtime<T: Send + 'static>(work: impl Future<Output = T> + Send + 'static) -> T {
+/// or none), `work` runs here. A task the runtime cancels (shutting down)
+/// fails, as a checkpoint that failed.
+async fn on_runtime<T: Send + 'static>(
+    work: impl Future<Output = io::Result<T>> + Send + 'static,
+) -> io::Result<T> {
     use tokio::runtime::{Handle, RuntimeFlavor};
     match Handle::try_current() {
         Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
@@ -291,10 +295,12 @@ async fn on_runtime<T: Send + 'static>(work: impl Future<Output = T> + Send + 's
             }
             let mut task = AbortOnDrop(handle.spawn(work));
             match (&mut task.0).await {
-                Ok(value) => value,
+                Ok(result) => result,
                 Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-                // Aborted only by the drop above, or by the runtime shutting down.
-                Err(error) => panic!("the runtime cancelled a checkpoint: {error}"),
+                // Not by the drop above, which leaves no one to await it.
+                Err(error) => Err(io::Error::other(format!(
+                    "the runtime cancelled it: {error}"
+                ))),
             }
         }
         _ => work.await,
