@@ -1,7 +1,7 @@
 //! Cancellation at every point: a call dropped after any number of polls
 //! ends its session, and the store holds the state before it or after it.
 use super::{
-    fault::poll_at_most,
+    fault::{failpoint, poll_at_most},
     host::{Db, StateSetup},
     reference::{dump, integrity},
 };
@@ -9,11 +9,12 @@ use crate::sql::Database;
 use crate::state::simulation::Namespace;
 use crate::state::{
     kv::KvStore,
-    simulation::{fresh_namespace, MemoryKv},
+    simulation::{fresh_namespace, Effect, FaultKv, MemoryKv, Operation},
     Result, StateOptions,
 };
 use bytes::Bytes;
-use std::sync::Arc;
+use futures::future::{select, Either};
+use std::{pin::pin, sync::Arc, task::Poll};
 
 /// Pages read from the store as queries need them; garbage deleted soon.
 fn options(cache: Option<Namespace>) -> StateSetup {
@@ -158,6 +159,36 @@ fn a_call_cancelled_after_any_number_of_polls_ends_its_session() -> Result<()> {
             }
         }
         println!("cancellation sweep: {cases} cases");
+        Ok(())
+    })
+}
+
+/// Closing the database while a call waits on the store (a read that never
+/// returns) cancels the call: it fails at its next poll, its read dropped,
+/// and the database stays closed.
+#[test]
+fn closing_cancels_the_call_running() -> Result<()> {
+    futures::executor::block_on(async {
+        let store = Arc::new(FaultKv::new(baseline().await?, 0));
+        let db = Db::open(store.clone(), options(None)).await?;
+        let read = store.arm(failpoint(Operation::Get, "", 1, Effect::None, true));
+        let mut call = pin!(Call::Read.run(&db));
+        match select(call.as_mut(), read).await {
+            Either::Left(_) => panic!("the read never reached the store"),
+            Either::Right((signal, _)) => signal.unwrap(),
+        }
+        let mut closing = pin!(db.close());
+        assert!(futures::poll!(closing.as_mut()).is_pending());
+        let error = match futures::poll!(call.as_mut()) {
+            Poll::Ready(result) => result.unwrap_err().to_string(),
+            Poll::Pending => panic!("the call still waits on its read"),
+        };
+        assert!(error.contains("closed"), "{error}");
+        assert_eq!(store.active(), 0, "the read outlived its call");
+        closing.await;
+        assert!(!db.is_usable());
+        assert!(db.execute("SELECT 1").await.is_err());
+        store.disarm();
         Ok(())
     })
 }

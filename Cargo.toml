@@ -64,6 +64,8 @@ sql = [
     "dep:foyer-tokio",
     "dep:tokio",
     "tokio/rt-multi-thread",
+    # Closing a database cancels the call it runs (`CancellationToken`).
+    "dep:tokio-util",
     "dep:turso_core",
     # Encryption is off, so aegis is never called: its pure-Rust backend spares
     # every SDK compiling the bundled C sources with whatever toolchain it has.

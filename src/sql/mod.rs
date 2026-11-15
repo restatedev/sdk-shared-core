@@ -255,6 +255,10 @@ impl WarmEngine {
 /// the namespace, [`Self::close`], or a failure; later calls fail.
 pub struct Database {
     session: Mutex<Session>,
+    /// Fired by [`Self::close`]: the call running then is dropped (as a
+    /// cancelled call is), rather than run to its end, so that what it waits
+    /// for (a checkpoint's upload, say) stops with the attempt that closed it.
+    closing: tokio_util::sync::CancellationToken,
     /// Whether the session can still run SQL, as of the last call that ended:
     /// read without the lock, which a running call holds.
     usable: AtomicBool,
@@ -393,6 +397,7 @@ impl Database {
             #[cfg(test)]
             reused: engine.reused,
             session: Mutex::new(Session::Open(engine)),
+            closing: tokio_util::sync::CancellationToken::new(),
             usable: AtomicBool::new(true),
         })
     }
@@ -534,8 +539,11 @@ impl Database {
         saved
     }
 
-    /// End the session, whatever state it is in.
+    /// End the session, whatever state it is in. A call running is
+    /// cancelled, as if its future were dropped: its outcome is unknown, and
+    /// the state it ran on is not reused ([`Call`]).
     pub async fn close(&self) {
+        self.closing.cancel();
         *self.session.lock().await = Session::Closed;
         self.usable.store(false, Ordering::Release);
     }
@@ -582,6 +590,17 @@ impl Database {
     /// returns. A reader commits nothing, and a session that a failure ended
     /// cannot. A call dropped before it returns ends the session.
     async fn call<T>(&self, call: impl AsyncFnOnce(&mut Engine) -> Result<T>) -> Result<T> {
+        // Closing drops the call where it waits, which ends the session ([`Call`]).
+        let closed = std::pin::pin!(self.closing.cancelled());
+        let run = std::pin::pin!(self.run(call));
+        match futures::future::select(closed, run).await {
+            futures::future::Either::Left(((), _)) => Err(CLOSED.into()),
+            futures::future::Either::Right((result, _)) => result,
+        }
+    }
+
+    /// [`Self::call`], until the database closes.
+    async fn run<T>(&self, call: impl AsyncFnOnce(&mut Engine) -> Result<T>) -> Result<T> {
         let mut running = Call {
             session: self.session.lock().await,
             usable: &self.usable,

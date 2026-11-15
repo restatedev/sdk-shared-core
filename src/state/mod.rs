@@ -274,6 +274,33 @@ impl Drop for Collecting<'_> {
     }
 }
 
+/// `work` as a task of the multi-thread tokio runtime this is polled in, if
+/// there is one, awaited: dropping the await aborts the task (and drops what
+/// it waits for, such as a request). Without one (a current-thread runtime,
+/// or none), `work` runs here.
+async fn on_runtime<T: Send + 'static>(work: impl Future<Output = T> + Send + 'static) -> T {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            /// Aborts the task when dropped, unless it finished.
+            struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+            impl<T> Drop for AbortOnDrop<T> {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+            let mut task = AbortOnDrop(handle.spawn(work));
+            match (&mut task.0).await {
+                Ok(value) => value,
+                Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                // Aborted only by the drop above, or by the runtime shutting down.
+                Err(error) => panic!("the runtime cancelled a checkpoint: {error}"),
+            }
+        }
+        _ => work.await,
+    }
+}
+
 /// A running flush. One that fails ends the state. One dropped midway has
 /// an unknown outcome too, and the cache forgets what it knew of the
 /// namespace (as a failed sync makes it), so that no other state flushes on
@@ -722,7 +749,15 @@ impl Mutation {
         let allowed = shared.backoff.lock().unwrap().allows(version);
         let due = self.checkpoint || (snapshot.due() && allowed);
         let (staged, failed) = match snapshot.changes(&mut files, &mut records) && due {
-            true => match snapshot.checkpoint().await {
+            // Built and put (compressing the pack, uploading it) as a task of
+            // the runtime: not on the thread that polls the flush (an SDK's
+            // own, say), and aborted with it if the flush is dropped.
+            true => match on_runtime({
+                let snapshot = snapshot.clone();
+                async move { snapshot.checkpoint().await }
+            })
+            .await
+            {
                 Ok(staged) => (Some(staged), None),
                 Err(error) => {
                     shared.backoff(|backoff| backoff.failed(version));

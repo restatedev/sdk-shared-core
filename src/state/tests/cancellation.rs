@@ -4,13 +4,24 @@
 //! cancelled open leaves the owner's cache usable.
 
 use super::support::*;
-use crate::state::{kv::KvStore, simulation::*, Result, StateOptions, HEAD_KEY};
-use futures::task::noop_waker_ref;
+use crate::state::{
+    blobs::BlobStore, kv::KvStore, simulation::*, Result, State, StateOptions, HEAD_KEY, PAGE_SIZE,
+};
+use bytes::Bytes;
+use futures::{
+    channel::oneshot,
+    future::{select, BoxFuture, Either},
+    task::noop_waker_ref,
+};
 use std::future::Future;
 use std::{
+    io,
+    ops::Range,
     pin::pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
+    thread::{self, ThreadId},
+    time::Duration,
 };
 
 /// Small frames, a checkpoint every other flush, and large records in
@@ -178,6 +189,91 @@ fn an_open_cancelled_at_any_poll_leaves_the_cache_usable() -> Result<()> {
             session.flush(&ops).await?;
             model = model.applied(&ops);
         }
+        Ok(())
+    })
+}
+
+/// Packs in memory, until armed: then the next put says on which thread it
+/// runs, and never returns, holding a sender that says when it is dropped.
+#[derive(Default)]
+struct StuckPut {
+    inner: MemoryBlobs,
+    armed: Mutex<Option<(oneshot::Sender<ThreadId>, oneshot::Sender<()>)>>,
+}
+
+impl BlobStore for StuckPut {
+    fn get_range<'a>(
+        &'a self,
+        key: &'a str,
+        range: Range<u64>,
+    ) -> BoxFuture<'a, io::Result<Option<Bytes>>> {
+        self.inner.get_range(key, range)
+    }
+    fn put<'a>(&'a self, key: &'a str, value: Bytes) -> BoxFuture<'a, io::Result<()>> {
+        Box::pin(async move {
+            let Some((started, _held)) = self.armed.lock().unwrap().take() else {
+                return self.inner.put(key, value).await;
+            };
+            let _ = started.send(thread::current().id());
+            futures::future::pending().await
+        })
+    }
+    fn delete<'a>(&'a self, keys: &'a [String]) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.delete(keys)
+    }
+    fn list<'a>(&'a self, prefix: &'a str) -> BoxFuture<'a, io::Result<Vec<String>>> {
+        self.inner.list(prefix)
+    }
+}
+
+/// On a multi-thread runtime, a checkpoint's upload runs as a task of it,
+/// not on the thread that polls the flush, and dropping the flush aborts it.
+#[test]
+fn a_checkpoint_uploads_on_the_runtime_and_a_dropped_flush_aborts_it() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let packs = Arc::new(StuckPut::default());
+        // Every checkpoint goes to L1, the packs.
+        let options = StateOptions {
+            l0_bytes: 0,
+            ..StateOptions::default()
+        };
+        let state = State::open(Arc::new(MemoryKv::default()))
+            .options(options)
+            .checkpoints(packs.clone())
+            .await?;
+        let mut mutation = state.mutation();
+        mutation.set_len(2 * PAGE_SIZE as u64)?;
+        mutation.write(0, Some(page(1)))?;
+        mutation.flush().await?;
+
+        let (started, uploading) = oneshot::channel();
+        let (held, dropped) = oneshot::channel();
+        *packs.armed.lock().unwrap() = Some((started, held));
+        let mut mutation = state.mutation();
+        mutation.write(1, Some(page(2)))?;
+        mutation.checkpoint();
+        let uploader = match select(Box::pin(mutation.flush()), uploading).await {
+            Either::Left(_) => panic!("the flush returned without its upload"),
+            Either::Right((uploader, flush)) => {
+                drop(flush);
+                uploader.unwrap()
+            }
+        };
+        assert_ne!(
+            uploader,
+            thread::current().id(),
+            "uploaded where the flush is polled"
+        );
+        let aborted = tokio::time::timeout(Duration::from_secs(10), dropped).await;
+        assert!(
+            matches!(aborted, Ok(Err(oneshot::Canceled))),
+            "the upload outlived its flush"
+        );
+        assert!(!state.is_usable());
         Ok(())
     })
 }
