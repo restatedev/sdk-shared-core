@@ -37,9 +37,12 @@
 //! calls may overlap). Under that lock nothing is contended:
 //!
 //! - The engine, its adapter (`io`) and the state are used only by the call
-//!   holding the session, on its task. No thread, channel or background task
-//!   is created; the executor may move the task between its threads, so all
-//!   of it is `Send`.
+//!   holding the session, on its task. A call polled outside any task of a
+//!   multi-thread runtime (on a host's own thread, as the Node addon polls
+//!   one once in place) runs as a task of that runtime, so SQL never runs on
+//!   the host's thread; in a task already, it runs there. No thread or
+//!   channel is created; the executor may move the task between its threads,
+//!   so all of it is `Send`.
 //! - Their own locks and atomics are there because turso's `IO` and `File`
 //!   take `&self` and must be `Send + Sync`, and the engine's files share
 //!   the state's handles: one call at a time takes them, never waiting. A
@@ -53,10 +56,10 @@
 //!
 //! # Driving the engine
 //!
-//! The caller's task drives nonblocking engine open/connect state machines and
+//! The call's task drives nonblocking engine open/connect state machines and
 //! statement steps, awaits queued state reads, then resumes the engine.
-//! Completions run on that task. No worker thread, command channel or
-//! background task is created. Cached queries yield to the executor after 64
+//! Completions run on that task. No worker thread or command channel is
+//! created. Cached queries yield to the executor after 64
 //! steps; an individual engine call is not preemptible. Calls on a session
 //! run one at a time.
 //!
@@ -103,8 +106,8 @@ mod io;
 pub use turso_core::{Numeric, Value};
 
 use crate::sql::io::{KvIo, MountedIo, DB_PATH};
-use crate::state::yield_now;
 use crate::state::{blobs::BlobStore, kv::KvStore, PageCache, Result, State, StateOptions};
+use crate::state::{off_host_thread, yield_now};
 use bytes::Bytes;
 use futures::lock::{Mutex, MutexGuard};
 use std::{
@@ -254,10 +257,8 @@ impl WarmEngine {
 /// with [`Self::save`], which leaves a clean engine to the next session of
 /// the namespace, [`Self::close`], or a failure; later calls fail.
 pub struct Database {
-    session: Mutex<Session>,
-    /// Whether the session can still run SQL, as of the last call that ended:
-    /// read without the lock, which a running call holds.
-    usable: AtomicBool,
+    /// What a call takes with it onto the runtime ([`Self::on_runtime`]).
+    shared: Arc<Shared>,
     /// The engine's adapter, for its I/O stats.
     #[cfg(any(test, feature = "__bench"))]
     io: Arc<KvIo>,
@@ -267,6 +268,22 @@ pub struct Database {
     /// The engine continued from a previous session.
     #[cfg(test)]
     reused: bool,
+}
+
+/// A session, as its calls hold it: on the runtime, as tasks of their own.
+struct Shared {
+    session: Mutex<Session>,
+    /// Fired by [`Database::close`]: the call running then is dropped (as a
+    /// cancelled call is), rather than run to its end, so that what it waits
+    /// for (a checkpoint's upload, say) stops with the attempt that closed it.
+    closing: tokio_util::sync::CancellationToken,
+    /// Whether the session can still run SQL, as of the last call that ended:
+    /// read without the lock, which a running call holds.
+    usable: AtomicBool,
+    /// A call was dropped before it returned. Its task may have finished
+    /// regardless, so the session ends as the next to hold it sees this
+    /// ([`Self::lock`]): a dropped call ends it, whenever its task stopped.
+    abandoned: AtomicBool,
 }
 
 /// A session's engine, or why it has none.
@@ -361,7 +378,10 @@ impl IntoFuture for Open {
     type IntoFuture = Pin<Box<dyn Future<Output = Result<Database>> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move { Database::new(self.0.await?).await })
+        // Opening reads pages, and runs the engine: on the runtime too.
+        Box::pin(off_host_thread(async move {
+            Database::new(self.0.await?).await
+        }))
     }
 }
 
@@ -392,8 +412,12 @@ impl Database {
             state: engine.state.clone(),
             #[cfg(test)]
             reused: engine.reused,
-            session: Mutex::new(Session::Open(engine)),
-            usable: AtomicBool::new(true),
+            shared: Arc::new(Shared {
+                session: Mutex::new(Session::Open(engine)),
+                closing: tokio_util::sync::CancellationToken::new(),
+                usable: AtomicBool::new(true),
+                abandoned: AtomicBool::new(false),
+            }),
         })
     }
 
@@ -407,8 +431,12 @@ impl Database {
         sql: &str,
         params: Option<Vec<Value>>,
     ) -> Result<(Vec<String>, Rows)> {
-        self.call(async |engine| engine.query(sql, params).await)
-            .await
+        let sql = sql.to_owned();
+        self.on_runtime(move |db| async move {
+            db.call(async |engine| engine.query(&sql, params).await)
+                .await
+        })
+        .await
     }
 
     /// Run SQL and return the rows of its last statement.
@@ -444,13 +472,16 @@ impl Database {
     /// `BEGIN` the transaction of the host's `transaction()` body: until its
     /// `commit` or `rollback`, a statement that ends it ends the session.
     pub async fn begin(&self) -> Result<()> {
-        self.call(async |engine| {
-            if engine.in_body {
-                return Err("transactions do not nest; use SAVEPOINT".into());
-            }
-            engine.execute("BEGIN").await?;
-            engine.in_body = true;
-            Ok(())
+        self.on_runtime(|db| async move {
+            db.call(async |engine| {
+                if engine.in_body {
+                    return Err("transactions do not nest; use SAVEPOINT".into());
+                }
+                engine.execute("BEGIN").await?;
+                engine.in_body = true;
+                Ok(())
+            })
+            .await
         })
         .await
     }
@@ -462,21 +493,25 @@ impl Database {
     /// leaves the transaction open, for `rollback`. See [`Self::record`].
     pub async fn commit(&self, records: impl IntoIterator<Item = (String, Bytes)>) -> Result<()> {
         let records: Vec<(String, Bytes)> = records.into_iter().collect();
-        self.call(async |engine| {
-            engine.in_body = false;
-            // Nothing commits on a session a failure ended: the records would
-            // stay pending, and the call would resolve as if they committed.
-            if !engine.is_usable() {
-                return Err(ENDED.into());
-            }
-            for (name, value) in &records {
-                crate::state::check_record(name, value)?;
-            }
-            if engine.in_transaction() {
-                engine.execute("COMMIT").await?;
-            }
-            engine.records.extend(records);
-            Ok(())
+        self.on_runtime(move |db| async move {
+            db.call(async |engine| {
+                engine.in_body = false;
+                // Nothing commits on a session a failure ended: the records
+                // would stay pending, and the call would resolve as if they
+                // committed.
+                if !engine.is_usable() {
+                    return Err(ENDED.into());
+                }
+                for (name, value) in &records {
+                    crate::state::check_record(name, value)?;
+                }
+                if engine.in_transaction() {
+                    engine.execute("COMMIT").await?;
+                }
+                engine.records.extend(records);
+                Ok(())
+            })
+            .await
         })
         .await
     }
@@ -484,12 +519,15 @@ impl Database {
     /// `ROLLBACK` the transaction of a `transaction()` body, if it is still
     /// open and no failure ended the session.
     pub async fn rollback(&self) -> Result<()> {
-        self.call(async |engine| {
-            engine.in_body = false;
-            match engine.is_usable() && engine.in_transaction() {
-                true => engine.execute("ROLLBACK").await,
-                false => Ok(()),
-            }
+        self.on_runtime(|db| async move {
+            db.call(async |engine| {
+                engine.in_body = false;
+                match engine.is_usable() && engine.in_transaction() {
+                    true => engine.execute("ROLLBACK").await,
+                    false => Ok(()),
+                }
+            })
+            .await
         })
         .await
     }
@@ -498,7 +536,10 @@ impl Database {
     /// a storage error or a cancelled call ends it. A call that is running
     /// does not change the answer until it ends.
     pub fn is_usable(&self) -> bool {
-        self.usable.load(Ordering::Acquire)
+        // `abandoned` only ever turns true, so a dropped call ends the
+        // answer here even if its task, not yet aborted, stores `usable`
+        // after the drop did.
+        self.shared.usable.load(Ordering::Acquire) && !self.shared.abandoned.load(Ordering::Acquire)
     }
 
     /// The record `name` as this session holds it: as the last commit that
@@ -507,7 +548,7 @@ impl Database {
     /// failure ended the session, it is the record as stored; once a
     /// cancelled call dropped the engine, it fails with the session's end.
     pub async fn record(&self, name: &str) -> Result<Bytes> {
-        let mut session = self.session.lock().await;
+        let mut session = self.shared.lock().await;
         let engine = session.engine()?;
         Ok(match engine.records.get(name) {
             Some(value) => value.clone(),
@@ -519,8 +560,8 @@ impl Database {
     /// transaction was left open, whose changes are lost, or a failure ended
     /// the session.
     pub async fn save(&self) -> Result<()> {
-        let mut session = self.session.lock().await;
-        self.usable.store(false, Ordering::Release);
+        let mut session = self.shared.lock().await;
+        self.shared.usable.store(false, Ordering::Release);
         let engine = session.engine()?;
         let saved = match (engine.is_usable(), engine.in_transaction()) {
             (false, _) => Err(ENDED.into()),
@@ -534,10 +575,13 @@ impl Database {
         saved
     }
 
-    /// End the session, whatever state it is in.
+    /// End the session, whatever state it is in. A call running is
+    /// cancelled, as if its future were dropped: its outcome is unknown, and
+    /// the state it ran on is not reused ([`Call`]).
     pub async fn close(&self) {
-        *self.session.lock().await = Session::Closed;
-        self.usable.store(false, Ordering::Release);
+        self.shared.closing.cancel();
+        *self.shared.session.lock().await = Session::Closed;
+        self.shared.usable.store(false, Ordering::Release);
     }
 
     /// The state the database is kept in.
@@ -563,15 +607,56 @@ impl Database {
     /// checkpoint's pack after it. Nothing with an empty database.
     #[cfg(test)]
     pub(crate) async fn checkpoint(&self) -> Result<crate::state::FlushReport> {
-        self.call(async |engine| {
-            let mut mutation = engine.state.mutation();
-            if let Some(first) = engine.state.file().read(0).await? {
-                mutation.write(0, Some(first))?;
-            }
-            mutation.checkpoint();
-            mutation.flush().await
+        self.on_runtime(|db| async move {
+            db.call(async |engine| {
+                let mut mutation = engine.state.mutation();
+                if let Some(first) = engine.state.file().read(0).await? {
+                    mutation.write(0, Some(first))?;
+                }
+                mutation.checkpoint();
+                mutation.flush().await
+            })
+            .await
         })
         .await
+    }
+
+    /// The call `call` makes of the session, as a task of the runtime unless
+    /// it is polled in one already ([`off_host_thread`]): SQL runs on the
+    /// runtime's threads, never on the host's own (a JavaScript thread, say,
+    /// that polls a call once in place before it spawns it).
+    async fn on_runtime<T, F>(&self, call: impl FnOnce(Arc<Shared>) -> F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T>> + Send + 'static,
+    {
+        /// Marks the session abandoned unless the call returned.
+        struct Abandon<'a>(&'a Shared, bool);
+        impl Drop for Abandon<'_> {
+            fn drop(&mut self) {
+                if !self.1 {
+                    self.0.usable.store(false, Ordering::Release);
+                    self.0.abandoned.store(true, Ordering::Release);
+                }
+            }
+        }
+        let mut returned = Abandon(&self.shared, false);
+        // Boxed: in place (no runtime, or in a task already), a call's
+        // future would otherwise nest in its caller's, on its stack.
+        let result = off_host_thread(Box::pin(call(self.shared.clone()))).await;
+        returned.1 = true;
+        result
+    }
+}
+
+impl Shared {
+    /// The session, held: ended first if a call was abandoned.
+    async fn lock(&self) -> MutexGuard<'_, Session> {
+        let mut session = self.session.lock().await;
+        if self.abandoned.load(Ordering::Acquire) && matches!(*session, Session::Open(_)) {
+            *session = Session::Ended;
+        }
+        session
     }
 
     /// Run `call` on the open session, then settle it. A statement that
@@ -582,8 +667,21 @@ impl Database {
     /// returns. A reader commits nothing, and a session that a failure ended
     /// cannot. A call dropped before it returns ends the session.
     async fn call<T>(&self, call: impl AsyncFnOnce(&mut Engine) -> Result<T>) -> Result<T> {
+        // Closing drops the call where it waits, which ends the session
+        // ([`Call`]); a call that returned as the database closed returns
+        // its result.
+        let run = std::pin::pin!(self.run(call));
+        let closed = std::pin::pin!(self.closing.cancelled());
+        match futures::future::select(run, closed).await {
+            futures::future::Either::Left((result, _)) => result,
+            futures::future::Either::Right(((), _)) => Err(CLOSED.into()),
+        }
+    }
+
+    /// [`Self::call`], until the database closes.
+    async fn run<T>(&self, call: impl AsyncFnOnce(&mut Engine) -> Result<T>) -> Result<T> {
         let mut running = Call {
-            session: self.session.lock().await,
+            session: self.lock().await,
             usable: &self.usable,
             returned: false,
         };

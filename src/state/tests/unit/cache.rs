@@ -344,3 +344,41 @@ fn sizes_are_bytes_or_binary_units() {
     assert_eq!(parse_size("lots"), None);
     assert_eq!(parse_size(""), None);
 }
+
+/// Values the memory tier evicts go to the disk tier and are read from
+/// there, and the cache's stats count it.
+#[test]
+fn evicted_values_are_written_to_disk_and_counted() {
+    use crate::state::simulation::*;
+    futures::executor::block_on(async {
+        let cache = open_cache(cache_config(1 << 20, 64 << 20));
+        let namespace = cache.namespace("stats");
+        let value = |n: usize| Bytes::from(vec![n as u8; 64 << 10]);
+        // 4 MiB through 1 MiB of memory.
+        for n in 0..64 {
+            namespace.keep_value(&format!("v{n}"), &value(n));
+        }
+        // Every value is read back; one whose write is still in flight is
+        // answered from foyer's memory, so read until some come from the file.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            for n in 0..64 {
+                let read = namespace.value(&format!("v{n}")).await;
+                assert_eq!(read, Some(value(n)), "v{n}");
+            }
+            if cache.stats().disk_hits > 0 || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let stats = cache.stats();
+        assert!(stats.memory_evictions > 0, "{stats:?}");
+        assert!(stats.disk_enqueued > 0, "{stats:?}");
+        assert!(
+            stats.disk_writes > 0 && stats.disk_written_bytes > 0,
+            "{stats:?}"
+        );
+        assert!(stats.disk_hits > 0, "{stats:?}");
+        assert_eq!(stats.dropped_queue + stats.dropped_buffer, 0, "{stats:?}");
+    })
+}

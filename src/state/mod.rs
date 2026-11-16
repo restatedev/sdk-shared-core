@@ -103,7 +103,7 @@ pub use blobs::BlobStore;
 #[cfg(feature = "object_store")]
 pub use blobs::ObjectStoreBlobs;
 pub use cache::parse_size;
-pub use cache::{PageCache, PageCacheConfig};
+pub use cache::{CacheStats, PageCache, PageCacheConfig};
 pub(crate) use format::{MAX_FILE_BYTES, MAX_NAME_BYTES, MAX_RECORD_BYTES};
 pub use kv::KvStore;
 #[cfg(feature = "object_store")]
@@ -122,6 +122,7 @@ use bytes::Bytes;
 use std::{
     any::Any,
     future::{Future, IntoFuture},
+    io,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -271,6 +272,59 @@ impl Drop for Collecting<'_> {
         if let Some(cache) = (self.shared.cache.as_ref()).filter(|_| !self.shared.reader) {
             cache.forget();
         }
+    }
+}
+
+/// `work` as a task of the multi-thread tokio runtime this is polled in, if
+/// there is one, awaited: dropping the await aborts the task (and drops what
+/// it waits for, such as a request). Without one (a current-thread runtime,
+/// or none), `work` runs here. A task the runtime cancels (shutting down)
+/// fails, as a checkpoint that failed.
+pub(crate) async fn on_runtime<T, E>(
+    work: impl Future<Output = std::result::Result<T, E>> + Send + 'static,
+) -> std::result::Result<T, E>
+where
+    T: Send + 'static,
+    E: From<io::Error> + Send + 'static,
+{
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            /// Aborts the task when dropped, unless it finished.
+            struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+            impl<T> Drop for AbortOnDrop<T> {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+            let mut task = AbortOnDrop(handle.spawn(work));
+            match (&mut task.0).await {
+                Ok(result) => result,
+                Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                // Not by the drop above, which leaves no one to await it.
+                Err(error) => {
+                    Err(io::Error::other(format!("the runtime cancelled it: {error}")).into())
+                }
+            }
+        }
+        _ => work.await,
+    }
+}
+
+/// [`on_runtime`], unless polled in a task already: then `work` runs here.
+/// Polled outside one, on a host's own thread (as the Node addon polls a
+/// call once in place, before it spawns it), it runs on the runtime, and
+/// the host's thread only waits.
+pub(crate) async fn off_host_thread<T, E>(
+    work: impl Future<Output = std::result::Result<T, E>> + Send + 'static,
+) -> std::result::Result<T, E>
+where
+    T: Send + 'static,
+    E: From<io::Error> + Send + 'static,
+{
+    match tokio::task::try_id() {
+        Some(_) => work.await,
+        None => on_runtime(work).await,
     }
 }
 
@@ -722,7 +776,15 @@ impl Mutation {
         let allowed = shared.backoff.lock().unwrap().allows(version);
         let due = self.checkpoint || (snapshot.due() && allowed);
         let (staged, failed) = match snapshot.changes(&mut files, &mut records) && due {
-            true => match snapshot.checkpoint().await {
+            // Built and put (compressing the pack, uploading it) as a task of
+            // the runtime: not on the thread that polls the flush (an SDK's
+            // own, say), and aborted with it if the flush is dropped.
+            true => match on_runtime({
+                let snapshot = snapshot.clone();
+                async move { snapshot.checkpoint().await }
+            })
+            .await
+            {
                 Ok(staged) => (Some(staged), None),
                 Err(error) => {
                     shared.backoff(|backoff| backoff.failed(version));
