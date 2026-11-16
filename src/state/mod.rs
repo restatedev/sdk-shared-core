@@ -280,9 +280,13 @@ impl Drop for Collecting<'_> {
 /// it waits for, such as a request). Without one (a current-thread runtime,
 /// or none), `work` runs here. A task the runtime cancels (shutting down)
 /// fails, as a checkpoint that failed.
-async fn on_runtime<T: Send + 'static>(
-    work: impl Future<Output = io::Result<T>> + Send + 'static,
-) -> io::Result<T> {
+pub(crate) async fn on_runtime<T, E>(
+    work: impl Future<Output = std::result::Result<T, E>> + Send + 'static,
+) -> std::result::Result<T, E>
+where
+    T: Send + 'static,
+    E: From<io::Error> + Send + 'static,
+{
     use tokio::runtime::{Handle, RuntimeFlavor};
     match Handle::try_current() {
         Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
@@ -298,12 +302,29 @@ async fn on_runtime<T: Send + 'static>(
                 Ok(result) => result,
                 Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
                 // Not by the drop above, which leaves no one to await it.
-                Err(error) => Err(io::Error::other(format!(
-                    "the runtime cancelled it: {error}"
-                ))),
+                Err(error) => {
+                    Err(io::Error::other(format!("the runtime cancelled it: {error}")).into())
+                }
             }
         }
         _ => work.await,
+    }
+}
+
+/// [`on_runtime`], unless polled in a task already: then `work` runs here.
+/// Polled outside one, on a host's own thread (as the Node addon polls a
+/// call once in place, before it spawns it), it runs on the runtime, and
+/// the host's thread only waits.
+pub(crate) async fn off_host_thread<T, E>(
+    work: impl Future<Output = std::result::Result<T, E>> + Send + 'static,
+) -> std::result::Result<T, E>
+where
+    T: Send + 'static,
+    E: From<io::Error> + Send + 'static,
+{
+    match tokio::task::try_id() {
+        Some(_) => work.await,
+        None => on_runtime(work).await,
     }
 }
 

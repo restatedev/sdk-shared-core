@@ -94,7 +94,7 @@ fn a_flush_into_a_mutation_rejects_an_engine_wal_not_checkpointed() -> Result<()
         let store = baseline().await?;
         let db = open(Arc::new(store.clone())).await?;
         // Committed in the engine alone, as no call of the session leaves it.
-        let mut session = db.session.lock().await;
+        let mut session = db.shared.session.lock().await;
         let engine = session.engine()?;
         engine.execute(UPDATE).await?;
         assert!(engine.io.wal_len() > 0);
