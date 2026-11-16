@@ -90,30 +90,27 @@ pub struct PageCacheConfig {
     /// gives the flushers more room before they wait (and evicted values
     /// queue, and past the queue's bound are dropped).
     pub disk_block: usize,
-    /// The disk tier's writers ([`BlockEngineConfig::with_flushers`]): each
-    /// has one write in flight, and the values of an eviction go to one of
-    /// them by hash.
+    /// The disk tier's writers ([`BlockEngineConfig::with_flushers`]), each
+    /// with one write in flight and its share of [`Self::disk_buffer`] (at
+    /// least 4 MiB: fewer writers if the buffer is small). An evicted value
+    /// goes to one of them by hash.
     pub disk_flushers: usize,
-    /// Bytes the disk tier's writers fill before a write, split between them;
-    /// each keeps two of its share (one filling, one written), so this costs
-    /// twice its size, held for good.
+    /// Bytes the disk tier's writers fill while their writes are in flight,
+    /// split between them. A writer takes every evicted value sent to it into
+    /// its buffer at once, so this, not a queue, is how far writes may lag:
+    /// a value that does not fit is not written (and a later read of it goes
+    /// to the store). Each writer keeps two of its share (one filling, one
+    /// written), and the values in both stay held until written, so this
+    /// costs twice its size for good, and up to twice again while writes lag.
     pub disk_buffer: usize,
-    /// Bytes of evicted values waiting for a writer, past which the next
-    /// evicted values are not written (and a later read of them goes to the
-    /// store). Held only while the writers lag.
-    pub disk_queue: usize,
     /// Clean blocks kept ready for the writers, and the reclaims that make
-    /// them: a writer that fills its block waits for a clean one.
+    /// them: a writer that fills its block waits for a clean one. Every block
+    /// starts clean, so this matters once the disk tier has been filled.
     pub disk_clean_blocks: usize,
-    /// Threads of the disk tier's own tokio runtime, on which its writes,
-    /// reclaims and reads run; 0 runs them on the caller's runtime, where
-    /// they wait behind its other tasks.
+    /// Threads of the disk tier's own tokio runtime, on which its writers,
+    /// reclaims and reads (its tasks, not their blocking I/O) run; 0 runs
+    /// them on the caller's runtime, where they wait behind its other tasks.
     pub disk_threads: usize,
-    /// Open the disk tier's file with `O_DIRECT` (Linux only; elsewhere
-    /// ignored): its reads and writes bypass the OS page cache, so the file
-    /// takes none of the process's memory (a container's, say), and every
-    /// read of it is a read of the device.
-    pub disk_direct: bool,
     /// Bytes of the namespaces' writers kept, each weighing 256: least
     /// recently used go first, and one forgotten only makes its next flush
     /// wait for an owner's open to read the head again.
@@ -147,12 +144,10 @@ impl PageCacheConfig {
             memory,
             disk,
             disk_block: 16 << 20,
-            disk_flushers: 2,
-            disk_buffer: 16 << 20,
-            disk_queue: 64 << 20,
+            disk_flushers: 1,
+            disk_buffer: 32 << 20,
             disk_clean_blocks: 2,
             disk_threads: 1,
-            disk_direct: false,
             namespace_bytes: 256 << 20,
             parked_bytes: 64 << 20,
         }
@@ -241,21 +236,27 @@ impl PageCache {
             let n = TEMPORARY.fetch_add(1, Relaxed);
             std::env::temp_dir().join(format!("state-cache-{}-{n}", std::process::id()))
         });
-        let device = FileDeviceBuilder::new(&file).with_capacity(config.disk);
-        #[cfg(target_os = "linux")]
-        let device = device.with_direct(config.disk_direct);
-        let device = device.build().map_err(io::Error::other)?;
+        let device = FileDeviceBuilder::new(&file)
+            .with_capacity(config.disk)
+            .build()
+            .map_err(io::Error::other)?;
         let counters = Counters::default();
+        // Each writer's share of the buffer at least 4 MiB (and a page).
+        let flushers = (config.disk_flushers)
+            .min(config.disk_buffer / (4 << 20))
+            .max(1);
         let engine = BlockEngineConfig::new(device)
             .with_block_size(config.disk_block)
-            .with_flushers(config.disk_flushers.max(1))
-            .with_buffer_pool_size(config.disk_buffer)
-            .with_submit_queue_size_threshold(config.disk_queue)
+            .with_flushers(flushers)
+            .with_buffer_pool_size(config.disk_buffer.max(flushers * 4096))
             .with_reclaimers(config.disk_clean_blocks.max(1))
             .with_clean_block_threshold(config.disk_clean_blocks.max(1));
         let values = HybridCacheBuilder::new()
             .with_name("state-values")
             .with_metrics_registry(Box::new(counters.clone()))
+            // The disk tier starts empty in every process, and a temporary
+            // file is unlinked: what memory holds is not written out on close.
+            .with_flush_on_close(false)
             .memory(config.memory)
             .with_shards(MEMORY_SHARDS)
             .with_weighter(|key: &ValueKey, value: &Bytes| {
@@ -903,10 +904,10 @@ mod tests;
 
 /// What a [`PageCache`] has done since it opened ([`PageCache::stats`]), as
 /// foyer counts it. An evicted value goes to the disk tier unless it is
-/// dropped: `disk_enqueued` counts those offered, `dropped_queue` those the
-/// writers' queue was too full to take, `dropped_buffer` those that did not
-/// fit a writer's buffer, and `skipped_on_disk` those read from the disk
-/// and still there.
+/// dropped: `disk_enqueued` counts those offered, `skipped_on_disk` those
+/// read from the disk and still there (not written again), `dropped_buffer`
+/// those that did not fit a writer's buffer ([`PageCacheConfig::disk_buffer`]),
+/// and `dropped_queue` those sent while a writer was not taking any.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CacheStats {
     /// Lookups the memory tier answered.
@@ -919,8 +920,8 @@ pub struct CacheStats {
     pub disk_hits: u64,
     /// Lookups neither tier answered.
     pub disk_misses: u64,
-    /// Evicted values dropped: the writers' queue was past
-    /// [`PageCacheConfig::disk_queue`].
+    /// Evicted values dropped: a writer's queue was full (it was not polled
+    /// in time to take them into its buffer).
     pub dropped_queue: u64,
     /// Evicted values dropped: a writer's buffer had no room while its
     /// write was in flight.
