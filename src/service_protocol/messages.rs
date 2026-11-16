@@ -1,5 +1,5 @@
-use crate::service_protocol::{MessageHeader, MessageType, NotificationResult};
-use crate::Version;
+use super::{MessageFlags, MessageHeader, MessageType, NotificationResult};
+use crate::{Error, Version};
 use bytes::{BufMut, Bytes, BytesMut};
 use pastey::paste;
 use std::borrow::Cow;
@@ -86,24 +86,21 @@ macro_rules! impl_message_traits {
 impl_message_traits!(Start: core);
 impl_message_traits!(Error: core);
 impl_message_traits!(End: core);
-impl_message_traits!(ProposeRunCompletion: message);
+impl_message_traits!(CommandAck: core);
+impl_message_traits!(ProposeRunCompletion: core);
 impl_message_traits!(AwaitingOn: core);
 impl_message_traits!(ProposeRunCompletionAck: core);
 impl_message_traits!(GetStateEphemeralCommand: core);
 impl_message_traits!(GetStateEphemeralNotification: core);
 
-impl RestateEncodableMessage for ProposeRunCompletionMessage {
-    fn encode(&self, service_protocol_version: Version) -> Bytes {
-        if service_protocol_version >= Version::V7 {
-            // The shared core in Protocol V7+ always expects from the runtime a ProposeRunCompletionAck instead of RunCompletionMessage.
-            // To enable this behavior in the runtime, we must send `requested_ack`.
-            // See AsyncResultsState::cache_run_completion for more details.
-            encode_message_with_custom_header(self, |t, len| {
-                MessageHeader::new_with_requested_ack(t, true, len)
-            })
-        } else {
-            encode_message(self)
-        }
+/// Encodes the wrapped message with the provided flags
+pub(crate) struct WithFlags<'a, M>(pub(crate) &'a M, pub(crate) &'a [MessageFlags]);
+
+impl<M: RestateMessage> RestateEncodableMessage for WithFlags<'_, M> {
+    fn encode(&self, _: Version) -> Bytes {
+        encode_message_with_custom_header(self.0, |t, len| {
+            MessageHeader::new_with_flags(t, len, self.1)
+        })
     }
 }
 
@@ -1074,6 +1071,31 @@ impl From<NotificationResult> for crate::Value {
                     .map(|b| String::from_utf8_lossy(b).to_string())
                     .collect(),
             ),
+        }
+    }
+}
+
+impl From<&Error> for ErrorMessage {
+    fn from(value: &Error) -> ErrorMessage {
+        Self {
+            code: value.code as u32,
+            message: value.message.clone().into_owned(),
+            stacktrace: value.stacktrace.clone(),
+            related_command_index: value.related_command.as_ref().map(|cmd| cmd.index),
+            related_command_name: value
+                .related_command
+                .as_ref()
+                .and_then(|rc| rc.name.as_ref())
+                .filter(|&name| !name.is_empty())
+                .map(|name| name.clone().into_owned()),
+            related_command_type: value
+                .related_command
+                .as_ref()
+                .map(|cmd| u16::from(cmd.ty).into()),
+            next_retry_delay: value.next_retry_delay.map(|d|
+                // Saturate if duration is too large
+                u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            behavior: i32::from(value.behavior),
         }
     }
 }

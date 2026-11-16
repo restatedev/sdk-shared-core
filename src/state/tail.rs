@@ -178,7 +178,7 @@ impl Tiered {
     }
 
     /// Put a flush's tail entry (`parts`) and its head, and delete the tail
-    /// entries `deletes`; then sync.
+    /// entries `deletes`; then sync, with the head ([`KvStore::put_and_sync`]).
     pub(super) async fn write(
         &self,
         head: &Head,
@@ -191,8 +191,7 @@ impl Tiered {
         for key in deletes {
             self.restate.delete(key)?;
         }
-        self.restate.put(HEAD_KEY, head.encode())?;
-        self.restate.sync().await
+        self.restate.put_and_sync(HEAD_KEY, head.encode()).await
     }
 
     /// The packs `head`'s checkpoints need: those their manifests name.

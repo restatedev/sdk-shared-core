@@ -87,7 +87,7 @@ impl CoreVM {
 
                         if !was_closed {
                             // We write it out only if it wasn't closed before
-                            self.context.output.send(&e.as_error_message());
+                            self.context.output.send(&ErrorMessage::from(&e));
                             self.context.output.send_eof();
                         }
 
@@ -95,31 +95,6 @@ impl CoreVM {
                     }
                 }
             }
-        }
-    }
-}
-
-impl Error {
-    fn as_error_message(&self) -> ErrorMessage {
-        ErrorMessage {
-            code: self.code as u32,
-            message: self.message.clone().into_owned(),
-            stacktrace: self.stacktrace.clone(),
-            related_command_index: self.related_command.as_ref().map(|cmd| cmd.index),
-            related_command_name: self
-                .related_command
-                .as_ref()
-                .and_then(|rc| rc.name.as_ref())
-                .filter(|&name| !name.is_empty())
-                .map(|name| name.clone().into_owned()),
-            related_command_type: self
-                .related_command
-                .as_ref()
-                .map(|cmd| u16::from(cmd.ty).into()),
-            next_retry_delay: self.next_retry_delay.map(|d|
-                    // Saturate if duration is too large
-                    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
-            behavior: i32::from(self.behavior),
         }
     }
 }

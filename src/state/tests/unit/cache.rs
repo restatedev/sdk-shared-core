@@ -126,6 +126,8 @@ fn a_put_the_store_refuses_keeps_nothing() {
         let entry = tail_key(3, 0xabc, 0);
         assert!(store.put(&entry, value(2)).is_err());
         assert_eq!(cache.value(&entry).await, None);
+        assert!(store.put_and_sync(&entry, value(2)).await.is_err());
+        assert_eq!(cache.value(&entry).await, None);
     })
 }
 

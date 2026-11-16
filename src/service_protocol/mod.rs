@@ -14,7 +14,7 @@ pub(crate) mod messages;
 mod version;
 
 pub(crate) use encoding::{Decoder, DecodingError, Encoder, RawMessage};
-pub(crate) use header::{MessageHeader, MessageType};
+pub(crate) use header::{MessageFlags, MessageHeader, MessageType};
 pub(crate) use version::ContentTypeError;
 pub use version::Version;
 

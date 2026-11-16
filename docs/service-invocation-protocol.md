@@ -119,7 +119,8 @@ Each message on the stream is prefixed by a fixed 64-bit header:
 
 - **Type** (16 bits): identifies the message kind. See [Message types](#message-types).
 - **A** (1 bit, MSB of the flag block): `REQUESTED_ACK` flag. Only meaningful for message types that
-  opt into ack semantics (see [Run mechanics](#run-mechanics)). All other types MUST set this bit to zero.
+  opt into ack semantics: commands (see [Command acks](#command-acks)) and `ProposeRunCompletionMessage`
+  (see [Run mechanics](#run-mechanics)). All other types MUST set this bit to zero.
 - **Reserved flags** (15 bits)
 - **Length** (32 bits): length in bytes of the serialized message payload, excluding the header.
 
@@ -293,6 +294,16 @@ It uses a small dedicated protocol layered on top of the journal model.
 `ProposeRunCompletionAckMessage` is ordered relative to other notifications. On replay the SDK MUST
 observe the same relative order; the position previously occupied by the ack is now filled by the
 `RunCompletionNotificationMessage` that the runtime persisted — the result replaces the ack.
+
+## Command acks
+
+Any command MAY set the `REQUESTED_ACK` flag. Once the runtime stored the command, it replies with a
+`CommandAckMessage` carrying the command's index in the journal, counting every command (the input
+command is index 0). The runtime stores an invocation's commands in order, so the ack of a command
+means every command sent before it is stored too.
+
+Acks are neither recorded in the journal nor replayed, and the runtime sends them only while the
+request stream is open.
 
 ## Suspension and await tracking
 

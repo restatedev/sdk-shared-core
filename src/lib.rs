@@ -1,6 +1,7 @@
 #[cfg(feature = "cloud_keys")]
 pub mod cloud_keys;
 pub mod error;
+pub mod explicit_recovery;
 pub mod fmt;
 mod headers;
 #[cfg(feature = "request_identity")]

@@ -1,6 +1,7 @@
 mod async_result;
 mod calls;
 mod ephemeral_state_get;
+mod explicit_recovery;
 mod failures;
 mod implicit_cancellation;
 mod input_output;
@@ -152,9 +153,13 @@ struct OutputIterator(Decoder);
 
 impl OutputIterator {
     fn collect_vm(vm: &mut impl VM) -> Self {
+        Self::from_take_output(|| vm.take_output())
+    }
+
+    fn from_take_output(mut take_output: impl FnMut() -> Bytes) -> Self {
         let mut decoder = Decoder::new(Version::maximum_supported_version());
         loop {
-            let b = vm.take_output();
+            let b = take_output();
             if b.is_empty() {
                 break;
             }
