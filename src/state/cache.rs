@@ -87,8 +87,8 @@ pub struct PageCacheConfig {
     /// 16 MiB, foyer's own default, unless the disk is small
     /// ([`Self::sized`]). A flush that fills its block waits for a clean one,
     /// which a reclaim makes by evicting a whole block, so a larger block
-    /// gives the flushers more room before they wait (and evicted values
-    /// queue, and past the queue's bound are dropped).
+    /// gives the writers more room before they wait (and their buffers fill,
+    /// and evicted values that do not fit are dropped).
     pub disk_block: usize,
     /// The disk tier's writers ([`BlockEngineConfig::with_flushers`]), each
     /// with one write in flight and its share of [`Self::disk_buffer`] (at
@@ -102,6 +102,7 @@ pub struct PageCacheConfig {
     /// to the store). Each writer keeps two of its share (one filling, one
     /// written), and the values in both stay held until written, so this
     /// costs twice its size for good, and up to twice again while writes lag.
+    /// A share under a value's size (up to 1 MiB) never takes that value.
     pub disk_buffer: usize,
     /// Clean blocks kept ready for the writers, and the reclaims that make
     /// them: a writer that fills its block waits for a clean one. Every block
@@ -155,11 +156,14 @@ impl PageCacheConfig {
 
     /// As [`PageCacheConfig::new`], with the namespaces' writers and the parked
     /// values bounded by `memory` too, so that a small cache keeps little,
-    /// and disk blocks small enough that a small disk has 4 of them to reclaim.
+    /// disk blocks small enough that a small disk has 4 of them to reclaim,
+    /// and a write buffer no larger than an eighth of the disk (at least
+    /// 2 MiB), so that one batch never spans the blocks a wrap reclaims.
     pub fn sized(memory: usize, disk: usize) -> Self {
         let config = Self::new(memory, disk);
         Self {
             disk_block: config.disk_block.min((disk / 4).max(64 << 10)),
+            disk_buffer: config.disk_buffer.min((disk / 8).max(2 << 20)),
             namespace_bytes: config.namespace_bytes.min(memory),
             parked_bytes: config.parked_bytes.min(memory),
             ..config
@@ -188,6 +192,9 @@ pub fn parse_size(value: &str) -> Option<usize> {
 ///
 /// Parked values live here and may refer back to its namespace's handle, so
 /// handles only reach it weakly: dropping the last `PageCache` drops it.
+/// It is meant to live as long as the process: foyer's writer tasks keep
+/// themselves (and the disk tier's runtime, its buffers and its file) alive
+/// past a drop.
 #[derive(Clone)]
 pub struct PageCache {
     shared: Arc<Shared>,
@@ -916,7 +923,8 @@ pub struct CacheStats {
     pub memory_evictions: u64,
     /// Evicted values offered to the disk tier.
     pub disk_enqueued: u64,
-    /// Lookups the disk tier answered.
+    /// Lookups the disk tier answered from its file: not those of values
+    /// evicted and not yet written, which it answers from memory.
     pub disk_hits: u64,
     /// Lookups neither tier answered.
     pub disk_misses: u64,

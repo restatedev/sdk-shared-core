@@ -358,15 +358,19 @@ fn evicted_values_are_written_to_disk_and_counted() {
         for n in 0..64 {
             namespace.keep_value(&format!("v{n}"), &value(n));
         }
+        // Every value is read back; one whose write is still in flight is
+        // answered from foyer's memory, so read until some come from the file.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while cache.stats().disk_written_bytes == 0 && std::time::Instant::now() < deadline {
+        loop {
+            for n in 0..64 {
+                let read = namespace.value(&format!("v{n}")).await;
+                assert_eq!(read, Some(value(n)), "v{n}");
+            }
+            if cache.stats().disk_hits > 0 || std::time::Instant::now() > deadline {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(
-            namespace.value("v0").await,
-            Some(value(0)),
-            "read from disk"
-        );
         let stats = cache.stats();
         assert!(stats.memory_evictions > 0, "{stats:?}");
         assert!(stats.disk_enqueued > 0, "{stats:?}");
