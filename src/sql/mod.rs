@@ -536,7 +536,10 @@ impl Database {
     /// a storage error or a cancelled call ends it. A call that is running
     /// does not change the answer until it ends.
     pub fn is_usable(&self) -> bool {
-        self.shared.usable.load(Ordering::Acquire)
+        // `abandoned` only ever turns true, so a dropped call ends the
+        // answer here even if its task, not yet aborted, stores `usable`
+        // after the drop did.
+        self.shared.usable.load(Ordering::Acquire) && !self.shared.abandoned.load(Ordering::Acquire)
     }
 
     /// The record `name` as this session holds it: as the last commit that

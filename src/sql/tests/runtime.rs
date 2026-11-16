@@ -125,3 +125,62 @@ fn a_call_dropped_on_the_runtime_ends_its_session() -> Result<()> {
     );
     Ok(())
 }
+
+/// A store whose next put, once armed, says it started and blocks until
+/// released: a call's task that is in it cannot be aborted until it returns.
+#[derive(Default)]
+struct BlockingPut {
+    values: Mutex<BTreeMap<String, Bytes>>,
+    armed: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+impl KvStore for BlockingPut {
+    fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, io::Result<Option<Bytes>>> {
+        Box::pin(async move { Ok(self.values.lock().unwrap().get(key).cloned()) })
+    }
+    fn put(&self, key: &str, value: Bytes) -> io::Result<()> {
+        let armed = self.armed.lock().unwrap().take();
+        if let Some((started, release)) = armed {
+            let _ = started.send(());
+            let _ = release.recv();
+        }
+        self.values.lock().unwrap().insert(key.into(), value);
+        Ok(())
+    }
+    fn delete(&self, key: &str) -> io::Result<()> {
+        self.values.lock().unwrap().remove(key);
+        Ok(())
+    }
+    fn sync(&self) -> BoxFuture<'_, io::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A call dropped while its task is inside a blocking put, which then
+/// finishes without yielding, still leaves the session unusable.
+#[test]
+fn a_call_dropped_while_its_task_cannot_stop_leaves_the_session_unusable() -> Result<()> {
+    use std::{sync::mpsc, time::Duration};
+    let runtime = runtime()?;
+    let store = Arc::new(BlockingPut::default());
+    let db = runtime.block_on(Database::open(store.clone()).into_future())?;
+    runtime.block_on(db.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)"))?;
+    let (started, put_started) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    *store.armed.lock().unwrap() = Some((started, released));
+    {
+        let mut call = Box::pin(db.execute("INSERT INTO t VALUES (1)"));
+        let _entered = runtime.enter();
+        let _ = call.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        put_started
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the call's task reached its put");
+        // Dropped here, while its task is blocked in the put.
+    }
+    release.send(()).unwrap();
+    // The task now finishes its call; give it time to.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!db.is_usable(), "usable after a dropped call");
+    assert!(runtime.block_on(db.query("SELECT 1")).is_err());
+    Ok(())
+}
