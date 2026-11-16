@@ -103,15 +103,24 @@ fn a_call_polled_outside_a_task_runs_on_the_runtime() -> Result<()> {
 /// state before it or after it.
 #[test]
 fn a_call_dropped_on_the_runtime_ends_its_session() -> Result<()> {
+    use std::sync::mpsc;
     let runtime = runtime()?;
-    let store = Arc::new(Threads::default());
+    let store = Arc::new(BlockingPut::default());
     let db = runtime.block_on(Database::open(store.clone()).into_future())?;
     runtime.block_on(db.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)"))?;
+    // Its put held until the call is dropped, so the call cannot finish
+    // before it is: an immediately ready store let a fast worker finish it
+    // within the poll in place, and a call that returned is not dropped.
+    let (started, _put_started) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    *store.armed.lock().unwrap() = Some((started, released));
     {
         let mut call = Box::pin(db.execute("INSERT INTO t VALUES (1)"));
         let _entered = runtime.enter();
-        let _ = call.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        let polled = call.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        assert!(polled.is_pending(), "the call finished in place");
     }
+    release.send(()).unwrap();
     assert!(!db.is_usable());
     let ended = runtime.block_on(db.query("SELECT count(*) FROM t"));
     assert!(ended.is_err(), "the session went on after a dropped call");
