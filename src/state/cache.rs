@@ -83,7 +83,12 @@ pub struct PageCacheConfig {
     pub memory: usize,
     /// Bytes of the disk tier.
     pub disk: usize,
-    /// Bytes per disk block, the unit the disk tier writes and reclaims.
+    /// Bytes per disk block, the unit the disk tier writes and reclaims:
+    /// 16 MiB, foyer's own default, unless the disk is small
+    /// ([`Self::sized`]). A flush that fills its block waits for a clean one,
+    /// which a reclaim makes by evicting a whole block, so a larger block
+    /// gives the flushers more room before they wait (and evicted values
+    /// queue, and past the queue's bound are dropped).
     pub disk_block: usize,
     /// Bytes of the namespaces' writers kept, each weighing 256: least
     /// recently used go first, and one forgotten only makes its next flush
@@ -117,7 +122,7 @@ impl PageCacheConfig {
             file: None,
             memory,
             disk,
-            disk_block: 4 << 20,
+            disk_block: 16 << 20,
             namespace_bytes: 256 << 20,
             parked_bytes: 64 << 20,
         }
