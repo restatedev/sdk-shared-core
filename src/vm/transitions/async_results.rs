@@ -138,7 +138,11 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                     }
 
                     // Some run still executing; it's not time to suspend yet!
-                    if waiting_run_proposal {
+                    // This includes runs outside the awaited future (e.g. started by another
+                    // concurrent flow of the user code): suspending closes the VM, so their
+                    // proposed completion would be dropped, and they would be executed again
+                    // on the next attempt.
+                    if run_state.any_executing() {
                         return Ok((
                             self,
                             Ok(AwaitResponse::WaitingExternalProgress {

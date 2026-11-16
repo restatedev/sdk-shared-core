@@ -352,6 +352,90 @@ fn enter_then_notify_input_closed_then_propose_completion() {
     assert_eq!(output.next(), None);
 }
 
+/// A run that is executing but not part of the awaited future (e.g. started by another concurrent
+/// flow of the user code) must still be allowed to propose its completion before suspending,
+/// otherwise its result is dropped and the run is executed again on the next attempt.
+#[test]
+fn input_closed_waits_for_executing_run_outside_awaited_future() {
+    let mut output = VMTestCase::new()
+        .input(StartMessage {
+            id: Bytes::from_static(b"123"),
+            debug_id: "123".to_string(),
+            known_entries: 1,
+            partial_state: false,
+            ..Default::default()
+        })
+        .input(input_entry_message(b"my-data"))
+        .run_without_closing_input(|vm, _| {
+            vm.sys_input().unwrap();
+
+            let RunHandle { replayed, handle } = vm.sys_run("my-side-effect".to_owned()).unwrap();
+            assert!(!replayed);
+            assert_eq!(
+                vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
+                AwaitResponse::ExecuteRun(handle)
+            );
+
+            // Another flow awaits a sleep, while the run is still executing
+            let sleep_handle = vm
+                .sys_sleep(Default::default(), Duration::from_secs(60), None)
+                .unwrap();
+
+            vm.notify_input_closed();
+
+            assert_eq!(
+                vm.do_await(UnresolvedFuture::Single(sleep_handle)).unwrap(),
+                AwaitResponse::WaitingExternalProgress {
+                    waiting_input: false,
+                    waiting_run_proposal: true
+                }
+            );
+
+            vm.propose_run_completion(
+                handle,
+                RunExitResult::Success(Bytes::from_static(b"123")),
+                RetryPolicy::default(),
+            )
+            .unwrap();
+
+            // Now nothing is executing anymore, we can suspend
+            assert_that!(
+                vm.do_await(UnresolvedFuture::Single(sleep_handle)),
+                err(is_suspended())
+            );
+        });
+
+    assert_that!(
+        output.next_decoded::<RunCommandMessage>().unwrap(),
+        eq(RunCommandMessage {
+            name: "my-side-effect".to_owned(),
+            result_completion_id: 1
+        })
+    );
+    assert_that!(
+        output.next_decoded::<SleepCommandMessage>().unwrap(),
+        pat!(SleepCommandMessage {
+            result_completion_id: eq(2)
+        })
+    );
+    assert_eq!(
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap(),
+        ProposeRunCompletionMessage {
+            result_completion_id: 1,
+            result: Some(propose_run_completion_message::Result::Value(
+                Bytes::from_static(b"123")
+            )),
+        }
+    );
+    assert_that!(
+        output.next_decoded::<SuspensionMessage>().unwrap(),
+        suspended_waiting_completion(2)
+    );
+    assert_eq!(output.next(), None);
+}
+
 #[test]
 fn replay_without_completion() {
     let mut output = VMTestCase::new()
