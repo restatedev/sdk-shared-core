@@ -115,14 +115,15 @@ futures = { version = "0.3", optional = true }
 parking_lot = { version = "0.12", features = ["send_guard"], optional = true }
 # Pages: zstd frames, a delta against the page before as the reference prefix.
 zstd-safe = { version = "7.2", default-features = false, features = ["std"], optional = true }
-# Pinned with its subcrates (which foyer itself takes as `^0.22.3`): 0.22.4 to
-# 0.22.6 print a debug line to stdout whenever a file device opens. No
-# Cargo.lock is committed, so the pins are here.
-foyer = { version = "=0.22.3", optional = true }
-foyer-common = { version = "=0.22.3", optional = true }
-foyer-memory = { version = "=0.22.3", optional = true }
-foyer-storage = { version = "=0.22.3", optional = true }
-foyer-tokio = { version = "=0.22.3", optional = true }
+# Pinned with its subcrates, which move together (foyer takes them as `^`).
+# 0.22.4 to 0.22.6 print `==========> <capacity>` to stdout once each time
+# a file device is built (foyer-storage src/io/device/file.rs), so once per
+# page cache. No Cargo.lock is committed, so the pins are here.
+foyer = { version = "=0.22.6", optional = true }
+foyer-common = { version = "=0.22.6", optional = true }
+foyer-memory = { version = "=0.22.6", optional = true }
+foyer-storage = { version = "=0.22.6", optional = true }
+foyer-tokio = { version = "=0.22.6", optional = true }
 tokio = { version = "1.49", default-features = false, features = ["rt"], optional = true }
 object_store = { version = "0.14", optional = true, default-features = false }
 url = { version = "2.5", optional = true }
