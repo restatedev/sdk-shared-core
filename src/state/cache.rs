@@ -94,7 +94,22 @@ pub struct PageCacheConfig {
     pub parked_bytes: usize,
 }
 
+impl Default for PageCacheConfig {
+    /// [`Self::MEMORY`] and [`Self::DISK`], in a temporary file.
+    fn default() -> Self {
+        Self::sized(Self::MEMORY, Self::DISK)
+    }
+}
+
 impl PageCacheConfig {
+    /// The default bytes of the memory tier.
+    pub const MEMORY: usize = 256 << 20;
+
+    /// The default bytes of the disk tier: the pages of some 5,000 sessions
+    /// of 1.5 MB each. The file is sized, not filled: its blocks are taken
+    /// as the tier writes them.
+    pub const DISK: usize = 8 << 30;
+
     /// `memory` bytes of packs' ranges in memory, and `disk` in a temporary
     /// file.
     pub fn new(memory: usize, disk: usize) -> Self {
