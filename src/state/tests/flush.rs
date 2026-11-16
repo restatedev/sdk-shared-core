@@ -48,6 +48,63 @@ impl KvStore for Unlisted {
     }
 }
 
+/// A store that logs its writes and syncs.
+struct Logged(Arc<MemoryKv>, std::sync::Mutex<Vec<String>>);
+
+impl Logged {
+    fn log(&self, what: String) {
+        self.1.lock().unwrap().push(what);
+    }
+}
+
+impl KvStore for Logged {
+    fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, io::Result<Option<Bytes>>> {
+        self.0.get(key)
+    }
+    fn put(&self, key: &str, value: Bytes) -> io::Result<()> {
+        self.log(format!("put {key}"));
+        self.0.put(key, value)
+    }
+    fn delete(&self, key: &str) -> io::Result<()> {
+        self.log(format!("delete {key}"));
+        self.0.delete(key)
+    }
+    fn sync(&self) -> BoxFuture<'_, io::Result<()>> {
+        self.log("sync".to_owned());
+        self.0.sync()
+    }
+    fn put_and_sync<'a>(&'a self, key: &'a str, value: Bytes) -> BoxFuture<'a, io::Result<()>> {
+        self.log(format!("put_and_sync {key}"));
+        Box::pin(async move {
+            self.0.put(key, value)?;
+            self.0.sync().await
+        })
+    }
+}
+
+/// A flush syncs with its head, its last write, rather than after it: a store can make that
+/// one step (Restate acknowledges the head's put).
+#[test]
+fn a_flush_syncs_with_its_head() -> Result<()> {
+    futures::executor::block_on(async {
+        let store = Arc::new(Logged(Arc::new(MemoryKv::default()), Default::default()));
+        let state = State::open(store.clone()).await?;
+        store.1.lock().unwrap().clear();
+        let mut mutation = state.mutation();
+        mutation.set_record("outbox", "1".into())?;
+        mutation.write(0, Some(page(1)))?;
+        mutation.flush().await?;
+        let log = store.1.lock().unwrap().clone();
+        assert_eq!(
+            log.last().map(String::as_str),
+            Some("put_and_sync v22/head"),
+            "{log:?}"
+        );
+        assert!(!log.iter().any(|what| what == "sync"), "{log:?}");
+        Ok(())
+    })
+}
+
 /// The state reads as last flushed, whatever a mutation holds, until that mutation
 /// flushes; a second mutation flushes on top of the first.
 #[test]

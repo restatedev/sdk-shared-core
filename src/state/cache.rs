@@ -594,6 +594,19 @@ impl KvStore for CachedKv {
         self.store.sync()
     }
 
+    fn put_and_sync<'a>(&'a self, key: &'a str, value: Bytes) -> BoxFuture<'a, io::Result<()>> {
+        if !immutable(key) {
+            return self.store.put_and_sync(key, value);
+        }
+        let synced = self.store.put_and_sync(key, value.clone());
+        Box::pin(async move {
+            synced.await?;
+            // Kept once stored, never if the put failed.
+            self.cache.keep_value(key, &value);
+            Ok(())
+        })
+    }
+
     fn keys(&self) -> BoxFuture<'_, io::Result<Vec<String>>> {
         self.store.keys()
     }

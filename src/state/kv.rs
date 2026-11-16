@@ -30,6 +30,15 @@ pub trait KvStore: Send + Sync {
     fn delete(&self, key: &str) -> io::Result<()>;
     /// Wait until every write issued so far is durable.
     fn sync(&self) -> BoxFuture<'_, io::Result<()>>;
+    /// [`KvStore::put`], then wait until it, and so every write before it, is durable: a put and a
+    /// [`KvStore::sync`], which a store may do in one step (Restate acknowledges the put). The put
+    /// is queued when this is called, as [`KvStore::put`]'s is.
+    fn put_and_sync<'a>(&'a self, key: &'a str, value: Bytes) -> BoxFuture<'a, io::Result<()>> {
+        match self.put(key, value) {
+            Ok(()) => self.sync(),
+            Err(error) => Box::pin(futures::future::ready(Err(error))),
+        }
+    }
     /// Every key, stored or written since, as Restate's `getKeys`: what
     /// checkpoints kept here need, to delete the packs no checkpoint needs. A store that cannot fails with
     /// [`io::ErrorKind::Unsupported`]; its garbage stays.
