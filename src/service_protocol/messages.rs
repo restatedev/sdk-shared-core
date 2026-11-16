@@ -1,5 +1,5 @@
 use super::{MessageFlags, MessageHeader, MessageType, NotificationResult};
-use crate::Version;
+use crate::{Error, Version};
 use bytes::{BufMut, Bytes, BytesMut};
 use pastey::paste;
 use std::borrow::Cow;
@@ -1071,6 +1071,31 @@ impl From<NotificationResult> for crate::Value {
                     .map(|b| String::from_utf8_lossy(b).to_string())
                     .collect(),
             ),
+        }
+    }
+}
+
+impl From<&Error> for ErrorMessage {
+    fn from(value: &Error) -> ErrorMessage {
+        Self {
+            code: value.code as u32,
+            message: value.message.clone().into_owned(),
+            stacktrace: value.stacktrace.clone(),
+            related_command_index: value.related_command.as_ref().map(|cmd| cmd.index),
+            related_command_name: value
+                .related_command
+                .as_ref()
+                .and_then(|rc| rc.name.as_ref())
+                .filter(|&name| !name.is_empty())
+                .map(|name| name.clone().into_owned()),
+            related_command_type: value
+                .related_command
+                .as_ref()
+                .map(|cmd| u16::from(cmd.ty).into()),
+            next_retry_delay: value.next_retry_delay.map(|d|
+                // Saturate if duration is too large
+                u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            behavior: i32::from(value.behavior),
         }
     }
 }
