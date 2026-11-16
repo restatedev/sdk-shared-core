@@ -11,7 +11,9 @@ use crate::service_protocol::messages::{
     GetStateEphemeralNotificationMessage, InputCommandMessage, RunCommandMessage, StartMessage,
     WithFlags,
 };
-use crate::service_protocol::{MessageFlags, MessageType, NotificationId, RawMessage};
+use crate::service_protocol::{
+    MessageFlags, MessageType, NotificationId, RawMessage, CANCEL_SIGNAL_ID,
+};
 use crate::vm::errors::{
     known_entries_is_zero, unexpected_entry_message, unexpected_input_message,
     BadEagerStateKeyError,
@@ -141,10 +143,14 @@ impl Transition<Context, NewEarlierEntry> for State {
             }
             earlier_entries.commands += 1;
         } else if ty.is_notification() {
-            // Either a run that completed, or a completion no one needs anymore. Signals,
-            // the cancellation included, are dropped for now.
-            if let NotificationId::CompletionId(completion_id) = msg.decode_as_notification()?.id {
-                earlier_entries.open_runs.remove(&completion_id);
+            match msg.decode_as_notification()?.id {
+                // Either a run that completed, or a completion no one needs anymore.
+                NotificationId::CompletionId(completion_id) => {
+                    earlier_entries.open_runs.remove(&completion_id);
+                }
+                NotificationId::SignalId(CANCEL_SIGNAL_ID) => context.cancelled = true,
+                // Other signals are dropped.
+                _ => {}
             }
         } else {
             return Err(unexpected_message(
@@ -222,7 +228,8 @@ impl Transition<Context, NewNotificationMessage> for State {
                     }
                 }
             }
-            // Signals, the cancellation included, are dropped for now.
+            NotificationId::SignalId(CANCEL_SIGNAL_ID) => context.cancelled = true,
+            // Other signals are dropped.
             id => trace!("Dropping the signal {id:?}"),
         }
         Ok(self)

@@ -197,6 +197,9 @@ pub(crate) struct Context {
 
     pub(crate) input_is_closed: bool,
     pub(crate) output: Output,
+
+    /// Whether a cancellation signal was received, by this attempt or an earlier one.
+    pub(crate) cancelled: bool,
 }
 
 impl Context {

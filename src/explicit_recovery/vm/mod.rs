@@ -146,6 +146,7 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
                 negotiated_protocol_version: version,
                 input_is_closed: false,
                 output: Output::new(version),
+                cancelled: false,
             },
             last_transition: Ok(State::WaitingStart),
         })
@@ -327,6 +328,10 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
 
     fn notify_error(&mut self, error: Error) {
         let _ = self.do_transition(HitError(error));
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.context.cancelled
     }
 
     fn state(&self) -> AttemptState {

@@ -138,7 +138,70 @@ fn signals_other_than_the_cancellation_are_dropped() {
             notify(vm, encoder, empty_signal_notification(18));
             notify(vm, encoder, signal_notification("my-signal", b"my-value"));
             assert_eq!(take_notifications(vm), vec![]);
+            assert!(!vm.is_cancelled());
             end_with(vm, "my-output");
+        });
+
+    assert_end(&mut output, "my-output");
+}
+
+// --- Cancellation
+
+#[test]
+fn not_cancelled_without_a_cancellation_signal() {
+    let mut output = ErTestCase::new()
+        .input(start_message(1))
+        .input(input_entry_message(b"my-input"))
+        .run(|vm, _| {
+            assert!(!vm.is_cancelled());
+            end_with(vm, "my-output");
+        });
+
+    assert_end(&mut output, "my-output");
+}
+
+#[test]
+fn cancellation_received_by_an_earlier_attempt() {
+    let mut test_case = ErTestCase::new()
+        .input(start_message(3))
+        .input(input_entry_message(b"my-input"));
+    // Not until the cancellation signal arrives
+    assert!(!test_case.vm.is_cancelled());
+    test_case = test_case.input(cancel_signal_notification());
+    assert!(test_case.vm.is_cancelled());
+
+    let mut output = test_case
+        .input(SetStateCommandMessage::default())
+        .run(|vm, _| {
+            assert!(vm.is_cancelled());
+            // A flag, not a notification
+            assert_eq!(take_notifications(vm), vec![]);
+            end_with(vm, "my-output");
+        });
+
+    assert_end(&mut output, "my-output");
+}
+
+#[test]
+fn cancellation_received_while_processing() {
+    let mut output = ErTestCase::new()
+        .input(start_message(1))
+        .input(input_entry_message(b"my-input"))
+        .run(|vm, encoder| {
+            vm.get_input().unwrap();
+            assert!(!vm.is_cancelled());
+            notify(vm, encoder, cancel_signal_notification());
+            assert!(vm.is_cancelled());
+            assert_eq!(take_notifications(vm), vec![]);
+
+            // A second one changes nothing, and the attempt goes on
+            notify(vm, encoder, cancel_signal_notification());
+            assert!(vm.is_cancelled());
+            assert_eq!(vm.state(), AttemptState::Running);
+            end_with(vm, "my-output");
+
+            // Still cancelled once the attempt is over
+            assert!(vm.is_cancelled());
         });
 
     assert_end(&mut output, "my-output");

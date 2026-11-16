@@ -49,7 +49,7 @@
 //! This version runs on the service protocol V7 and V8:
 //! * the entries of the earlier attempts are still sent to every attempt: the VM only uses them to
 //!   number its own commands and completions after them, to end the traces they left open, and to
-//!   know about a cancellation;
+//!   know about a cancellation (see [`ExplicitRecoveryVM::is_cancelled`]);
 //! * a state value not known locally is read with an ephemeral get on V8, and with a get recorded
 //!   in the journal on V7;
 //! * request/response transports (e.g. AWS Lambda, HTTP/1.1) are not supported: no response could
@@ -69,10 +69,6 @@ use bytes::Bytes;
 use std::time::Duration;
 
 /// The result of the action that returned `handle`, see [`ExplicitRecoveryVM::take_next_notification`].
-///
-/// [`crate::CANCEL_NOTIFICATION_HANDLE`] gets one with [`Value::Void`] once the invocation is cancelled, at
-/// most once per attempt; a cancellation an earlier attempt received, as soon as the attempt is
-/// ready to execute.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Notification {
     pub handle: NotificationHandle,
@@ -230,6 +226,10 @@ pub trait ExplicitRecoveryVM: Sized {
 
     /// Fails the attempt, for example with a retryable error of the handler.
     fn notify_error(&mut self, error: Error);
+
+    /// Whether the invocation was cancelled: a cancellation signal arrived, in this attempt or in
+    /// an earlier one.
+    fn is_cancelled(&self) -> bool;
 
     fn state(&self) -> AttemptState;
 }
