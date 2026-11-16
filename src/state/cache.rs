@@ -108,9 +108,12 @@ pub struct PageCacheConfig {
     /// them: a writer that fills its block waits for a clean one. Every block
     /// starts clean, so this matters once the disk tier has been filled.
     pub disk_clean_blocks: usize,
-    /// Threads of the disk tier's own tokio runtime, on which its writers,
-    /// reclaims and reads (its tasks, not their blocking I/O) run; 0 runs
-    /// them on the caller's runtime, where they wait behind its other tasks.
+    /// Threads of a tokio runtime of the disk tier's own, on which its
+    /// writers, reclaims and reads (its tasks, not their blocking I/O) run;
+    /// 0, the default, runs them on the caller's runtime (or, with none, on
+    /// one thread of its own). A runtime of its own keeps them from waiting
+    /// behind the host's tasks; measured with one thread, it dropped as many
+    /// evicted values as the host's runtime did, so it is not the default.
     pub disk_threads: usize,
     /// Bytes of the namespaces' writers kept, each weighing 256: least
     /// recently used go first, and one forgotten only makes its next flush
@@ -148,7 +151,7 @@ impl PageCacheConfig {
             disk_flushers: 1,
             disk_buffer: 32 << 20,
             disk_clean_blocks: 2,
-            disk_threads: 1,
+            disk_threads: 0,
             namespace_bytes: 256 << 20,
             parked_bytes: 64 << 20,
         }
