@@ -128,7 +128,7 @@ pub trait ExplicitRecoveryVM: Sized {
     /// The invocation's input, once [`ExplicitRecoveryVM::is_ready_to_execute`].
     fn get_input(&mut self) -> VMResult<Input>;
 
-    /// The next result, in the order they completed: `Ok(None)` when there is none.
+    /// A ready result, in no particular order: `Ok(None)` when there is none.
     ///
     /// Once the attempt is closed, returns the error that closed it: a shutdown
     /// ([`crate::Error::is_suspended_error`]) or a failure. After the handler ended, `Ok(None)`.

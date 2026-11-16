@@ -12,10 +12,10 @@ pub(crate) enum NotificationId {
 }
 
 /// The async results of the attempt: which handle each response notifies, and the notifications
-/// ready to be taken, in the order they arrived.
+/// ready to be taken, in no particular order.
 ///
 /// Unlike CoreVM's, there is no future to resolve: a notification is ready as soon as its response
-/// arrives (or at once, for a result known locally), and the SDK takes them in order.
+/// arrives (or at once, for a result known locally), and the SDK takes them as they come.
 #[derive(Debug)]
 pub(crate) struct AsyncResultsState {
     async_results: HashMap<NotificationId, (NotificationHandle, Option<Value>)>,
