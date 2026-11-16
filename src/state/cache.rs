@@ -90,6 +90,30 @@ pub struct PageCacheConfig {
     /// gives the flushers more room before they wait (and evicted values
     /// queue, and past the queue's bound are dropped).
     pub disk_block: usize,
+    /// The disk tier's writers ([`BlockEngineConfig::with_flushers`]): each
+    /// has one write in flight, and the values of an eviction go to one of
+    /// them by hash.
+    pub disk_flushers: usize,
+    /// Bytes the disk tier's writers fill before a write, split between them;
+    /// each keeps two of its share (one filling, one written), so this costs
+    /// twice its size, held for good.
+    pub disk_buffer: usize,
+    /// Bytes of evicted values waiting for a writer, past which the next
+    /// evicted values are not written (and a later read of them goes to the
+    /// store). Held only while the writers lag.
+    pub disk_queue: usize,
+    /// Clean blocks kept ready for the writers, and the reclaims that make
+    /// them: a writer that fills its block waits for a clean one.
+    pub disk_clean_blocks: usize,
+    /// Threads of the disk tier's own tokio runtime, on which its writes,
+    /// reclaims and reads run; 0 runs them on the caller's runtime, where
+    /// they wait behind its other tasks.
+    pub disk_threads: usize,
+    /// Open the disk tier's file with `O_DIRECT` (Linux only; elsewhere
+    /// ignored): its reads and writes bypass the OS page cache, so the file
+    /// takes none of the process's memory (a container's, say), and every
+    /// read of it is a read of the device.
+    pub disk_direct: bool,
     /// Bytes of the namespaces' writers kept, each weighing 256: least
     /// recently used go first, and one forgotten only makes its next flush
     /// wait for an owner's open to read the head again.
@@ -123,6 +147,12 @@ impl PageCacheConfig {
             memory,
             disk,
             disk_block: 16 << 20,
+            disk_flushers: 2,
+            disk_buffer: 16 << 20,
+            disk_queue: 64 << 20,
+            disk_clean_blocks: 2,
+            disk_threads: 1,
+            disk_direct: false,
             namespace_bytes: 256 << 20,
             parked_bytes: 64 << 20,
         }
@@ -181,42 +211,58 @@ struct Shared {
     unsettled: Mutex<Vec<Arc<Mutex<Owner>>>>,
     /// Source of namespace state identities.
     ids: AtomicU64,
-    /// Keeps the disk tier's own runtime alive when the host has none.
+    /// Keeps the disk tier's own runtime alive.
     _runtime: Option<Spawner>,
+    /// foyer's counters ([`PageCache::stats`]).
+    counters: Counters,
 }
 
 impl PageCache {
-    /// Open the cache. Disk I/O runs on the caller's tokio runtime if there is
-    /// one, otherwise on a small runtime of its own.
+    /// Open the cache. Disk I/O runs on a runtime of its own of
+    /// [`PageCacheConfig::disk_threads`] threads, or with none, on the
+    /// caller's tokio runtime if there is one, otherwise on a one-thread
+    /// runtime of its own.
     pub async fn open(config: PageCacheConfig) -> io::Result<Self> {
-        let spawner = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => Spawner::from(handle),
-            Err(_) => Spawner::from(
+        let own = |threads: usize| -> io::Result<Spawner> {
+            Ok(Spawner::from(
                 tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(1)
+                    .worker_threads(threads)
                     .thread_name("page-cache")
                     .enable_all()
                     .build()?,
-            ),
+            ))
+        };
+        let spawner = match (config.disk_threads, tokio::runtime::Handle::try_current()) {
+            (0, Ok(handle)) => Spawner::from(handle),
+            (threads, _) => own(threads.max(1))?,
         };
         static TEMPORARY: AtomicU64 = AtomicU64::new(0);
         let file = config.file.clone().unwrap_or_else(|| {
             let n = TEMPORARY.fetch_add(1, Relaxed);
             std::env::temp_dir().join(format!("state-cache-{}-{n}", std::process::id()))
         });
-        let device = FileDeviceBuilder::new(&file)
-            .with_capacity(config.disk)
-            .build()
-            .map_err(io::Error::other)?;
+        let device = FileDeviceBuilder::new(&file).with_capacity(config.disk);
+        #[cfg(target_os = "linux")]
+        let device = device.with_direct(config.disk_direct);
+        let device = device.build().map_err(io::Error::other)?;
+        let counters = Counters::default();
+        let engine = BlockEngineConfig::new(device)
+            .with_block_size(config.disk_block)
+            .with_flushers(config.disk_flushers.max(1))
+            .with_buffer_pool_size(config.disk_buffer)
+            .with_submit_queue_size_threshold(config.disk_queue)
+            .with_reclaimers(config.disk_clean_blocks.max(1))
+            .with_clean_block_threshold(config.disk_clean_blocks.max(1));
         let values = HybridCacheBuilder::new()
             .with_name("state-values")
+            .with_metrics_registry(Box::new(counters.clone()))
             .memory(config.memory)
             .with_shards(MEMORY_SHARDS)
             .with_weighter(|key: &ValueKey, value: &Bytes| {
                 key.name.len() + value.len() + ENTRY_OVERHEAD
             })
             .storage()
-            .with_engine_config(BlockEngineConfig::new(device).with_block_size(config.disk_block))
+            .with_engine_config(engine)
             // Namespaces' identities are not persisted, so earlier entries are unusable.
             .with_recover_mode(RecoverMode::None)
             .with_spawner(spawner.clone())
@@ -241,6 +287,7 @@ impl PageCache {
                 // mistake still never share keys.
                 ids: AtomicU64::new(random() >> 1),
                 _runtime: matches!(spawner, Spawner::Runtime(_)).then_some(spawner),
+                counters,
             }),
             parked: Arc::new(Mutex::new(Parked::new(config.parked_bytes))),
         })
@@ -271,6 +318,25 @@ impl PageCache {
             id,
             handle: self.shared.ids.fetch_add(1, Relaxed),
             owner,
+        }
+    }
+
+    /// What the cache has done since it opened, as foyer counts it.
+    pub fn stats(&self) -> CacheStats {
+        let counter = |metric: &str, op: &str| self.shared.counters.get(metric, op);
+        CacheStats {
+            memory_hits: counter("foyer_memory_op_total", "hit"),
+            memory_evictions: counter("foyer_memory_op_total", "evict"),
+            disk_enqueued: counter("foyer_storage_op_total", "enqueue"),
+            disk_hits: counter("foyer_storage_op_total", "hit"),
+            disk_misses: counter("foyer_storage_op_total", "miss"),
+            dropped_queue: counter("foyer_storage_inner_op_total", "channel_overflow"),
+            dropped_buffer: counter("foyer_storage_inner_op_total", "buffer_overflow"),
+            skipped_on_disk: counter("foyer_storage_block_engine_op_total", "enqueue_skip"),
+            disk_writes: counter("foyer_storage_disk_io_total", "write"),
+            disk_written_bytes: counter("foyer_storage_disk_io_bytes_total", "write"),
+            disk_reads: counter("foyer_storage_disk_io_total", "read"),
+            disk_read_bytes: counter("foyer_storage_disk_io_bytes_total", "read"),
         }
     }
 
@@ -834,3 +900,135 @@ impl Code for ValueKey {
 #[cfg(test)]
 #[path = "tests/unit/cache.rs"]
 mod tests;
+
+/// What a [`PageCache`] has done since it opened ([`PageCache::stats`]), as
+/// foyer counts it. An evicted value goes to the disk tier unless it is
+/// dropped: `disk_enqueued` counts those offered, `dropped_queue` those the
+/// writers' queue was too full to take, `dropped_buffer` those that did not
+/// fit a writer's buffer, and `skipped_on_disk` those read from the disk
+/// and still there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CacheStats {
+    /// Lookups the memory tier answered.
+    pub memory_hits: u64,
+    /// Values the memory tier evicted.
+    pub memory_evictions: u64,
+    /// Evicted values offered to the disk tier.
+    pub disk_enqueued: u64,
+    /// Lookups the disk tier answered.
+    pub disk_hits: u64,
+    /// Lookups neither tier answered.
+    pub disk_misses: u64,
+    /// Evicted values dropped: the writers' queue was past
+    /// [`PageCacheConfig::disk_queue`].
+    pub dropped_queue: u64,
+    /// Evicted values dropped: a writer's buffer had no room while its
+    /// write was in flight.
+    pub dropped_buffer: u64,
+    /// Evicted values not written again: read from the disk, still there.
+    pub skipped_on_disk: u64,
+    /// Writes to the disk tier's file, and their bytes.
+    pub disk_writes: u64,
+    pub disk_written_bytes: u64,
+    /// Reads of the disk tier's file, and their bytes.
+    pub disk_reads: u64,
+    pub disk_read_bytes: u64,
+}
+
+/// A metrics registry for foyer that keeps its counters, by metric and
+/// labels, for [`PageCache::stats`]; its gauges and histograms are dropped.
+#[derive(Clone, Debug, Default)]
+struct Counters(Arc<Mutex<BTreeMap<String, Arc<AtomicU64>>>>);
+
+impl Counters {
+    /// The counter `metric` of the operation `op`, whatever the cache's name.
+    fn get(&self, metric: &str, op: &str) -> u64 {
+        let counters = self.0.lock().unwrap();
+        (counters.iter())
+            .filter(|(key, _)| key.starts_with(metric) && key.ends_with(&format!("/{op}")))
+            .filter(|(key, _)| key.split('/').next() == Some(metric))
+            .map(|(_, count)| count.load(Relaxed))
+            .sum()
+    }
+}
+
+impl mixtrics::metrics::RegistryOps for Counters {
+    fn register_counter_vec(
+        &self,
+        name: std::borrow::Cow<'static, str>,
+        _: std::borrow::Cow<'static, str>,
+        _: &'static [&'static str],
+    ) -> mixtrics::metrics::BoxedCounterVec {
+        Box::new(CounterVec {
+            name: name.into_owned(),
+            counters: self.clone(),
+        })
+    }
+
+    fn register_gauge_vec(
+        &self,
+        name: std::borrow::Cow<'static, str>,
+        desc: std::borrow::Cow<'static, str>,
+        labels: &'static [&'static str],
+    ) -> mixtrics::metrics::BoxedGaugeVec {
+        mixtrics::registry::noop::NoopMetricsRegistry.register_gauge_vec(name, desc, labels)
+    }
+
+    fn register_histogram_vec(
+        &self,
+        name: std::borrow::Cow<'static, str>,
+        desc: std::borrow::Cow<'static, str>,
+        labels: &'static [&'static str],
+    ) -> mixtrics::metrics::BoxedHistogramVec {
+        mixtrics::registry::noop::NoopMetricsRegistry.register_histogram_vec(name, desc, labels)
+    }
+
+    fn register_histogram_vec_with_buckets(
+        &self,
+        name: std::borrow::Cow<'static, str>,
+        desc: std::borrow::Cow<'static, str>,
+        labels: &'static [&'static str],
+        buckets: Vec<f64>,
+    ) -> mixtrics::metrics::BoxedHistogramVec {
+        mixtrics::registry::noop::NoopMetricsRegistry
+            .register_histogram_vec_with_buckets(name, desc, labels, buckets)
+    }
+}
+
+/// One metric's counters, by labels.
+#[derive(Debug)]
+struct CounterVec {
+    name: String,
+    counters: Counters,
+}
+
+impl mixtrics::metrics::CounterVecOps for CounterVec {
+    fn counter(
+        &self,
+        labels: &[std::borrow::Cow<'static, str>],
+    ) -> mixtrics::metrics::BoxedCounter {
+        let mut key = self.name.clone();
+        for label in labels {
+            key.push('/');
+            key.push_str(label);
+        }
+        let count = self
+            .counters
+            .0
+            .lock()
+            .unwrap()
+            .entry(key)
+            .or_default()
+            .clone();
+        Box::new(Counter(count))
+    }
+}
+
+#[derive(Debug)]
+struct Counter(Arc<AtomicU64>);
+
+impl mixtrics::metrics::CounterOps for Counter {
+    fn increase(&self, by: u64) {
+        self.0.fetch_add(by, Relaxed);
+    }
+}

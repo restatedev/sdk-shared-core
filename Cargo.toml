@@ -62,6 +62,7 @@ sql = [
     "dep:foyer-memory",
     "dep:foyer-storage",
     "dep:foyer-tokio",
+    "dep:mixtrics",
     "dep:tokio",
     "tokio/rt-multi-thread",
     # Closing a database cancels the call it runs (`CancellationToken`).
@@ -124,6 +125,8 @@ foyer-common = { version = "=0.22.6", optional = true }
 foyer-memory = { version = "=0.22.6", optional = true }
 foyer-storage = { version = "=0.22.6", optional = true }
 foyer-tokio = { version = "=0.22.6", optional = true }
+# foyer's metrics registry, to count what its disk tier drops (`PageCache::stats`).
+mixtrics = { version = "0.2", default-features = false, optional = true }
 tokio = { version = "1.49", default-features = false, features = ["rt"], optional = true }
 object_store = { version = "0.14", optional = true, default-features = false }
 url = { version = "2.5", optional = true }

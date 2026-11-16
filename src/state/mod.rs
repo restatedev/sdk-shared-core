@@ -103,7 +103,7 @@ pub use blobs::BlobStore;
 #[cfg(feature = "object_store")]
 pub use blobs::ObjectStoreBlobs;
 pub use cache::parse_size;
-pub use cache::{PageCache, PageCacheConfig};
+pub use cache::{CacheStats, PageCache, PageCacheConfig};
 pub(crate) use format::{MAX_FILE_BYTES, MAX_NAME_BYTES, MAX_RECORD_BYTES};
 pub use kv::KvStore;
 #[cfg(feature = "object_store")]
