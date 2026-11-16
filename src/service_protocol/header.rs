@@ -15,7 +15,7 @@ const COMMAND_ENTRY_MASK: u16 = 0x0400;
 const NOTIFICATION_ENTRY_MASK: u16 = 0x8000;
 const CUSTOM_ENTRY_MASK: u16 = 0xFC00;
 
-const REQUESTED_ACK_MASK: u64 = 0x8000_0000_0000;
+const REQUESTED_ACK_MASK: u16 = 0x8000;
 
 type MessageTypeId = u16;
 
@@ -74,6 +74,7 @@ gen_message_type_enum!(
     Suspension = 0x0001,
     Error = 0x0002,
     End = 0x0003,
+    CommandAck = 0x0004,
     ProposeRunCompletion = 0x0005,
     AwaitingOn = 0x0006,
     ProposeRunCompletionAck = 0x0007,
@@ -126,9 +127,11 @@ impl MessageType {
         (NOTIFICATION_ENTRY_MASK..CUSTOM_ENTRY_MASK).contains(&self.id())
     }
 
-    /// Returns true if this message type carries the `requires_ack` flag in its header.
+    /// Returns true if this message type carries the `requires_ack` flag in its header:
+    /// every command, which the runtime then acks with a [`MessageType::CommandAck`] once stored,
+    /// and the run completion proposal.
     pub fn allows_ack(&self) -> bool {
-        matches!(self, MessageType::ProposeRunCompletion)
+        self.is_command() || matches!(self, MessageType::ProposeRunCompletion)
     }
 }
 
@@ -145,26 +148,29 @@ impl fmt::Display for MessageType {
 pub struct MessageHeader {
     ty: MessageType,
     length: u32,
-    requested_ack_flag: Option<bool>,
+    flags: u16,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MessageFlags {
+    RequestedAck,
 }
 
 impl MessageHeader {
     #[inline]
     pub fn new(ty: MessageType, length: u32) -> Self {
-        Self {
-            ty,
-            length,
-            requested_ack_flag: None,
-        }
+        Self::new_with_flags(ty, length, &[])
     }
 
     #[inline]
-    pub fn new_with_requested_ack(ty: MessageType, requested_ack: bool, length: u32) -> Self {
-        Self {
-            ty,
-            length,
-            requested_ack_flag: Some(requested_ack),
+    pub fn new_with_flags(ty: MessageType, length: u32, flags_slice: &[MessageFlags]) -> Self {
+        let mut flags: u16 = 0;
+        for flag in flags_slice {
+            match flag {
+                MessageFlags::RequestedAck => flags |= REQUESTED_ACK_MASK,
+            }
         }
+        Self { ty, length, flags }
     }
 
     #[inline]
@@ -180,7 +186,11 @@ impl MessageHeader {
     /// `Some(_)` when the message type carries the `requires_ack` flag, `None` otherwise.
     #[inline]
     pub fn requested_ack(&self) -> Option<bool> {
-        self.requested_ack_flag
+        if self.ty.allows_ack() {
+            Some((self.flags & REQUESTED_ACK_MASK) != 0)
+        } else {
+            None
+        }
     }
 }
 
@@ -188,44 +198,29 @@ impl TryFrom<u64> for MessageHeader {
     type Error = UnknownMessageType;
 
     /// Deserialize the protocol header.
-    /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#message-header
+    /// See https://github.com/restatedev/sdk-shared-core/docs/service-invocation-protocol.md#message-header
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
         let ty: MessageType = ty_code.try_into()?;
+        let flags = (value >> 32) as u16;
         let length = value as u32;
 
-        let requested_ack_flag = if ty.allows_ack() {
-            Some((value & REQUESTED_ACK_MASK) != 0)
-        } else {
-            None
-        };
-
-        Ok(MessageHeader {
-            ty,
-            length,
-            requested_ack_flag,
-        })
+        Ok(MessageHeader { ty, length, flags })
     }
 }
 
 impl From<MessageHeader> for u64 {
     /// Serialize the protocol header.
-    /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#message-header
+    /// See https://github.com/restatedev/sdk-shared-core/docs/service-invocation-protocol.md#message-header
     fn from(message_header: MessageHeader) -> Self {
-        let mut res =
-            ((u16::from(message_header.ty) as u64) << 48) | (message_header.length as u64);
-
-        if let Some(true) = message_header.requested_ack_flag {
-            res |= REQUESTED_ACK_MASK;
-        }
-
-        res
+        ((u16::from(message_header.ty) as u64) << 48)
+            | ((message_header.flags as u64) << 32)
+            | (message_header.length as u64)
     }
 }
 
 #[cfg(test)]
 mod tests {
-
     use super::{MessageType::*, *};
 
     macro_rules! roundtrip_test {
@@ -293,11 +288,12 @@ mod tests {
 
     #[test]
     fn propose_run_completion_with_requested_ack_roundtrip() {
-        let original = MessageHeader::new_with_requested_ack(ProposeRunCompletion, true, 42);
+        let original =
+            MessageHeader::new_with_flags(ProposeRunCompletion, 42, &[MessageFlags::RequestedAck]);
         let serialized: u64 = original.into();
 
         // The flag bit must be set in the wire form.
-        assert_ne!(serialized & REQUESTED_ACK_MASK, 0);
+        assert_ne!(((serialized >> 32) as u16) & REQUESTED_ACK_MASK, 0);
 
         let header: MessageHeader = serialized.try_into().unwrap();
         assert_eq!(header.message_type(), ProposeRunCompletion);
@@ -305,12 +301,46 @@ mod tests {
         assert_eq!(header.requested_ack(), Some(true));
     }
 
+    roundtrip_test!(
+        command_ack,
+        MessageHeader::new(CommandAck, 2),
+        CommandAck,
+        2
+    );
+
+    #[test]
+    fn command_requested_ack_roundtrip() {
+        let header: MessageHeader = u64::from(MessageHeader::new_with_flags(
+            SetStateCommand,
+            12,
+            &[MessageFlags::RequestedAck],
+        ))
+        .try_into()
+        .unwrap();
+        assert_eq!(header.message_type(), SetStateCommand);
+        assert_eq!(header.message_length(), 12);
+        assert_eq!(header.requested_ack(), Some(true));
+
+        let header: MessageHeader = u64::from(MessageHeader::new(SetStateCommand, 12))
+            .try_into()
+            .unwrap();
+        assert_eq!(header.requested_ack(), Some(false));
+    }
+
+    #[test]
+    fn notification_and_control_frames_carry_no_ack_flag() {
+        for ty in [GetLazyStateCompletionNotification, CommandAck, End] {
+            let header: MessageHeader = u64::from(MessageHeader::new(ty, 3)).try_into().unwrap();
+            assert_eq!(header.requested_ack(), None);
+        }
+    }
+
     #[test]
     fn propose_run_completion_without_requested_ack_roundtrip() {
         let original = MessageHeader::new(ProposeRunCompletion, 42);
         let serialized: u64 = original.into();
 
-        assert_eq!(serialized & REQUESTED_ACK_MASK, 0);
+        assert_eq!(((serialized >> 32) as u16) & REQUESTED_ACK_MASK, 0);
 
         let header: MessageHeader = serialized.try_into().unwrap();
         assert_eq!(header.message_type(), ProposeRunCompletion);

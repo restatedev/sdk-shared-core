@@ -6,10 +6,11 @@ use crate::service_protocol::messages::{
     GetEagerStateCommandMessage, GetEagerStateKeysCommandMessage, GetLazyStateCommandMessage,
     GetLazyStateKeysCommandMessage, InputCommandMessage, NamedCommandMessage,
     ProposeRunCompletionMessage, RestateEncodableMessage, RestateMessage, RunCommandMessage,
-    SetStateCommandMessage, StateKeys, Void,
+    SetStateCommandMessage, StateKeys, Void, WithFlags,
 };
 use crate::service_protocol::{
-    CompletionId, MessageType, Notification, NotificationId, NotificationResult, RawMessage,
+    CompletionId, MessageFlags, MessageType, Notification, NotificationId, NotificationResult,
+    RawMessage,
 };
 use crate::vm::async_results_state::AsyncResultsState;
 use crate::vm::context::{Context, EagerGetState, EagerGetStateKeys};
@@ -61,19 +62,22 @@ fn fail_interrupted_run(
         message: INTERRUPTED_RUN_MESSAGE.to_owned(),
         metadata: vec![],
     };
-    if context.negotiated_protocol_version >= Version::V7 {
-        // The runtime acks the proposal rather than sending the completion back: the ack takes it from here.
-        async_results.cache_run_completion(
-            completion_id,
-            NotificationResult::Failure(failure.clone().into()),
-        );
-    }
-    context.output.send(&ProposeRunCompletionMessage {
+    let proposal = ProposeRunCompletionMessage {
         result_completion_id: completion_id,
         result: Some(propose_run_completion_message::Result::Failure(
-            failure.into(),
+            failure.clone().into(),
         )),
-    });
+    };
+    if context.negotiated_protocol_version >= Version::V7 {
+        // The runtime acks the proposal rather than sending the completion back: the ack takes it from here.
+        async_results
+            .cache_run_completion(completion_id, NotificationResult::Failure(failure.into()));
+        context
+            .output
+            .send(&WithFlags(&proposal, &[MessageFlags::RequestedAck]));
+    } else {
+        context.output.send(&proposal);
+    }
 }
 
 pub(crate) struct SysInput;
@@ -968,6 +972,7 @@ impl Transition<Context, ProposeRunCompletion> for State {
                 };
 
                 if context.negotiated_protocol_version >= Version::V7 {
+                    // Protocol >= 7 we send through the propose run completion message and wait only for the ack back
                     async_results.cache_run_completion(
                         result_completion_id,
                         match value.clone() {
@@ -978,14 +983,21 @@ impl Transition<Context, ProposeRunCompletion> for State {
                                 NotificationResult::Failure(f)
                             }
                         },
-                    )
+                    );
+                    context.output.send(&WithFlags(
+                        &ProposeRunCompletionMessage {
+                            result_completion_id,
+                            result: Some(value),
+                        },
+                        &[MessageFlags::RequestedAck],
+                    ));
+                } else {
+                    // Protocol <= 6 we just send through the propose run completion message and wait for the whole notification back
+                    context.output.send(&ProposeRunCompletionMessage {
+                        result_completion_id,
+                        result: Some(value),
+                    });
                 }
-
-                let expected = ProposeRunCompletionMessage {
-                    result_completion_id,
-                    result: Some(value),
-                };
-                context.output.send(&expected);
 
                 Ok(self)
             }
