@@ -8,7 +8,7 @@ use crate::service_protocol::messages::{
     ErrorMessage, Future, OutputCommandMessage, ProposeRunCompletionMessage, SuspensionMessage,
     WithFlags,
 };
-use crate::service_protocol::MessageFlags;
+use crate::service_protocol::{MessageFlags, CANCEL_SIGNAL_ID};
 use crate::{Error, NonEmptyValue, TerminalFailure};
 use tracing::debug;
 
@@ -27,7 +27,8 @@ impl Transition<Context, HitError> for State {
 /// The runtime shut the attempt down, closing the input stream: no response can arrive anymore.
 ///
 /// The attempt suspends on the responses that take long (calls, attachments), on which the
-/// runtime starts the next attempt. With none, it fails with a retry delay of zero: the runtime
+/// runtime starts the next attempt, and on the cancellation of the invocation unless it was
+/// cancelled already. With no response pending, it fails with a retry delay of zero: the runtime
 /// starts the next attempt at once, without counting a retry. Either way the attempt ends with
 /// [`attempt_shut_down`], which every later call returns.
 pub(crate) struct HitShutdown;
@@ -56,9 +57,16 @@ impl Transition<Context, HitShutdown> for State {
             context.output.send(&SuspensionMessage {
                 awaiting_on: Some(Future {
                     waiting_completions,
-                    // TODO the cancellation is ignored for now. Waiting on it would resume the
-                    // invocation right away once the runtime stored one.
-                    waiting_signals: vec![],
+                    // A cancellation that comes while the invocation is suspended starts the next
+                    // attempt, which learns of it: without it, the invocation would stay suspended
+                    // until a call answers, and for good if none ever does. Once the invocation
+                    // was cancelled, waiting on the cancellation would resume it right away, every
+                    // time: the attempts that follow wait on the responses alone.
+                    waiting_signals: if context.cancelled {
+                        vec![]
+                    } else {
+                        vec![CANCEL_SIGNAL_ID]
+                    },
                     combinator_type: CombinatorType::FirstCompleted as i32,
                     ..Default::default()
                 }),

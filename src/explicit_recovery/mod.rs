@@ -36,9 +36,10 @@
 //! The runtime shuts an attempt down by closing the input stream (in this version of the protocol,
 //! after its inactivity timeout). From then on the attempt is over: every call returns an error
 //! with [`crate::Error::is_suspended_error`], and nothing more is sent. The runtime starts a new
-//! attempt once a response to a call or an attachment of the shut down attempt arrives, or right
-//! away when there is none. A new attempt runs the handler from the start, and gets only the
-//! responses of its own actions.
+//! attempt once a response to a call or an attachment of the shut down attempt arrives, or once
+//! the invocation is cancelled (unless it was cancelled before, which the attempt knew), or right
+//! away when no response is pending. A new attempt runs the handler from the start, and gets only
+//! the responses of its own actions.
 //!
 //! Local work that may outlast the runtime's inactivity timeout (a model request, a long call)
 //! must call [`ExplicitRecoveryVM::heartbeat`] meanwhile, or the attempt is shut down. A call that
