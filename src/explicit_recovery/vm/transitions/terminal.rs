@@ -57,11 +57,22 @@ impl Transition<Context, HitShutdown> for State {
             context.output.send(&SuspensionMessage {
                 awaiting_on: Some(Future {
                     waiting_completions,
-                    // A cancellation that comes while the invocation is suspended starts the next
-                    // attempt, which learns of it: without it, the invocation would stay suspended
-                    // until a call answers, and for good if none ever does. Once the invocation
-                    // was cancelled, waiting on the cancellation would resume it right away, every
-                    // time: the attempts that follow wait on the responses alone.
+                    // The cancellation is awaited next to the responses, so that cancelling an
+                    // invocation suspended here starts its next attempt, which is given the
+                    // cancellation. Without it the invocation stays suspended until a call
+                    // answers, and for good if none ever does: no SDK code runs meanwhile, so
+                    // nothing else can reach it.
+                    //
+                    // Not once this attempt knows of the cancellation. The runtime resolves a
+                    // suspension against the notifications it has stored, and resumes instead
+                    // of suspending when one is there: naming a stored cancellation would start
+                    // a new attempt at every shutdown, for as long as the handler goes on
+                    // waiting. An attempt that knows of it awaits the responses alone, and is
+                    // suspended until one comes.
+                    //
+                    // A cancellation the runtime stored after it closed the input is not known
+                    // here, and is named: that costs one resume, and the next attempt finds it
+                    // among the earlier entries.
                     waiting_signals: if context.cancelled {
                         vec![]
                     } else {
