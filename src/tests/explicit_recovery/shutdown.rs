@@ -85,14 +85,65 @@ fn shutdown_suspends_on_the_pending_calls() {
 
     output.next_decoded::<CallCommandMessage>().unwrap();
     output.next_decoded::<CallCommandMessage>().unwrap();
-    // The results only: an invocation id is stored with its call
+    // The results only: an invocation id is stored with its call. And the cancellation, which
+    // would otherwise not reach the invocation before a call answers.
     assert_eq!(
         {
             let mut suspension = output.next_decoded::<SuspensionMessage>().unwrap();
             sort_completions(&mut suspension.awaiting_on);
             suspension
         },
-        suspended_on(vec![2, 3, 4], vec![])
+        suspended_on(vec![2, 3, 4], vec![CANCEL_SIGNAL_ID])
+    );
+    assert_eq!(output.next(), None);
+}
+
+/// Waiting on a cancellation the runtime already stored would start the next attempt at once,
+/// every time: an attempt that knows of it waits for the responses alone.
+#[test]
+fn shutdown_of_a_cancelled_invocation_suspends_on_the_pending_calls_alone() {
+    // Cancelled while this attempt runs
+    let mut output = running().run(|vm, encoder| {
+        vm.get_input().unwrap();
+        vm.cmd_call(target(), Bytes::new(), Default::default())
+            .unwrap();
+        notify(vm, encoder, cancel_signal_notification());
+        assert!(vm.is_cancelled());
+        vm.notify_input_closed();
+        assert_shut_down(vm);
+    });
+    output.next_decoded::<CallCommandMessage>().unwrap();
+    assert_eq!(
+        {
+            let mut suspension = output.next_decoded::<SuspensionMessage>().unwrap();
+            sort_completions(&mut suspension.awaiting_on);
+            suspension
+        },
+        suspended_on(vec![1, 2], vec![])
+    );
+    assert_eq!(output.next(), None);
+
+    // Cancelled in an earlier attempt, whose entries this one is given
+    let mut output = ErTestCase::new()
+        .input(start_message(2))
+        .input(input_entry_message(b"my-input"))
+        .input(cancel_signal_notification())
+        .run(|vm, _| {
+            vm.get_input().unwrap();
+            assert!(vm.is_cancelled());
+            vm.cmd_call(target(), Bytes::new(), Default::default())
+                .unwrap();
+            vm.notify_input_closed();
+            assert_shut_down(vm);
+        });
+    output.next_decoded::<CallCommandMessage>().unwrap();
+    assert_eq!(
+        {
+            let mut suspension = output.next_decoded::<SuspensionMessage>().unwrap();
+            sort_completions(&mut suspension.awaiting_on);
+            suspension
+        },
+        suspended_on(vec![1, 2], vec![])
     );
     assert_eq!(output.next(), None);
 }
@@ -123,7 +174,7 @@ fn shutdown_suspends_on_every_pending_completion() {
             sort_completions(&mut suspension.awaiting_on);
             suspension
         },
-        suspended_on(vec![1, 2], vec![])
+        suspended_on(vec![1, 2], vec![CANCEL_SIGNAL_ID])
     );
     assert_eq!(output.next(), None);
 }

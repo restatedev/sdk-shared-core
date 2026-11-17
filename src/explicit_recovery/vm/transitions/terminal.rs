@@ -8,7 +8,7 @@ use crate::service_protocol::messages::{
     ErrorMessage, Future, OutputCommandMessage, ProposeRunCompletionMessage, SuspensionMessage,
     WithFlags,
 };
-use crate::service_protocol::MessageFlags;
+use crate::service_protocol::{MessageFlags, CANCEL_SIGNAL_ID};
 use crate::{Error, NonEmptyValue, TerminalFailure};
 use tracing::debug;
 
@@ -27,7 +27,8 @@ impl Transition<Context, HitError> for State {
 /// The runtime shut the attempt down, closing the input stream: no response can arrive anymore.
 ///
 /// The attempt suspends on the responses that take long (calls, attachments), on which the
-/// runtime starts the next attempt. With none, it fails with a retry delay of zero: the runtime
+/// runtime starts the next attempt, and on the cancellation of the invocation unless it was
+/// cancelled already. With no response pending, it fails with a retry delay of zero: the runtime
 /// starts the next attempt at once, without counting a retry. Either way the attempt ends with
 /// [`attempt_shut_down`], which every later call returns.
 pub(crate) struct HitShutdown;
@@ -56,9 +57,27 @@ impl Transition<Context, HitShutdown> for State {
             context.output.send(&SuspensionMessage {
                 awaiting_on: Some(Future {
                     waiting_completions,
-                    // TODO the cancellation is ignored for now. Waiting on it would resume the
-                    // invocation right away once the runtime stored one.
-                    waiting_signals: vec![],
+                    // The cancellation is awaited next to the responses, so that cancelling an
+                    // invocation suspended here starts its next attempt, which is given the
+                    // cancellation. Without it the invocation stays suspended until a call
+                    // answers, and for good if none ever does: no SDK code runs meanwhile, so
+                    // nothing else can reach it.
+                    //
+                    // Not once this attempt knows of the cancellation. The runtime resolves a
+                    // suspension against the notifications it has stored, and resumes instead
+                    // of suspending when one is there: naming a stored cancellation would start
+                    // a new attempt at every shutdown, for as long as the handler goes on
+                    // waiting. An attempt that knows of it awaits the responses alone, and is
+                    // suspended until one comes.
+                    //
+                    // A cancellation the runtime stored after it closed the input is not known
+                    // here, and is named: that costs one resume, and the next attempt finds it
+                    // among the earlier entries.
+                    waiting_signals: if context.cancelled {
+                        vec![]
+                    } else {
+                        vec![CANCEL_SIGNAL_ID]
+                    },
                     combinator_type: CombinatorType::FirstCompleted as i32,
                     ..Default::default()
                 }),
