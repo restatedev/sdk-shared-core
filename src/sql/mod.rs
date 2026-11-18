@@ -856,8 +856,16 @@ impl Engine {
     /// longer exists, whose root page a new table took. SQLite expires its
     /// statements on such a rollback; the engine does not. (`ROLLBACK TO` a
     /// savepoint it handles.)
+    ///
+    /// The transaction is open again after a call that rolled back and began
+    /// the next, such as `ROLLBACK; BEGIN`, so its `ROLLBACK` counts too. No
+    /// other end comes before more SQL of the call: a statement that fails
+    /// ends the call, and `COMMIT` only moves the cookie forward. A
+    /// `ROLLBACK TO` costs preparing the statements again.
     fn expire_statements(&mut self, sql: &str) {
-        if self.schema_changed_in_transaction && !self.in_transaction() {
+        if self.schema_changed_in_transaction
+            && (!self.in_transaction() || mentions(sql, &["rollback"]))
+        {
             self.statements.clear();
             self.schema_changed_in_transaction = false;
         }
