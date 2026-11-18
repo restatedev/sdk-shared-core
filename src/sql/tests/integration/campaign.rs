@@ -608,7 +608,17 @@ impl Campaign {
         if let Some(expected) = expected {
             match (&got, &expected) {
                 (Ok(got), Ok(expected)) => assert_eq!(got, expected, "{case}"),
-                (Err(_), Err(_)) => {}
+                // The messages differ; but without a fault, where the
+                // reference failed as SQL, the session's database must not
+                // look corrupt or unreadable.
+                (Err(error), Err(_)) => {
+                    let error = error.to_string();
+                    assert!(
+                        hit || !(error.starts_with("Corrupt database")
+                            || error.starts_with("I/O error")),
+                        "{case}: {error}, the reference engine: {expected:?}"
+                    );
+                }
                 _ => panic!("{case}: {got:?}, the reference engine: {expected:?}"),
             }
         }

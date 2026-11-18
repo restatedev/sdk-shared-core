@@ -320,6 +320,68 @@ fn statements_kept_for_their_next_run_hold_no_read() -> Result<()> {
     })
 }
 
+/// A statement kept for its next run is prepared anew after a rollback that
+/// undid the schema it was prepared on, even when later DDL takes the schema
+/// cookie back to the value it was prepared at: it does not write into the
+/// table that took the undone table's root page.
+#[test]
+fn a_statement_kept_across_a_rolled_back_schema_change_is_prepared_anew() -> Result<()> {
+    futures::executor::block_on(async {
+        let store = Arc::new(MemoryKv::default());
+        let db = Db::open(store, StateOptions::default()).await?;
+        let insert = "INSERT INTO a VALUES ('meant for a')";
+        db.execute("BEGIN; CREATE TABLE a(x)").await?;
+        db.execute(insert).await?;
+        db.execute("ROLLBACK").await?;
+        db.execute("CREATE TABLE b(y)").await?;
+        let error = db.execute(insert).await.unwrap_err().to_string();
+        assert!(error.contains("no such table: a"), "{error}");
+        assert!(db.query("SELECT * FROM b").await?.is_empty());
+        assert!(db.is_usable());
+        Ok(())
+    })
+}
+
+/// The same when the call that rolls back opens the next transaction.
+#[test]
+fn a_statement_kept_across_a_rollback_and_a_begin_in_one_call_is_prepared_anew() -> Result<()> {
+    futures::executor::block_on(async {
+        let store = Arc::new(MemoryKv::default());
+        let db = Db::open(store, StateOptions::default()).await?;
+        let insert = "INSERT INTO a VALUES ('meant for a')";
+        db.execute("BEGIN; CREATE TABLE a(x)").await?;
+        db.execute(insert).await?;
+        db.execute("ROLLBACK; BEGIN").await?;
+        db.execute("CREATE TABLE b(y)").await?;
+        let error = db.execute(insert).await.unwrap_err().to_string();
+        assert!(error.contains("no such table: a"), "{error}");
+        db.execute("COMMIT").await?;
+        assert!(db.query("SELECT * FROM b").await?.is_empty());
+        Ok(())
+    })
+}
+
+/// The same after `ROLLBACK TO` a savepoint, inside the transaction, which
+/// the engine handles itself: a guard for the engine's next versions.
+#[test]
+fn a_statement_kept_across_a_rollback_to_a_savepoint_is_prepared_anew() -> Result<()> {
+    futures::executor::block_on(async {
+        let store = Arc::new(MemoryKv::default());
+        let db = Db::open(store, StateOptions::default()).await?;
+        let insert = "INSERT INTO a VALUES ('meant for a')";
+        db.execute("BEGIN; SAVEPOINT s; CREATE TABLE a(x)").await?;
+        db.execute(insert).await?;
+        db.execute("ROLLBACK TO s").await?;
+        db.execute("CREATE TABLE b(y)").await?;
+        let error = db.execute(insert).await.unwrap_err().to_string();
+        assert!(error.contains("no such table: a"), "{error}");
+        db.execute("COMMIT").await?;
+        assert!(db.query("SELECT * FROM b").await?.is_empty());
+        assert!(db.is_usable());
+        Ok(())
+    })
+}
+
 /// A statement run again that fails is an SQL error, as the first run's:
 /// the session goes on, and the statement runs again after it. Values of
 /// the wrong count are refused before it runs.

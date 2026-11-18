@@ -192,6 +192,9 @@ struct Engine {
     schema_bytes: Option<usize>,
     /// SQL since the last commit may have changed the schema.
     schema_changed: bool,
+    /// SQL in the open transaction may have changed the schema, since
+    /// [`Self::statements`] were last dropped.
+    schema_changed_in_transaction: bool,
     /// The records [`Database::commit`] set since the last flush, which
     /// the next one makes durable with the SQL; a reader keeps them, as it
     /// keeps its SQL.
@@ -754,6 +757,7 @@ impl Engine {
             reusable: true,
             schema_bytes: warm.as_ref().map(|warm| warm.schema_bytes),
             schema_changed: false,
+            schema_changed_in_transaction: false,
             records: BTreeMap::new(),
             statements: HashMap::new(),
         };
@@ -837,7 +841,37 @@ impl Engine {
         params: Option<Vec<Value>>,
     ) -> Result<(Vec<String>, Rows)> {
         self.screen(sql);
-        self.run_statements(sql, params).await
+        let ran = self.run_statements(sql, params).await;
+        self.expire_statements(sql);
+        ran
+    }
+
+    /// Drop the statements kept for their next run when a transaction whose
+    /// SQL may have changed the schema ends, however it ends. The engine
+    /// checks a kept statement against the schema cookie alone, and a
+    /// rollback takes the cookie back, to a value the next schema change
+    /// reaches again: a statement prepared between the undone change and the
+    /// rollback would then pass the check and run on the b-trees of the
+    /// schema the rollback undid, such as an INSERT into a table that no
+    /// longer exists, whose root page a new table took. SQLite expires its
+    /// statements on such a rollback; the engine does not. (`ROLLBACK TO` a
+    /// savepoint it handles.)
+    ///
+    /// The transaction is open again after a call that rolled back and began
+    /// the next, such as `ROLLBACK; BEGIN`, so its `ROLLBACK` counts too. No
+    /// other end comes before more SQL of the call: a statement that fails
+    /// ends the call, and `COMMIT` only moves the cookie forward. A
+    /// `ROLLBACK TO` costs preparing the statements again.
+    fn expire_statements(&mut self, sql: &str) {
+        if self.schema_changed_in_transaction
+            && (!self.in_transaction() || mentions(sql, &["rollback"]))
+        {
+            self.statements.clear();
+            self.schema_changed_in_transaction = false;
+        }
+        if self.in_transaction() && mentions(sql, &["create", "drop", "alter"]) {
+            self.schema_changed_in_transaction = true;
+        }
     }
 
     async fn execute(&mut self, sql: &str) -> Result<()> {
