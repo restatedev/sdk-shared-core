@@ -4,6 +4,7 @@ Shared core to build SDKs in various languages. Currently used by:
 
 * [Typescript SDK](https://github.com/restatedev/sdk-typescript)
 * [Python SDK](https://github.com/restatedev/sdk-python)
+* [Java/Kotlin SDK](https://github.com/restatedev/sdk-java)
 * [Go SDK](https://github.com/restatedev/sdk-go)
 * [Ruby SDK](https://github.com/restatedev/sdk-ruby)
 * [Rust SDK](https://github.com/restatedev/sdk-rust)
