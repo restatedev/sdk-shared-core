@@ -205,7 +205,7 @@ impl AsyncResultsState {
         // Wanna understand this better? In _try_resolve_future change all the Err to Ok, then run the unit tests below.
 
         loop {
-            let reduce_future_res = self._try_resolve_future(&mut unresolved_future);
+            let reduce_future_res = self._try_resolve_future(&mut unresolved_future, false);
 
             match reduce_future_res {
                 Ok(handle_state) if handle_state.is_completed() => {
@@ -230,17 +230,38 @@ impl AsyncResultsState {
         }
     }
 
+    /// Whether the runtime's acks for the run completions proposed in this attempt are enough to
+    /// wake the SDK up on `unresolved_future`, as returned by [`Self::try_resolve_future`].
+    ///
+    /// The results of those runs are known already, so in that case the SDK isn't waiting for
+    /// anything else from the runtime.
+    pub(crate) fn resolves_with_proposed_runs(&self, unresolved_future: &UnresolvedFuture) -> bool {
+        if self.cached_run_completions.is_empty() {
+            return false;
+        }
+        let mut unresolved_future = unresolved_future.clone();
+        match self._try_resolve_future(&mut unresolved_future, true) {
+            Ok(handle_state) => handle_state.is_completed(),
+            Err(_) => true,
+        }
+    }
+
     // Err() is used to resolve a future, but also "shortcircuit" the reduction process when "one at the time semantics" are required.
+    // With `assume_runs_acked`, run completions proposed in this attempt count as resolved.
     fn _try_resolve_future(
         &self,
         unresolved_future: &mut UnresolvedFuture,
+        assume_runs_acked: bool,
     ) -> Result<HandleState, HandleState> {
         match unresolved_future {
-            UnresolvedFuture::Single(h) => Ok(self.resolve_handle_state(*h)),
+            UnresolvedFuture::Single(h) => Ok(self.resolve_handle_state(*h, assume_runs_acked)),
             UnresolvedFuture::FirstCompleted(futures) | UnresolvedFuture::Unknown(futures) => {
                 let mut any_completed = false;
                 for fut in futures.iter_mut() {
-                    if self._try_resolve_future(fut)?.is_completed() {
+                    if self
+                        ._try_resolve_future(fut, assume_runs_acked)?
+                        .is_completed()
+                    {
                         any_completed = true;
                         break;
                     }
@@ -259,7 +280,10 @@ impl AsyncResultsState {
                 // Wait for every child to complete
                 let mut i = 0;
                 while i < futures.len() {
-                    if self._try_resolve_future(&mut futures[i])?.is_completed() {
+                    if self
+                        ._try_resolve_future(&mut futures[i], assume_runs_acked)?
+                        .is_completed()
+                    {
                         futures.swap_remove(i);
                     } else {
                         i += 1;
@@ -275,7 +299,7 @@ impl AsyncResultsState {
                 // First success wins; fail only if all fail
                 let mut i = 0;
                 while i < futures.len() {
-                    let state = self._try_resolve_future(&mut futures[i])?;
+                    let state = self._try_resolve_future(&mut futures[i], assume_runs_acked)?;
                     if state == HandleState::Succeeded {
                         futures.clear();
                         return Err(HandleState::Succeeded);
@@ -295,7 +319,7 @@ impl AsyncResultsState {
                 // All must succeed; first failure short-circuits
                 let mut i = 0;
                 while i < futures.len() {
-                    let state = self._try_resolve_future(&mut futures[i])?;
+                    let state = self._try_resolve_future(&mut futures[i], assume_runs_acked)?;
                     if state == HandleState::Failed {
                         futures.clear();
                         return Err(HandleState::Failed);
@@ -338,13 +362,25 @@ impl AsyncResultsState {
             .is_some_and(|id| self.ready.contains_key(id))
     }
 
-    fn resolve_handle_state(&self, handle: NotificationHandle) -> HandleState {
-        match self
-            .handle_mapping
-            .get(&handle)
-            .and_then(|id| self.ready.get(id))
+    fn resolve_handle_state(
+        &self,
+        handle: NotificationHandle,
+        assume_runs_acked: bool,
+    ) -> HandleState {
+        let Some(id) = self.handle_mapping.get(&handle) else {
+            return HandleState::Pending;
+        };
+        let result = self
+            .ready
+            .get(id)
             .and_then(VecDeque::front)
-        {
+            .or_else(|| match id {
+                NotificationId::CompletionId(completion_id) if assume_runs_acked => {
+                    self.cached_run_completions.get(completion_id)
+                }
+                _ => None,
+            });
+        match result {
             Some(notif) if notif.is_failure() => HandleState::Failed,
             Some(_) => HandleState::Succeeded,
             None => HandleState::Pending,

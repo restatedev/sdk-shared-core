@@ -158,6 +158,9 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 // Before returning, let's see if we need to send AwaitingOnMessage.
                 // An empty future awaits nothing but ephemeral commands' notifications,
                 // which Restate answers anyway: there's nothing to tell it about.
+                // Neither is there when the acks of the runs we proposed wake us up. Restate
+                // might have sent those acks already, and an AwaitingOnMessage arriving after
+                // them would tell it we're blocked when we aren't.
                 if context.negotiated_protocol_version >= Version::V7
                     && !awaiting_on_handles.is_empty()
                     && match context.awaiting_on_policy {
@@ -165,6 +168,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                         AwaitingOnPolicy::DontSendWhenExecutingRun => !run_state.any_executing(),
                         AwaitingOnPolicy::DontSend => false,
                     }
+                    && !async_results.resolves_with_proposed_runs(&unresolved_future)
                 {
                     context.output.send(&AwaitingOnMessage {
                         awaiting_on: Some(
