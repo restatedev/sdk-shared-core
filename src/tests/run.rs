@@ -1136,7 +1136,7 @@ mod v7_with_ack {
             waiting_run_proposal,
         };
         let mut output = VMTestCase::with_vm_options(VMOptions {
-            awaiting_on_policy: AwaitingOnPolicy::SendAlways,
+            awaiting_on_policy: AwaitingOnPolicy::SendEvenWhenExecutingRun,
             ..Default::default()
         })
         .input(start_message(1))

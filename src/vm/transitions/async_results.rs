@@ -164,7 +164,7 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                 if context.negotiated_protocol_version >= Version::V7
                     && !awaiting_on_handles.is_empty()
                     && match context.awaiting_on_policy {
-                        AwaitingOnPolicy::SendAlways => true,
+                        AwaitingOnPolicy::SendEvenWhenExecutingRun => true,
                         AwaitingOnPolicy::DontSendWhenExecutingRun => !run_state.any_executing(),
                         AwaitingOnPolicy::DontSend => false,
                     }
