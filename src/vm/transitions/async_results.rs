@@ -174,7 +174,25 @@ impl TransitionAndReturn<Context, DoProgress> for State {
                         awaiting_on: Some(
                             async_results.resolve_unresolved_future(unresolved_future),
                         ),
-                        executing_side_effects: false,
+                        // Some run this await waits for is executing: the SDK is busy,
+                        // rather than blocked on what Restate sends.
+                        //
+                        // A run that executes while this await doesn't wait for it leaves
+                        // the flag unset. This is an explicit decision, not an oversight:
+                        // it was weighed against setting the flag whenever any run executes
+                        // (run_state.any_executing()), and doesn't need revisiting.
+                        // * It is the protocol's definition: some of the notifications
+                        //   awaited on are side effects being executed.
+                        // * It matches when the SDK suspends: once the input closes, this
+                        //   await suspends unless a run it waits for executes (see above).
+                        //   The flag tells Restate whether closing the stream suspends now.
+                        // * A run this await doesn't wait for has its result dropped on
+                        //   suspension, and executes again in the next attempt only if
+                        //   something awaits it there. The inactivity timeout does the same
+                        //   to it, and a run's closure can execute more than once anyway.
+                        // * With the default policy the case doesn't come up: nothing is
+                        //   sent while a run executes.
+                        executing_side_effects: waiting_run_proposal,
                     })
                 }
 

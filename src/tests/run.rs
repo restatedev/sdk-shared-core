@@ -955,6 +955,7 @@ mod v7_with_ack {
     fn awaiting_on(
         combinator: messages::CombinatorType,
         completions: Vec<u32>,
+        executing_side_effects: bool,
     ) -> impl Matcher<ActualT = AwaitingOnMessage> {
         pat!(AwaitingOnMessage {
             awaiting_on: some(pat!(messages::Future {
@@ -970,7 +971,7 @@ mod v7_with_ack {
                 })],
                 combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
             })),
-            executing_side_effects: eq(false)
+            executing_side_effects: eq(executing_side_effects)
         })
     }
 
@@ -1021,7 +1022,7 @@ mod v7_with_ack {
             .unwrap();
         assert_that!(
             output.next_decoded::<AwaitingOnMessage>().unwrap(),
-            awaiting_on(messages::CombinatorType::AllCompleted, vec![1])
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![1], false)
         );
         output.next_decoded::<RunCommandMessage>().unwrap();
         output
@@ -1029,7 +1030,7 @@ mod v7_with_ack {
             .unwrap();
         assert_that!(
             output.next_decoded::<AwaitingOnMessage>().unwrap(),
-            awaiting_on(messages::CombinatorType::Unknown, vec![1])
+            awaiting_on(messages::CombinatorType::Unknown, vec![1], false)
         );
         assert_eq!(output.next(), None);
     }
@@ -1117,6 +1118,83 @@ mod v7_with_ack {
                     combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
                 }))
             })
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    // executing_side_effects tells the runtime whether the SDK is busy while it awaits: it is
+    // set when a run the await waits for is executing. Only this policy reports awaits while
+    // runs execute, and without the flag the runtime takes them for awaits where the invocation
+    // is idle and can be suspended.
+    //
+    // A run that executes while the await doesn't wait for it leaves the flag unset. That is
+    // decided, not an oversight: see where the flag is set, in vm/transitions/async_results.rs.
+    #[test]
+    fn awaiting_on_tells_when_an_awaited_run_is_executing() {
+        let waiting = |waiting_run_proposal| AwaitResponse::WaitingExternalProgress {
+            waiting_input: true,
+            waiting_run_proposal,
+        };
+        let mut output = VMTestCase::with_vm_options(VMOptions {
+            awaiting_on_policy: AwaitingOnPolicy::SendAlways,
+            ..Default::default()
+        })
+        .input(start_message(1))
+        .input(input_entry_message(b"my-data"))
+        .run_without_closing_input(|vm, _| {
+            vm.sys_input().unwrap();
+            let sleep = vm
+                .sys_sleep(Default::default(), Duration::from_secs(1), None)
+                .unwrap();
+            let run = vm.sys_run("my-side-effect".to_owned()).unwrap().handle;
+            assert_eq!(
+                vm.do_await(run.into()).unwrap(),
+                AwaitResponse::ExecuteRun(run)
+            );
+
+            // The run executes, and these wait for it
+            assert_eq!(vm.do_await(all_completed!(run)).unwrap(), waiting(true));
+            assert_eq!(
+                vm.do_await(all_completed!(run, sleep)).unwrap(),
+                waiting(true)
+            );
+            // The run executes, but this doesn't wait for it
+            assert_eq!(vm.do_await(all_completed!(sleep)).unwrap(), waiting(false));
+
+            vm.propose_run_completion(
+                run,
+                RunExitResult::Success(Bytes::from_static(b"ok")),
+                RetryPolicy::default(),
+            )
+            .unwrap();
+
+            // The run completed: this waits for its ack and for the sleep
+            assert_eq!(
+                vm.do_await(all_completed!(run, sleep)).unwrap(),
+                waiting(false)
+            );
+        });
+
+        output.next_decoded::<SleepCommandMessage>().unwrap();
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![2], true)
+        );
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![2, 1], true)
+        );
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![1], false)
+        );
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![2, 1], false)
         );
         assert_eq!(output.next(), None);
     }
