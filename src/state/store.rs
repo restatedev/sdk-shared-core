@@ -43,11 +43,18 @@ use std::{
     future::Future,
     io,
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock,
+    },
 };
 
 /// Decoded frames a state keeps before it drops them all.
 const KEPT_FRAMES: usize = 256;
+/// Pages of a file whose folded image its chains keep: 4 MiB. Chains live
+/// in each open state, not in the page cache, and only a checkpoint empties
+/// them; a page past this many is folded again at every read.
+const MEMO_PAGES: usize = 1024;
 /// Reads of packs, or of pages' references, a state has in flight at once:
 /// an open of many large values, or a checkpoint of many frames, waits
 /// for some rather than asking the store for all of them together.
@@ -182,13 +189,34 @@ pub(crate) struct Staged {
 
 /// A paged file as of a head: its size, and the pages written
 /// since the checkpoint (its overlay), each the chain of its changes.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default)]
 pub(crate) struct FileState {
     pub size: u64,
     pub pages: BTreeMap<u64, Chain>,
     /// The fewest pages the file had since the checkpoint, if it shrank:
     /// the checkpoint's pages from there on are cut, holes.
     pub cut: Option<u64>,
+    /// Chains of `pages` that keep their image: at most [`MEMO_PAGES`]. Only
+    /// the methods of this file and [`Chain`]'s that take it change it.
+    pub(crate) memoed: AtomicUsize,
+}
+
+impl Clone for FileState {
+    /// The chains keep their images in the clone, and so the count.
+    fn clone(&self) -> Self {
+        Self {
+            size: self.size,
+            pages: self.pages.clone(),
+            cut: self.cut,
+            memoed: AtomicUsize::new(self.memoed.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+impl PartialEq for FileState {
+    fn eq(&self, other: &Self) -> bool {
+        (self.size, &self.pages, self.cut) == (other.size, &other.pages, other.cut)
+    }
 }
 
 impl FileState {
@@ -212,9 +240,36 @@ impl FileState {
             false => checkpointed,
         };
         match self.pages.get(&page) {
-            Some(chain) => chain.fold(before, hole),
+            Some(chain) => chain.fold(before, hole, &self.memoed),
             None => Ok(before),
         }
+    }
+
+    /// Page `page` as the file holds it, if its chain keeps the image.
+    fn kept(&self, page: u64) -> Option<Page> {
+        self.pages.get(&page)?.memo.get().cloned()
+    }
+
+    /// Keep `image`, the page `page` as the file holds it, on its chain, if
+    /// the page is in the file and its chain exists.
+    fn remember(&self, page: u64, image: &Page) {
+        if page * PAGE < self.size {
+            if let Some(chain) = self.pages.get(&page) {
+                chain.keep(image, &self.memoed);
+            }
+        }
+    }
+
+    /// Chains that keep their image, counted.
+    #[cfg(test)]
+    pub(crate) fn recounted(&self) -> usize {
+        self.pages.values().filter(|chain| chain.kept()).count()
+    }
+
+    /// The count of chains that keep their image, as held.
+    #[cfg(test)]
+    pub(crate) fn memoed(&self) -> usize {
+        self.memoed.load(Ordering::Relaxed)
     }
 
     /// Apply `change`, a tail entry's to this file: a shrink, then its
@@ -222,45 +277,112 @@ impl FileState {
     pub(crate) fn apply(&mut self, change: &FileChange) {
         if change.size < self.size {
             let end = change.size.div_ceil(PAGE);
+            let held = self.pages.len();
             self.pages.retain(|&page, _| page < end);
+            if self.pages.len() < held {
+                // The chains dropped took their images with them.
+                let kept = self.pages.values().filter(|chain| chain.kept()).count();
+                self.memoed.store(kept, Ordering::Relaxed);
+            }
             self.cut = Some(self.cut.map_or(end, |cut| cut.min(end)));
         }
         self.size = change.size;
         for (page, frame) in &change.pages {
-            self.pages.entry(*page).or_default().push(frame.clone());
+            let chain = self.pages.entry(*page).or_default();
+            chain.push(frame.clone(), &self.memoed);
         }
     }
 }
 
 /// A page's changes since the checkpoint, in order: each a zstd frame
 /// against the page before it, or `None`, a hole, which starts it over.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Chain(Vec<Option<Bytes>>);
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Chain {
+    deltas: Vec<Option<Bytes>>,
+    /// The page after the changes, once folded: the next change drops it.
+    memo: OnceLock<Page>,
+}
+
+impl PartialEq for Chain {
+    fn eq(&self, other: &Self) -> bool {
+        self.deltas == other.deltas
+    }
+}
 
 impl Chain {
-    pub(crate) fn push(&mut self, change: Option<Bytes>) {
-        if change.is_none() {
-            self.0.clear();
+    /// Append `change`. `memoed` counts the chains of the file that keep
+    /// their image.
+    pub(crate) fn push(&mut self, change: Option<Bytes>, memoed: &AtomicUsize) {
+        if self.memo.take().is_some() {
+            memoed.fetch_sub(1, Ordering::Relaxed);
         }
-        self.0.push(change);
+        if change.is_none() {
+            self.deltas.clear();
+        }
+        self.deltas.push(change);
     }
 
     /// Whether it starts over, from a hole, needing no page before it.
     pub(crate) fn starts_over(&self) -> bool {
-        self.0.first().is_some_and(Option::is_none)
+        self.deltas.first().is_some_and(Option::is_none)
     }
 
     /// The page after its changes, from `before`, the page before them; a
-    /// hole is `hole`.
-    pub(crate) fn fold(&self, before: Page, hole: &Page) -> io::Result<Page> {
+    /// hole is `hole`. A chain keeps the page it folds to, so a read does
+    /// not decode again, while `memoed` counts fewer than [`MEMO_PAGES`].
+    ///
+    /// For the whole life of a chain, `before` is the same page: the
+    /// checkpoint's, or a hole past a cut. A checkpoint empties the chains,
+    /// and a cut only drops those at or past the new end. So the kept page
+    /// holds for the chain alone.
+    pub(crate) fn fold(&self, before: Page, hole: &Page, memoed: &AtomicUsize) -> io::Result<Page> {
+        if let Some(image) = self.memo.get() {
+            return Ok(image.clone());
+        }
         let mut image = before;
-        for change in &self.0 {
+        for change in &self.deltas {
             image = match change {
                 Some(frame) => decode_page(frame, &image)?,
                 None => hole.clone(),
             };
         }
+        // Without changes the page is `before`, which is held elsewhere.
+        if !self.deltas.is_empty() {
+            self.keep(&image, memoed);
+        }
         Ok(image)
+    }
+
+    /// Keep `image` as the page after the changes, if it is not kept and
+    /// the file has room for it.
+    fn keep(&self, image: &Page, memoed: &AtomicUsize) {
+        if self.memo.get().is_some() {
+            return;
+        }
+        let mut count = memoed.load(Ordering::Relaxed);
+        loop {
+            if count >= MEMO_PAGES {
+                return;
+            }
+            match memoed.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(now) => count = now,
+            }
+        }
+        if self.memo.set(image.clone()).is_err() {
+            // Another read kept it first.
+            memoed.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether it keeps its image.
+    fn kept(&self) -> bool {
+        self.memo.get().is_some()
     }
 }
 
@@ -370,6 +492,7 @@ impl Durable {
         let mut files = self.files.clone();
         for file in files.values_mut() {
             file.pages.clear();
+            file.memoed.store(0, Ordering::Relaxed);
             file.cut = None;
         }
         Self {
@@ -400,6 +523,8 @@ fn encode_page(image: &[u8], reference: &[u8]) -> io::Result<Bytes> {
 }
 
 pub(crate) fn decode_page(frame: &[u8], reference: &[u8]) -> io::Result<Page> {
+    #[cfg(test)]
+    tests::DECODES.with(|decodes| decodes.set(decodes.get() + 1));
     let image = zstd::decompress_sized(frame, reference, PAGE as usize)?;
     match image.len() == PAGE as usize {
         true => Ok(image.into()),
@@ -580,6 +705,9 @@ impl Snapshot {
         let Some(file) = self.durable.files.get(name) else {
             return Ok(hole);
         };
+        if let Some(image) = file.kept(page) {
+            return Ok(image);
+        }
         let checkpointed = match file.on_checkpoint(page) {
             true => (self.checkpointed(name, page).await?).unwrap_or_else(|| hole.clone()),
             false => hole.clone(),
@@ -892,6 +1020,9 @@ impl Snapshot {
             return Ok((FlushReport::default(), self.continued(self.durable.clone())));
         }
         let mut entry = Entry::default();
+        // The pages written, as images, for the chains to keep: one a page
+        // of a file, as `writes` and its `pages` are maps.
+        let mut seeds: Vec<(String, u64, Page)> = Vec::new();
         for (name, written) in writes {
             let held = self.durable.files.get(&name);
             let size = written.size_after(held.map_or(0, |file| file.size));
@@ -910,7 +1041,9 @@ impl Snapshot {
                 let frame = match image {
                     Some(image) => {
                         let before = befores.next().expect("one a page");
-                        Some(encode_page(&image, &before)?)
+                        let frame = encode_page(&image, &before)?;
+                        seeds.push((name.clone(), page, image));
+                        Some(frame)
                     }
                     None => None,
                 };
@@ -926,6 +1059,14 @@ impl Snapshot {
             None => (*self.durable).clone(),
         };
         next.apply(&entry)?;
+        // The apply reset the chains' images; each page just written is the
+        // image its chain folds to. Only `next` keeps them: a flush that
+        // fails returns before it becomes the state.
+        for (name, page, image) in &seeds {
+            if let Some(file) = next.files.get(name) {
+                file.remember(*page, image);
+            }
+        }
         let held = &self.durable.head;
         let mut head = Head {
             version: held.version + 1,
