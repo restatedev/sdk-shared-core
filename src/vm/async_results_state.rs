@@ -610,6 +610,48 @@ mod tests {
         };
     }
 
+    // `ready` are the notifications received, `proposed` the run completions waiting for their ack.
+    fn proposed_runs(
+        ready: impl IntoIterator<Item = Notification>,
+        proposed: impl IntoIterator<Item = Notification>,
+    ) -> AsyncResultsState {
+        let mut state = state(ready);
+        for Notification { id, result } in proposed {
+            let NotificationId::CompletionId(completion_id) = id else {
+                panic!("A run completes with a completion id");
+            };
+            state.cache_run_completion(completion_id, result);
+        }
+        state
+    }
+
+    // Checks what resolves_with_proposed_runs predicts, then delivers the acks and checks that
+    // try_resolve_future does what was predicted.
+    macro_rules! test_resolves_with_proposed_runs {
+        ($test_name:ident: $state:expr, $input:expr => $expected:expr) => {
+            paste! {
+                #[test]
+                fn [<resolves_with_proposed_runs_ $test_name>] () {
+                    let mut state = $state;
+                    let fut: UnresolvedFuture = ($input).into();
+                    // The prediction is made on what try_resolve_future leaves unresolved
+                    let WaitExternalInput(fut) = state.try_resolve_future(fut) else {
+                        panic!("The future must not resolve before the acks");
+                    };
+                    assert_eq!(state.resolves_with_proposed_runs(&fut), $expected);
+
+                    let mut proposed: Vec<_> =
+                        state.cached_run_completions.keys().copied().collect();
+                    proposed.sort_unstable();
+                    for completion_id in proposed {
+                        state.enqueue_run_completion_ack(completion_id).unwrap();
+                    }
+                    assert_eq!(state.try_resolve_future(fut) == AnyCompleted, $expected);
+                }
+            }
+        };
+    }
+
     macro_rules! test_convert_unresolved_future {
         ($test_name:ident: $state:expr, $input:expr => $expected:expr) => {
             paste! {
@@ -884,6 +926,77 @@ mod tests {
     test_try_future_resolve!(duplicated_leaf_partial_resolution:
         state([success(1)]), all_completed!(1, 2, 1)
         => WaitExternalInput(all_completed!(2)));
+
+    // ==================== Proposed runs ====================
+    //
+    // resolves_with_proposed_runs decides whether an await is reported to the runtime with an
+    // AwaitingOnMessage. It predicts that the acks of the runs proposed in this attempt make
+    // try_resolve_future give the control back to the SDK. Getting it wrong either way costs:
+    // * It says no and the acks do wake the SDK up: the runtime hears that the SDK is blocked
+    //   while the ack that unblocks it may be on its way, and can suspend the invocation for
+    //   nothing. This is what the skip exists to avoid.
+    // * It says yes and the acks don't wake the SDK up: the await is reported only once the
+    //   acks are in, when the SDK awaits again and the prediction no longer counts their runs.
+    //   Until then the runtime doesn't know that the invocation is blocked, and can't suspend it
+    //   before the inactivity timeout.
+    //
+    // So each case checks both what is predicted and what try_resolve_future returns once the
+    // acks are in.
+
+    // --- The acks resolve the await: nothing to tell the runtime
+
+    test_resolves_with_proposed_runs!(single_succeeded:
+        proposed_runs([], [success(1)]), 1 => true);
+    test_resolves_with_proposed_runs!(single_failed:
+        proposed_runs([], [failure(1)]), 1 => true);
+    // A run raced against something else, a timeout for example
+    test_resolves_with_proposed_runs!(first_completed_with_pending:
+        proposed_runs([], [success(1)]), first_completed!(1, 2) => true);
+    test_resolves_with_proposed_runs!(all_completed_all_proposed:
+        proposed_runs([], [success(1), failure(2)]), all_completed!(1, 2) => true);
+    // What was received before counts together with the acks
+    test_resolves_with_proposed_runs!(all_completed_ready_and_proposed:
+        proposed_runs([success(1)], [success(2)]), all_completed!(1, 2) => true);
+    test_resolves_with_proposed_runs!(fsaf_proposed_success:
+        proposed_runs([], [success(1)]), first_succeeded_or_all_failed!(1, 2) => true);
+    test_resolves_with_proposed_runs!(asff_proposed_failure:
+        proposed_runs([], [failure(1)]), all_succeeded_or_first_failed!(1, 2) => true);
+
+    // --- The await needs more than the acks: the runtime must hear about it
+
+    test_resolves_with_proposed_runs!(nothing_proposed:
+        proposed_runs([], []), 1 => false);
+    test_resolves_with_proposed_runs!(proposed_run_not_awaited:
+        proposed_runs([], [success(1)]), 2 => false);
+    test_resolves_with_proposed_runs!(all_completed_with_pending:
+        proposed_runs([], [success(1)]), all_completed!(1, 2) => false);
+    test_resolves_with_proposed_runs!(all_completed_ready_proposed_and_pending:
+        proposed_runs([success(1)], [success(2)]), all_completed!(1, 2, 3) => false);
+    // The result of the run counts, not only that it has one
+    test_resolves_with_proposed_runs!(fsaf_proposed_failure:
+        proposed_runs([], [failure(1)]), first_succeeded_or_all_failed!(1, 2) => false);
+    test_resolves_with_proposed_runs!(asff_proposed_success:
+        proposed_runs([], [success(1)]), all_succeeded_or_first_failed!(1, 2) => false);
+    // An unknown combinator wakes the SDK up when one of its children completes, not before
+    test_resolves_with_proposed_runs!(unknown_wrapping_pending_combinator:
+        proposed_runs([], [success(1)]),
+        first_completed!(unknown!(all_completed!(1, 2)), 3) => false);
+
+    // --- The acks wake the SDK up, and the await stays blocked
+    //
+    // try_resolve_future gives the control back as soon as a nested combinator completes, or a
+    // child of an unknown one, for the SDK to consume it. The await isn't reported here either:
+    // the SDK awaits what is left right after, and that await is the one reported (see
+    // awaiting_on_follows_the_ack_when_the_await_stays_blocked in tests/run.rs).
+
+    test_resolves_with_proposed_runs!(nested_first_completed_in_all_completed:
+        proposed_runs([], [success(1)]),
+        all_completed!(first_completed!(1, 2), 3) => true);
+    test_resolves_with_proposed_runs!(nested_asff_failure_in_all_completed:
+        proposed_runs([], [failure(1)]),
+        all_completed!(all_succeeded_or_first_failed!(1, 2), 3) => true);
+    test_resolves_with_proposed_runs!(unknown_with_pending:
+        proposed_runs([], [success(1)]), unknown!(1, 2) => true);
 
     // ==================== Conversions to protocol future type ====================
 
