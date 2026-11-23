@@ -211,3 +211,36 @@ fn mentions_are_whole_words_in_any_case() {
     assert!(!Mentions::of("SELECT temp_x, my_drop FROM t").connection_state);
     assert!(Mentions::of("SELECT * FROM temp.t").connection_state);
 }
+
+mod timing {
+    use super::*;
+    use std::task::Poll;
+
+    /// What a statement's run is measured by: the longest single poll of it,
+    /// which the time it waits between polls does not add to.
+    #[test]
+    fn timed_gives_the_longest_poll() {
+        let stall = |millis, polls| {
+            let mut polls = polls;
+            std::future::poll_fn(move |cx| {
+                std::thread::sleep(Duration::from_millis(millis));
+                match polls {
+                    0 => Poll::Ready(()),
+                    _ => {
+                        polls -= 1;
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                }
+            })
+        };
+        let ((), longest) = futures::executor::block_on(timed(stall(30, 2)));
+        // Three polls of 30 ms are 30 ms, not 90.
+        assert!(
+            (30..80).contains(&(longest.as_millis() as u64)),
+            "{longest:?}"
+        );
+        let ((), longest) = futures::executor::block_on(timed(stall(1, 0)));
+        assert!(longest < Duration::from_millis(30), "{longest:?}");
+    }
+}

@@ -311,23 +311,6 @@ where
     }
 }
 
-/// [`on_runtime`], unless polled in a task already: then `work` runs here.
-/// Polled outside one, on a host's own thread (as the Node addon polls a
-/// call once in place, before it spawns it), it runs on the runtime, and
-/// the host's thread only waits.
-pub(crate) async fn off_host_thread<T, E>(
-    work: impl Future<Output = std::result::Result<T, E>> + Send + 'static,
-) -> std::result::Result<T, E>
-where
-    T: Send + 'static,
-    E: From<io::Error> + Send + 'static,
-{
-    match tokio::task::try_id() {
-        Some(_) => work.await,
-        None => on_runtime(work).await,
-    }
-}
-
 /// A running flush. One that fails ends the state. One dropped midway has
 /// an unknown outcome too, and the cache forgets what it knew of the
 /// namespace (as a failed sync makes it), so that no other state flushes on
@@ -883,6 +866,23 @@ const PAGE: u64 = PAGE_SIZE as u64;
 
 #[cfg(test)]
 mod tests;
+
+/// Whether this is polled outside every task of a tokio runtime: on the
+/// thread of a host that polls a call once itself, as the Node addon does,
+/// before it hands the call to the runtime if it is pending. A host's thread
+/// should not run what may take long.
+pub(crate) fn outside_task() -> bool {
+    tokio::task::try_id().is_none()
+}
+
+/// [`yield_now`] if polled outside a task ([`outside_task`]), so that what
+/// follows runs in a task: the host runs a call that is pending there. In a
+/// task it costs nothing.
+pub(crate) async fn yield_outside_task() {
+    if outside_task() {
+        yield_now().await
+    }
+}
 
 /// Return to the executor once, even when every awaited future is ready.
 pub(crate) async fn yield_now() {

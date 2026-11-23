@@ -37,12 +37,9 @@
 //! calls may overlap). Under that lock nothing is contended:
 //!
 //! - The engine, its adapter (`io`) and the state are used only by the call
-//!   holding the session, on its task. A call polled outside any task of a
-//!   multi-thread runtime (on a host's own thread, as the Node addon polls
-//!   one once in place) runs as a task of that runtime, so SQL never runs on
-//!   the host's thread; in a task already, it runs there. No thread or
-//!   channel is created; the executor may move the task between its threads,
-//!   so all of it is `Send`.
+//!   holding the session, on its task, or on the thread that polls it (see
+//!   below). No thread or channel is created; the executor may move the task
+//!   between its threads, so all of it is `Send`.
 //! - Their own locks and atomics are there because turso's `IO` and `File`
 //!   take `&self` and must be `Send + Sync`, and the engine's files share
 //!   the state's handles: one call at a time takes them, never waiting. A
@@ -53,6 +50,40 @@
 //!
 //! What invocations share, and so the one place with real concurrency, is
 //! the process's [`PageCache`].
+//!
+//! # Calls polled in place
+//!
+//! A host may poll a call once itself, on a thread of its own and outside
+//! any task, in the context of a tokio runtime (the Node addon does, on
+//! JavaScript's thread), take the answer if the call is ready, and otherwise
+//! hand the same future to the runtime. The call runs where it is polled
+//! until it must wait or reaches work that must not run there, and goes on
+//! wherever it is polled next.
+//!
+//! The host promises that a call that returned `Pending` is polled again,
+//! promptly, in a task of the runtime, or dropped (which ends the session, as
+//! any dropped call does). The engine promises that in a poll outside a task
+//! a call never:
+//!
+//! - opens the database, or compiles a statement, or runs one it has not run
+//!   in this session, or runs a kept statement whose last run held a thread
+//!   for 250 µs or more;
+//! - makes durable the changes to the database (compresses and stores
+//!   their pages), or weighs a schema that changed;
+//! - runs more than 64 steps of a statement, or a step that needs a page
+//!   that is not in memory: neither in the session's view of the database
+//!   nor in the memory tier of the process's page cache. A page that is in
+//!   the process's page cache is read, and its changes decoded, in the poll.
+//!
+//! It yields before them, which returns `Pending`; in a task nothing of this
+//! costs a yield that the engine did not make already. How long a statement
+//! is quick is the longest single poll of its last run, not the time it took
+//! in all, which waiting for a page adds to. What remains: one step of a
+//! statement cannot be preempted, so a kept statement that was quick and has
+//! since grown slow (a scan of a table that has grown) holds the thread for
+//! one run, and is then not run in place until a run is quick again; and the
+//! poll also takes the session's lock, binds the call's parameters and
+//! collects its rows, which grow with the call, not with the database.
 //!
 //! # Driving the engine
 //!
@@ -107,7 +138,7 @@ pub use turso_core::{Numeric, Value};
 
 use crate::sql::io::{KvIo, MountedIo, DB_PATH};
 use crate::state::{blobs::BlobStore, kv::KvStore, PageCache, Result, State, StateOptions};
-use crate::state::{off_host_thread, yield_now};
+use crate::state::{outside_task, yield_now, yield_outside_task};
 use bytes::Bytes;
 use futures::lock::{Mutex, MutexGuard};
 use std::{
@@ -118,6 +149,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::{Duration, Instant},
 };
 use turso_core::storage::database::DatabaseFile;
 use turso_core::{
@@ -214,14 +246,16 @@ struct Engine {
     compiled: u64,
 }
 
-/// A statement prepared from a call's SQL, a single statement, and whether
-/// it ran quickly last time. A call yields before it runs a statement that
-/// did not, or that it prepares, which may run long: so a host that polls a
-/// call once on a thread of its own (the Node.js addon, on JavaScript's)
-/// runs only quick statements there, and the others in the runtime.
+/// A statement prepared from a call's SQL, a single statement, and how long
+/// its last run held a thread. A call yields before it runs a statement that
+/// held it long, or that it prepares, which may run long: so a host that polls a call once on a thread
+/// of its own (the Node.js addon, on JavaScript's) runs only quick
+/// statements there, and the others in the runtime (see "Calls polled in
+/// place" above).
 struct Prepared {
     statement: turso_core::Statement,
-    quick: bool,
+    /// The longest one poll of its last run held a thread (not preparing it).
+    longest: Duration,
     /// What its text mentions, which the text alone decides: kept, a call of
     /// it does not scan the text again.
     mentions: Mentions,
@@ -273,8 +307,12 @@ impl Mentions {
     }
 }
 
-/// How long a statement may run to count as quick.
-const QUICK: std::time::Duration = std::time::Duration::from_millis(1);
+/// How long a poll of a statement may hold a thread for the statement to
+/// count as quick: its call does not yield before it.
+const QUICK: Duration = Duration::from_millis(1);
+
+/// [`QUICK`] in a poll outside a task, where the thread is a host's own.
+const QUICK_IN_PLACE: Duration = Duration::from_micros(250);
 
 /// The most statements a session keeps prepared: it prepares others each
 /// time it runs them.
@@ -319,7 +357,7 @@ impl WarmEngine {
 /// with [`Self::save`], which leaves a clean engine to the next session of
 /// the namespace, [`Self::close`], or a failure; later calls fail.
 pub struct Database {
-    /// What a call takes with it onto the runtime ([`Self::on_runtime`]).
+    /// What a call takes with it ([`Self::call_session`]).
     shared: Arc<Shared>,
     /// The engine's adapter, for its I/O stats.
     #[cfg(any(test, feature = "__bench"))]
@@ -440,10 +478,11 @@ impl IntoFuture for Open {
     type IntoFuture = Pin<Box<dyn Future<Output = Result<Database>> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        // Opening reads pages, and runs the engine: on the runtime too.
-        Box::pin(off_host_thread(async move {
+        // Opening reads pages, and runs the engine: not in a poll of a host's.
+        Box::pin(async move {
+            yield_outside_task().await;
             Database::new(self.0.await?).await
-        }))
+        })
     }
 }
 
@@ -506,7 +545,7 @@ impl Database {
         sql: String,
         params: Option<Vec<Value>>,
     ) -> Result<(Columns, Rows)> {
-        self.on_runtime(move |db| async move {
+        self.call_session(move |db| async move {
             db.call(async |engine| engine.query(&sql, params).await)
                 .await
         })
@@ -546,7 +585,7 @@ impl Database {
     /// `BEGIN` the transaction of the host's `transaction()` body: until its
     /// `commit` or `rollback`, a statement that ends it ends the session.
     pub async fn begin(&self) -> Result<()> {
-        self.on_runtime(|db| async move {
+        self.call_session(|db| async move {
             db.call(async |engine| {
                 if engine.in_body {
                     return Err("transactions do not nest; use SAVEPOINT".into());
@@ -567,7 +606,7 @@ impl Database {
     /// leaves the transaction open, for `rollback`. See [`Self::record`].
     pub async fn commit(&self, records: impl IntoIterator<Item = (String, Bytes)>) -> Result<()> {
         let records: Vec<(String, Bytes)> = records.into_iter().collect();
-        self.on_runtime(move |db| async move {
+        self.call_session(move |db| async move {
             db.call(async |engine| {
                 engine.in_body = false;
                 // Nothing commits on a session a failure ended: the records
@@ -593,7 +632,7 @@ impl Database {
     /// `ROLLBACK` the transaction of a `transaction()` body, if it is still
     /// open and no failure ended the session.
     pub async fn rollback(&self) -> Result<()> {
-        self.on_runtime(|db| async move {
+        self.call_session(|db| async move {
             db.call(async |engine| {
                 engine.in_body = false;
                 match engine.is_usable() && engine.in_transaction() {
@@ -681,7 +720,7 @@ impl Database {
     /// checkpoint's pack after it. Nothing with an empty database.
     #[cfg(test)]
     pub(crate) async fn checkpoint(&self) -> Result<crate::state::FlushReport> {
-        self.on_runtime(|db| async move {
+        self.call_session(|db| async move {
             db.call(async |engine| {
                 let mut mutation = engine.state.mutation();
                 if let Some(first) = engine.state.file().read(0).await? {
@@ -695,11 +734,10 @@ impl Database {
         .await
     }
 
-    /// The call `call` makes of the session, as a task of the runtime unless
-    /// it is polled in one already ([`off_host_thread`]): SQL runs on the
-    /// runtime's threads, never on the host's own (a JavaScript thread, say,
-    /// that polls a call once in place before it spawns it).
-    async fn on_runtime<T, F>(&self, call: impl FnOnce(Arc<Shared>) -> F) -> Result<T>
+    /// The call `call` makes of the session, where it is polled ([the module
+    /// documentation](self#calls-polled-in-place)): dropped before it
+    /// returns, it ends the session.
+    async fn call_session<T, F>(&self, call: impl FnOnce(Arc<Shared>) -> F) -> Result<T>
     where
         T: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
@@ -715,9 +753,9 @@ impl Database {
             }
         }
         let mut returned = Abandon(&self.shared, false);
-        // Boxed: in place (no runtime, or in a task already), a call's
-        // future would otherwise nest in its caller's, on its stack.
-        let result = off_host_thread(Box::pin(call(self.shared.clone()))).await;
+        // Boxed: a call's future would otherwise nest in its caller's, on its
+        // stack.
+        let result = Box::pin(call(self.shared.clone())).await;
         returned.1 = true;
         result
     }
@@ -1035,11 +1073,22 @@ impl Engine {
     /// for parking the engine; even one rolled back, which moved no pages.
     async fn measure_changed_schema(&mut self) -> Result<()> {
         if self.schema_changed && self.state.is_cached() {
+            // Reading the schema takes as long as the schema is large.
+            yield_outside_task().await;
             // Without a size the engine is just not parked.
             self.schema_bytes = self.measure_schema().await.ok();
             self.schema_changed = false;
         }
         Ok(())
+    }
+
+    /// How long a kept statement's last run may have held a thread for the
+    /// call to run it in this poll: less in a poll outside a task.
+    fn quick_bound() -> Duration {
+        match outside_task() {
+            true => QUICK_IN_PLACE,
+            false => QUICK,
+        }
     }
 
     /// Whether the engine can run more SQL: see [`Database::is_usable`].
@@ -1057,11 +1106,13 @@ impl Engine {
         mentions: Mentions,
     ) -> Result<(Columns, Rows)> {
         if let Some((key, prepared)) = kept {
-            if !prepared.quick {
+            if prepared.longest >= Self::quick_bound() {
                 yield_now().await;
             }
             return self.run_prepared(key, prepared, params).await;
         }
+        // Never compiled in a poll outside a task: it takes as long as the
+        // text is long and the schema large. As the engine always did.
         yield_now().await;
         let mut remaining = sql;
         let mut rows = None;
@@ -1128,9 +1179,7 @@ impl Engine {
             let columns: Columns = (0..statement.num_columns())
                 .map(|i| statement.get_column_name(i).into_owned())
                 .collect();
-            let started = std::time::Instant::now();
-            let ran = query_engine(&self.io, &mut statement, limit).await;
-            let quick = started.elapsed() < QUICK;
+            let (ran, longest) = timed(query_engine(&self.io, &mut statement, limit)).await;
             let failure = match ran {
                 Ok(result) => {
                     rows = Some((columns.clone(), result));
@@ -1149,7 +1198,7 @@ impl Engine {
                 return Err(error.into());
             }
             if only {
-                self.keep(sql.into(), statement, quick, mentions, columns);
+                self.keep(sql.into(), statement, longest, mentions, columns);
             }
         }
         rows.ok_or_else(|| "the SQL contains no statements".into())
@@ -1186,9 +1235,12 @@ impl Engine {
             }
         }
         self.poisoned = true;
-        let started = std::time::Instant::now();
-        let ran = query_engine(&self.io, &mut statement, self.max_result_bytes).await;
-        let quick = started.elapsed() < QUICK;
+        let (ran, longest) = timed(query_engine(
+            &self.io,
+            &mut statement,
+            self.max_result_bytes,
+        ))
+        .await;
         // Named as it ran: a schema changed since its last run prepares it anew.
         let columns = columns_of(&statement, kept);
         if self.in_body && self.connection.as_ref().unwrap().get_auto_commit() {
@@ -1203,7 +1255,7 @@ impl Engine {
             Err(Failure::Fatal(error)) => return Err(error),
         };
         self.poisoned = false;
-        self.keep(key.into(), statement, quick, mentions, columns.clone());
+        self.keep(key.into(), statement, longest, mentions, columns.clone());
         Ok((columns, rows))
     }
 
@@ -1214,7 +1266,7 @@ impl Engine {
         &mut self,
         sql: std::borrow::Cow<'_, str>,
         mut statement: turso_core::Statement,
-        quick: bool,
+        longest: Duration,
         mentions: Mentions,
         columns: Columns,
     ) {
@@ -1222,7 +1274,7 @@ impl Engine {
             // A key that came out of the map goes back in; only a new one is a copy.
             let prepared = Prepared {
                 statement,
-                quick,
+                longest,
                 mentions,
                 columns,
             };
@@ -1315,6 +1367,20 @@ impl Drop for Engine {
             self.disconnect();
         }
     }
+}
+
+/// What `future` returns, and the longest one poll of it held a thread.
+async fn timed<F: Future>(future: F) -> (F::Output, Duration) {
+    let mut future = std::pin::pin!(future);
+    let mut longest = Duration::ZERO;
+    let output = std::future::poll_fn(|cx| {
+        let started = Instant::now();
+        let polled = future.as_mut().poll(cx);
+        longest = longest.max(started.elapsed());
+        polled
+    })
+    .await;
+    (output, longest)
 }
 
 /// `statement`'s column names: `kept`, shared, when they are the ones it was
