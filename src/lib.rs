@@ -287,11 +287,21 @@ pub enum AttachInvocationTarget {
 
 pub type VMResult<T> = Result<T, Error>;
 
+/// When to tell Restate, with an `AwaitingOnMessage`, that the SDK is blocked on an await
+/// (service protocol V7 or newer).
+///
+/// Whatever the policy, an await that the acks of the proposed run completions wake up is not
+/// reported, as the acks may be on their way already. If the SDK is still blocked once they
+/// are in, it awaits again, and the policy applies to that await.
 #[derive(Debug, Copy, Clone, Default)]
 pub enum AwaitingOnPolicy {
-    SendAlways,
+    /// Report it also while runs execute. The message then tells, with
+    /// `executing_side_effects`, whether the await waits for one of them.
+    SendEvenWhenExecutingRun,
+    /// Don't report it while a run executes, whether the await waits for that run or not.
     #[default]
     DontSendWhenExecutingRun,
+    /// Never report it.
     DontSend,
 }
 

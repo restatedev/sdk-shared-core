@@ -46,7 +46,8 @@ fn enter_then_propose_completion_then_suspend() {
             )
             .unwrap();
 
-            // Not yet closed, we could still receive the completion here
+            // Not yet closed, we could still receive the ack here, which is all we wait for:
+            // no AwaitingOnMessage
             assert_eq!(
                 vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
                 AwaitResponse::WaitingExternalProgress {
@@ -79,19 +80,6 @@ fn enter_then_propose_completion_then_suspend() {
             result: Some(propose_run_completion_message::Result::Value(
                 Bytes::from_static(b"123")
             )),
-        })
-    );
-    assert_that!(
-        output.next_decoded::<AwaitingOnMessage>().unwrap(),
-        pat!(AwaitingOnMessage {
-            awaiting_on: some(pat!(messages::Future {
-                waiting_completions: eq(vec![1]),
-                waiting_signals: eq(vec![1]),
-                waiting_named_signals: empty(),
-                nested_futures: empty(),
-                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
-            })),
-            executing_side_effects: eq(false)
         })
     );
     assert_that!(
@@ -677,7 +665,8 @@ mod v7_with_ack {
                 )
                 .unwrap();
 
-                // Still waiting for the ack from the runtime
+                // Still waiting for the ack from the runtime, which is all we wait for:
+                // no AwaitingOnMessage
                 assert_eq!(
                     vm.do_await(UnresolvedFuture::Single(handle)).unwrap(),
                     AwaitResponse::WaitingExternalProgress {
@@ -722,17 +711,6 @@ mod v7_with_ack {
                     Bytes::from_static(b"result")
                 )),
             }
-        );
-        assert_that!(
-            output.next_decoded::<AwaitingOnMessage>().unwrap(),
-            pat!(AwaitingOnMessage {
-                awaiting_on: some(pat!(messages::Future {
-                    waiting_completions: eq(vec![1]),
-                    waiting_signals: eq(vec![1]),
-                    combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
-                })),
-                executing_side_effects: eq(false)
-            })
         );
         assert_that!(
             output.next_decoded::<OutputCommandMessage>().unwrap(),
@@ -820,6 +798,404 @@ mod v7_with_ack {
             is_output_with_failure(500, "side-effect-error")
         );
         output.next_decoded::<EndMessage>().unwrap();
+        assert_eq!(output.next(), None);
+    }
+
+    #[test]
+    fn awaiting_on_only_when_proposed_runs_dont_resolve_the_await() {
+        let waiting = AwaitResponse::WaitingExternalProgress {
+            waiting_input: true,
+            waiting_run_proposal: false,
+        };
+        let mut output = VMTestCase::new()
+            .input(StartMessage {
+                id: Bytes::from_static(b"123"),
+                debug_id: "123".to_string(),
+                known_entries: 1,
+                partial_state: false,
+                ..Default::default()
+            })
+            .input(input_entry_message(b"my-data"))
+            .run_without_closing_input(|vm, _| {
+                vm.sys_input().unwrap();
+
+                // Run 1 succeeds and run 2 fails; both wait for the runtime's ack
+                let succeeded = vm.sys_run("succeeds".to_owned()).unwrap().handle;
+                assert_eq!(
+                    vm.do_await(succeeded.into()).unwrap(),
+                    AwaitResponse::ExecuteRun(succeeded)
+                );
+                vm.propose_run_completion(
+                    succeeded,
+                    RunExitResult::Success(Bytes::from_static(b"ok")),
+                    RetryPolicy::default(),
+                )
+                .unwrap();
+                let failed = vm.sys_run("fails".to_owned()).unwrap().handle;
+                assert_eq!(
+                    vm.do_await(failed.into()).unwrap(),
+                    AwaitResponse::ExecuteRun(failed)
+                );
+                vm.propose_run_completion(
+                    failed,
+                    RunExitResult::TerminalFailure(TerminalFailure {
+                        code: 500,
+                        message: "my-failure".to_string(),
+                        metadata: vec![],
+                    }),
+                    RetryPolicy::default(),
+                )
+                .unwrap();
+                let sleep = vm
+                    .sys_sleep(Default::default(), Duration::from_secs(1), None)
+                    .unwrap();
+
+                // The acks alone resolve these: no AwaitingOnMessage
+                assert_eq!(
+                    vm.do_await(all_completed!(succeeded, failed)).unwrap(),
+                    waiting
+                );
+                assert_eq!(
+                    vm.do_await(first_completed!(succeeded, sleep)).unwrap(),
+                    waiting
+                );
+                assert_eq!(
+                    vm.do_await(all_succeeded_or_first_failed!(failed, sleep))
+                        .unwrap(),
+                    waiting
+                );
+
+                // These need the sleep too, the runtime must know we wait for it
+                assert_eq!(
+                    vm.do_await(all_completed!(succeeded, sleep)).unwrap(),
+                    waiting
+                );
+                assert_eq!(
+                    vm.do_await(first_succeeded_or_all_failed!(failed, sleep))
+                        .unwrap(),
+                    waiting
+                );
+            });
+
+        let awaiting = |completions: Vec<u32>, combinator: messages::CombinatorType| {
+            pat!(AwaitingOnMessage {
+                awaiting_on: some(pat!(messages::Future {
+                    waiting_completions: empty(),
+                    waiting_signals: eq(vec![1]),
+                    nested_futures: elements_are![pat!(messages::Future {
+                        waiting_completions: eq(completions),
+                        combinator_type: eq(combinator as i32)
+                    })],
+                    combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+                })),
+                executing_side_effects: eq(false)
+            })
+        };
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        output.next_decoded::<SleepCommandMessage>().unwrap();
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting(vec![1, 3], messages::CombinatorType::AllCompleted)
+        );
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting(
+                vec![2, 3],
+                messages::CombinatorType::FirstSucceededOrAllFailed
+            )
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    // --- What skipping the AwaitingOnMessage relies on
+    //
+    // An await that the acks of the proposed runs wake up isn't reported to the runtime (see
+    // the test above). The tests below guard what makes it safe to stay silent there.
+
+    const WAITING_INPUT: AwaitResponse = AwaitResponse::WaitingExternalProgress {
+        waiting_input: true,
+        waiting_run_proposal: false,
+    };
+
+    fn start() -> VMTestCase {
+        VMTestCase::new()
+            .input(start_message(1))
+            .input(input_entry_message(b"my-data"))
+    }
+
+    // Executes a run and proposes its completion, which then waits for the runtime's ack.
+    fn propose_run(vm: &mut CoreVM, name: &str) -> NotificationHandle {
+        let handle = vm.sys_run(name.to_owned()).unwrap().handle;
+        assert_eq!(
+            vm.do_await(handle.into()).unwrap(),
+            AwaitResponse::ExecuteRun(handle)
+        );
+        vm.propose_run_completion(
+            handle,
+            RunExitResult::Success(Bytes::from_static(b"ok")),
+            RetryPolicy::default(),
+        )
+        .unwrap();
+        handle
+    }
+
+    fn ack(vm: &mut CoreVM, encoder: &Encoder, completion_id: u32) {
+        vm.notify_input(encoder.encode(&ProposeRunCompletionAckMessage { completion_id }));
+    }
+
+    // The AwaitingOnMessage of an await: first_completed(the awaited future, cancellation),
+    // where the awaited future is `combinator` over `completions`.
+    fn awaiting_on(
+        combinator: messages::CombinatorType,
+        completions: Vec<u32>,
+        executing_side_effects: bool,
+    ) -> impl Matcher<ActualT = AwaitingOnMessage> {
+        pat!(AwaitingOnMessage {
+            awaiting_on: some(pat!(messages::Future {
+                waiting_completions: empty(),
+                waiting_signals: eq(vec![1]),
+                waiting_named_signals: empty(),
+                nested_futures: elements_are![pat!(messages::Future {
+                    waiting_completions: eq(completions),
+                    waiting_signals: empty(),
+                    waiting_named_signals: empty(),
+                    nested_futures: empty(),
+                    combinator_type: eq(combinator as i32)
+                })],
+                combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+            })),
+            executing_side_effects: eq(executing_side_effects)
+        })
+    }
+
+    // The message is skipped whenever the acks give the control back to the SDK, also when the
+    // await is still blocked afterwards: a nested combinator completed, or a child of an unknown
+    // combinator, and something else is still missing.
+    //
+    // There the skip must only delay the message, never drop it. The ack makes do_await return
+    // AnyCompleted, the SDK takes what completed and awaits the rest, and that await is
+    // reported. Otherwise the runtime never learns that the invocation is blocked on the sleep,
+    // and keeps it running until the inactivity timeout.
+    #[test]
+    fn awaiting_on_follows_the_ack_when_the_await_stays_blocked() {
+        let mut output = start().run_without_closing_input(|vm, encoder| {
+            vm.sys_input().unwrap();
+            let sleep = vm
+                .sys_sleep(Default::default(), Duration::from_secs(1), None)
+                .unwrap();
+            let other_sleep = vm
+                .sys_sleep(Default::default(), Duration::from_secs(1), None)
+                .unwrap();
+
+            // The ack completes a nested combinator
+            let run = propose_run(vm, "nested");
+            let blocked = all_completed!(first_completed!(run, other_sleep), sleep);
+            assert_eq!(vm.do_await(blocked.clone()).unwrap(), WAITING_INPUT);
+            ack(vm, encoder, 3);
+            assert_eq!(vm.do_await(blocked).unwrap(), AwaitResponse::AnyCompleted);
+            assert_that!(vm.take_notification(run), ok(some(anything())));
+            assert_eq!(vm.do_await(all_completed!(sleep)).unwrap(), WAITING_INPUT);
+
+            // The ack completes a child of an unknown combinator
+            let run = propose_run(vm, "unknown");
+            let blocked = unknown!(run, sleep);
+            assert_eq!(vm.do_await(blocked.clone()).unwrap(), WAITING_INPUT);
+            ack(vm, encoder, 4);
+            assert_eq!(vm.do_await(blocked).unwrap(), AwaitResponse::AnyCompleted);
+            assert_that!(vm.take_notification(run), ok(some(anything())));
+            assert_eq!(vm.do_await(unknown!(sleep)).unwrap(), WAITING_INPUT);
+        });
+
+        output.next_decoded::<SleepCommandMessage>().unwrap();
+        output.next_decoded::<SleepCommandMessage>().unwrap();
+        // Nothing while the ack is on its way, then the await on what is left
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![1], false)
+        );
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::Unknown, vec![1], false)
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    // With several proposed runs, an ack can arrive that doesn't give the control back to the
+    // SDK, because the await needs the other acks too. The await must stay silent until the
+    // last of them: a message sent in between is the one the skip exists to avoid, as it tells
+    // the runtime that the SDK is blocked while the ack that unblocks it may be on its way.
+    #[test]
+    fn no_awaiting_on_until_the_last_ack_resolves_the_await() {
+        let mut output = start().run_without_closing_input(|vm, encoder| {
+            vm.sys_input().unwrap();
+            let run_1 = propose_run(vm, "run-1");
+            let run_2 = propose_run(vm, "run-2");
+
+            let both = all_completed!(run_1, run_2);
+            assert_eq!(vm.do_await(both.clone()).unwrap(), WAITING_INPUT);
+            ack(vm, encoder, 1);
+            assert_eq!(vm.do_await(both.clone()).unwrap(), WAITING_INPUT);
+            ack(vm, encoder, 2);
+            assert_eq!(vm.do_await(both).unwrap(), AwaitResponse::AnyCompleted);
+        });
+
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_eq!(output.next(), None);
+    }
+
+    // The skip counts on the ack reaching the SDK. The runtime can close the stream first, on
+    // the inactivity timeout for example: the ack never comes then, and nothing was said about
+    // this await.
+    //
+    // The SuspensionMessage then tells the runtime what to resume the invocation on, and it must
+    // carry the whole await, the proposed run included: the skip assumes the acks only to
+    // decide, and must leave the await as it is. If the runtime stored the proposal, the run's
+    // completion resolves the nested combinator and the invocation resumes once the sleep fires.
+    // Without the run in the tree, the runtime would wait for the other sleep as well.
+    #[test]
+    fn suspends_on_the_whole_await_when_the_ack_never_comes() {
+        let mut output = start().run_without_closing_input(|vm, _| {
+            vm.sys_input().unwrap();
+            let sleep = vm
+                .sys_sleep(Default::default(), Duration::from_secs(1), None)
+                .unwrap();
+            let other_sleep = vm
+                .sys_sleep(Default::default(), Duration::from_secs(1), None)
+                .unwrap();
+            let run = propose_run(vm, "my-side-effect");
+
+            let blocked = all_completed!(first_completed!(run, other_sleep), sleep);
+            assert_eq!(vm.do_await(blocked.clone()).unwrap(), WAITING_INPUT);
+
+            vm.notify_input_closed();
+            assert_that!(vm.do_await(blocked), err(is_suspended()));
+        });
+
+        output.next_decoded::<SleepCommandMessage>().unwrap();
+        output.next_decoded::<SleepCommandMessage>().unwrap();
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_that!(
+            output.next_decoded::<SuspensionMessage>().unwrap(),
+            pat!(SuspensionMessage {
+                awaiting_on: some(pat!(messages::Future {
+                    waiting_completions: empty(),
+                    waiting_signals: eq(vec![1]),
+                    waiting_named_signals: empty(),
+                    nested_futures: elements_are![pat!(messages::Future {
+                        waiting_completions: eq(vec![1]),
+                        nested_futures: elements_are![pat!(messages::Future {
+                            waiting_completions: eq(vec![3, 2]),
+                            nested_futures: empty(),
+                            combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+                        })],
+                        combinator_type: eq(messages::CombinatorType::AllCompleted as i32)
+                    })],
+                    combinator_type: eq(messages::CombinatorType::FirstCompleted as i32)
+                }))
+            })
+        );
+        assert_eq!(output.next(), None);
+    }
+
+    // executing_side_effects tells the runtime whether the SDK is busy while it awaits: it is
+    // set when a run the await waits for is executing. Only this policy reports awaits while
+    // runs execute, and without the flag the runtime takes them for awaits where the invocation
+    // is idle and can be suspended.
+    //
+    // A run that executes while the await doesn't wait for it leaves the flag unset. That is
+    // decided, not an oversight: see where the flag is set, in vm/transitions/async_results.rs.
+    #[test]
+    fn awaiting_on_tells_when_an_awaited_run_is_executing() {
+        let waiting = |waiting_run_proposal| AwaitResponse::WaitingExternalProgress {
+            waiting_input: true,
+            waiting_run_proposal,
+        };
+        let mut output = VMTestCase::with_vm_options(VMOptions {
+            awaiting_on_policy: AwaitingOnPolicy::SendEvenWhenExecutingRun,
+            ..Default::default()
+        })
+        .input(start_message(1))
+        .input(input_entry_message(b"my-data"))
+        .run_without_closing_input(|vm, _| {
+            vm.sys_input().unwrap();
+            let sleep = vm
+                .sys_sleep(Default::default(), Duration::from_secs(1), None)
+                .unwrap();
+            let run = vm.sys_run("my-side-effect".to_owned()).unwrap().handle;
+            assert_eq!(
+                vm.do_await(run.into()).unwrap(),
+                AwaitResponse::ExecuteRun(run)
+            );
+
+            // The run executes, and these wait for it
+            assert_eq!(vm.do_await(all_completed!(run)).unwrap(), waiting(true));
+            assert_eq!(
+                vm.do_await(all_completed!(run, sleep)).unwrap(),
+                waiting(true)
+            );
+            // The run executes, but this doesn't wait for it
+            assert_eq!(vm.do_await(all_completed!(sleep)).unwrap(), waiting(false));
+
+            vm.propose_run_completion(
+                run,
+                RunExitResult::Success(Bytes::from_static(b"ok")),
+                RetryPolicy::default(),
+            )
+            .unwrap();
+
+            // The run completed: this waits for its ack and for the sleep
+            assert_eq!(
+                vm.do_await(all_completed!(run, sleep)).unwrap(),
+                waiting(false)
+            );
+        });
+
+        output.next_decoded::<SleepCommandMessage>().unwrap();
+        output.next_decoded::<RunCommandMessage>().unwrap();
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![2], true)
+        );
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![2, 1], true)
+        );
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![1], false)
+        );
+        output
+            .next_decoded::<ProposeRunCompletionMessage>()
+            .unwrap();
+        assert_that!(
+            output.next_decoded::<AwaitingOnMessage>().unwrap(),
+            awaiting_on(messages::CombinatorType::AllCompleted, vec![2, 1], false)
+        );
         assert_eq!(output.next(), None);
     }
 
