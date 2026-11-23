@@ -197,6 +197,36 @@ fn a_clone_keeps_its_own_image() -> io::Result<()> {
     Ok(())
 }
 
+/// The changes of a page a flush did not touch are shared with the state before
+/// it; one it did touch is copied for the new state alone, and a hole there
+/// starts only the new state's chain over.
+#[test]
+fn a_clone_shares_the_changes_of_the_pages_it_does_not_change() {
+    let (hole, checkpointed) = (page(0), page(1));
+    let file = file_of(3, &checkpointed);
+    let mut clone = file.clone();
+    let shared = |a: &FileState, b: &FileState, page: u64| {
+        Arc::ptr_eq(&a.pages[&page].deltas, &b.pages[&page].deltas)
+    };
+    assert!((0..3).all(|page| shared(&file, &clone, page)));
+    clone.apply(&FileChange {
+        size: 3 * PAGE,
+        pages: vec![(0, change(&varied(9), &varied(7))), (1, None)],
+    });
+    assert!(!shared(&file, &clone, 0) && !shared(&file, &clone, 1));
+    assert!(shared(&file, &clone, 2));
+    assert_eq!(file.pages[&0].deltas.len(), 1);
+    assert_eq!(clone.pages[&0].deltas.len(), 2);
+    assert!(!file.pages[&1].starts_over() && clone.pages[&1].starts_over());
+    assert_eq!(file.pages[&1].deltas.len(), 1);
+    assert_eq!(clone.pages[&1].deltas.len(), 1);
+    assert_eq!(
+        file.image(1, checkpointed.clone(), &hole).unwrap(),
+        varied(1 ^ 7)
+    );
+    assert_eq!(clone.image(1, checkpointed, &hole).unwrap(), hole);
+}
+
 #[test]
 fn a_kept_image_survives_a_shrink_and_a_growth_only_where_it_is_right() -> io::Result<()> {
     let (hole, checkpointed) = (page(0), page(1));

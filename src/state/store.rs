@@ -296,9 +296,13 @@ impl FileState {
 
 /// A page's changes since the checkpoint, in order: each a zstd frame
 /// against the page before it, or `None`, a hole, which starts it over.
+///
+/// A flush clones the file's state, so every chain: the changes are shared
+/// between the clone and the original until one of them appends, which copies
+/// them for itself.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Chain {
-    deltas: Vec<Option<Bytes>>,
+    deltas: Arc<Vec<Option<Bytes>>>,
     /// The page after the changes, once folded: the next change drops it.
     memo: OnceLock<Page>,
 }
@@ -316,10 +320,11 @@ impl Chain {
         if self.memo.take().is_some() {
             memoed.fetch_sub(1, Ordering::Relaxed);
         }
+        let deltas = Arc::make_mut(&mut self.deltas);
         if change.is_none() {
-            self.deltas.clear();
+            deltas.clear();
         }
-        self.deltas.push(change);
+        deltas.push(change);
     }
 
     /// Whether it starts over, from a hole, needing no page before it.
@@ -340,7 +345,7 @@ impl Chain {
             return Ok(image.clone());
         }
         let mut image = before;
-        for change in &self.deltas {
+        for change in self.deltas.iter() {
             image = match change {
                 Some(frame) => decode_page(frame, &image)?,
                 None => hole.clone(),
