@@ -244,3 +244,90 @@ mod timing {
         assert!(longest < Duration::from_millis(30), "{longest:?}");
     }
 }
+
+mod quick {
+    use super::*;
+    use crate::sql::quick_texts::{Record, RELEARN};
+
+    const QUICK: Duration = Duration::from_micros(10);
+    const SLOW: Duration = QUICK_IN_PLACE;
+
+    #[test]
+    fn a_text_is_known_after_one_quick_run() {
+        let mut record = Record::default();
+        assert!(!record.known("SELECT 1"));
+        record.observe("SELECT 1", QUICK);
+        assert!(record.known("SELECT 1"));
+        assert!(!record.known("SELECT 2"));
+    }
+
+    /// The bound is on the longest poll: a run that reaches it is slow.
+    #[test]
+    fn a_text_whose_first_run_was_slow_is_not_known() {
+        let mut record = Record::default();
+        record.observe("SELECT 1", SLOW);
+        record.observe("SELECT 2", QUICK_IN_PLACE - Duration::from_nanos(1));
+        assert!(!record.known("SELECT 1"));
+        assert!(record.known("SELECT 2"));
+    }
+
+    #[test]
+    fn a_slow_run_forgets_a_known_text_until_it_runs_quickly_again() {
+        let mut record = Record::default();
+        record.observe("SELECT 1", QUICK);
+        record.observe("SELECT 1", SLOW);
+        assert!(!record.known("SELECT 1"));
+        for _ in 1..RELEARN {
+            record.observe("SELECT 1", QUICK);
+            assert!(!record.known("SELECT 1"));
+        }
+        record.observe("SELECT 1", QUICK);
+        assert!(record.known("SELECT 1"));
+        // Known, a quick run changes nothing.
+        record.observe("SELECT 1", QUICK);
+        assert!(record.known("SELECT 1"));
+    }
+
+    #[test]
+    fn the_quick_runs_that_make_a_text_known_again_are_consecutive() {
+        let mut record = Record::default();
+        record.observe("SELECT 1", QUICK);
+        record.observe("SELECT 1", SLOW);
+        for _ in 1..RELEARN {
+            record.observe("SELECT 1", QUICK);
+        }
+        record.observe("SELECT 1", SLOW);
+        for _ in 1..RELEARN {
+            record.observe("SELECT 1", QUICK);
+        }
+        assert!(!record.known("SELECT 1"), "the count started over");
+        record.observe("SELECT 1", QUICK);
+        assert!(record.known("SELECT 1"));
+    }
+
+    #[test]
+    fn a_full_record_is_cleared_and_learns_again() {
+        let mut record = Record::default();
+        for n in 0..8192 {
+            record.observe(&format!("SELECT {n}"), QUICK);
+        }
+        assert_eq!(record.len(), 8192);
+        assert!(record.known("SELECT 0"));
+        record.observe("SELECT new", QUICK);
+        assert!(record.known("SELECT new"));
+        assert_eq!(record.len(), 1);
+        assert!(!record.known("SELECT 0"));
+        // And the texts it forgot learn again, one quick run each.
+        record.observe("SELECT 0", QUICK);
+        assert!(record.known("SELECT 0"));
+    }
+
+    #[test]
+    fn a_text_too_long_to_record_is_never_known() {
+        let mut record = Record::default();
+        let long = format!("SELECT '{}'", "x".repeat(600));
+        record.observe(&long, QUICK);
+        assert!(!record.known(&long));
+        assert_eq!(record.len(), 0);
+    }
+}

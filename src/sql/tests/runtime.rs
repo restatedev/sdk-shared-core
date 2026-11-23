@@ -3,7 +3,8 @@
 //! until it must wait or reaches work that must not run there; the host then
 //! polls it again, or spawns it on the runtime (the module documentation of
 //! `sql`, "Calls polled in place").
-use crate::sql::{Database, Engine, Value};
+use super::script::script;
+use crate::sql::{quick_texts, statements::Cache, Database, Engine, Value};
 use crate::state::{kv::KvStore, Result};
 use bytes::Bytes;
 use futures::future::BoxFuture;
@@ -425,92 +426,49 @@ fn a_spawned_call_aborted_inside_a_blocking_put_leaves_the_session_unusable() ->
     Ok(())
 }
 
-/// Statements of every kind the engine keeps: DDL, inserts, queries with
-/// parameters and errors, a rolled back transaction, savepoints, a pragma.
-/// `tag` makes the texts this test's.
-fn script(tag: &str) -> Vec<(String, Vec<Value>)> {
-    let mut steps: Vec<(String, Vec<Value>)> = Vec::new();
-    let mut add = |sql: String, params: Vec<Value>| steps.push((sql, params));
-    add(
-        "CREATE TABLE t(id INTEGER PRIMARY KEY, n INTEGER, body TEXT)".into(),
-        vec![],
+/// What a run teaches: a session's kept statement holds how long its last
+/// run held a thread, whatever that was, and the process's record forgets a
+/// known text on a run that held it long, at its first run in a session or
+/// as a kept statement.
+#[test]
+fn a_run_teaches_the_statement_and_the_record() -> Result<()> {
+    let runtime = runtime()?;
+    let store = Arc::new(Threads::default());
+    let db = session(&runtime, &store)?;
+    let count = |n: i64| -> Call<Result<crate::sql::Rows>> {
+        let db = db.clone();
+        Box::pin(async move {
+            db.query_with(
+                "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?1) \
+                 SELECT count(*) FROM c /*teaches*/",
+                [Value::from_i64(n)],
+            )
+            .await
+        })
+    };
+    let sql = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?1) \
+               SELECT count(*) FROM c /*teaches*/";
+    // First run in the session, slow: the text is not known after it.
+    quick_texts::observe(sql, Duration::ZERO);
+    assert_eq!(
+        in_a_task(&runtime, count(20_000))?[0][0].as_int(),
+        Some(20_000)
     );
-    add("CREATE INDEX t_n ON t(n)".into(), vec![]);
-    for i in 0..6 {
-        add(
-            format!("INSERT INTO t VALUES(?1, ?2, ?3) /*{tag}*/"),
-            vec![
-                Value::from_i64(i),
-                Value::from_i64(i % 3),
-                Value::from_text(format!("row {i}")),
-            ],
-        );
+    assert!(!quick_texts::known(sql));
+    let slow = engine(&runtime, &db, |e| e.statements[sql].longest);
+    assert!(slow >= Duration::from_micros(250), "{slow:?}");
+    // A kept statement's flag follows its last run, either way.
+    in_a_task(&runtime, count(1))?;
+    let quick = engine(&runtime, &db, |e| e.statements[sql].longest);
+    assert!(quick < slow, "{quick:?} {slow:?}");
+    // A slow run of a kept statement tells the record, which forgets the text.
+    for _ in 0..8 {
+        quick_texts::observe(sql, Duration::ZERO);
     }
-    for _ in 0..2 {
-        add(
-            format!("SELECT id, n, body FROM t WHERE n = ?1 ORDER BY id /*{tag}*/"),
-            vec![Value::from_i64(1)],
-        );
-        add(format!("SELECT count(*), sum(n) FROM t /*{tag}*/"), vec![]);
-        add(
-            format!("UPDATE t SET n = n + 1 WHERE id = ?1 RETURNING id, n /*{tag}*/"),
-            vec![Value::from_i64(2)],
-        );
-        add(format!("SELECT * FROM missing /*{tag}*/"), vec![]);
-        add(
-            format!("INSERT INTO t VALUES(0, 0, 'dup') /*{tag}*/"),
-            vec![],
-        );
-        add(format!("SELECT ?1 /*{tag}*/"), vec![]);
-    }
-    // A transaction whose statements are partly quick, and a DDL rolled back.
-    add("BEGIN".into(), vec![]);
-    add(
-        format!("INSERT INTO t VALUES(20, 2, 'in a transaction') /*{tag}*/"),
-        vec![],
-    );
-    add("SAVEPOINT s".into(), vec![]);
-    add("CREATE TABLE gone(x)".into(), vec![]);
-    add("INSERT INTO gone VALUES(1)".into(), vec![]);
-    add("ALTER TABLE t ADD COLUMN extra TEXT".into(), vec![]);
-    add(
-        format!("SELECT id, extra FROM t ORDER BY id /*{tag}*/"),
-        vec![],
-    );
-    add("ROLLBACK TO s".into(), vec![]);
-    add(format!("SELECT count(*) FROM t /*{tag}*/"), vec![]);
-    add(
-        format!("SELECT id, extra FROM t ORDER BY id /*{tag}*/"),
-        vec![],
-    ); // gone again
-    add("RELEASE s".into(), vec![]);
-    add("SAVEPOINT s2".into(), vec![]);
-    add(
-        format!("DELETE FROM t WHERE id > ?1 /*{tag}*/"),
-        vec![Value::from_i64(2)],
-    );
-    add("ROLLBACK TO s2".into(), vec![]);
-    add("RELEASE s2".into(), vec![]);
-    add("ROLLBACK".into(), vec![]);
-    add(format!("SELECT count(*) FROM t /*{tag}*/"), vec![]);
-    add(
-        "CREATE TABLE after_ddl(x INTEGER PRIMARY KEY, y)".into(),
-        vec![],
-    );
-    add(
-        format!("INSERT INTO after_ddl VALUES(?1, 'y') /*{tag}*/"),
-        vec![Value::from_i64(7)],
-    );
-    add("DROP INDEX t_n".into(), vec![]);
-    add(format!("SELECT * FROM after_ddl /*{tag}*/"), vec![]);
-    add("PRAGMA cache_size = 123".into(), vec![]);
-    add(format!("SELECT count(*) FROM t /*{tag}*/"), vec![]);
-    add(
-        "SELECT type, name, rootpage, sql FROM sqlite_schema ORDER BY rowid".into(),
-        vec![],
-    );
-    add("PRAGMA integrity_check".into(), vec![]);
-    steps
+    assert!(quick_texts::known(sql));
+    in_a_task(&runtime, count(20_000))?;
+    assert!(!quick_texts::known(sql));
+    Ok(())
 }
 
 /// How a script's calls run.
@@ -528,10 +486,12 @@ enum Host {
 fn run_script(
     runtime: &tokio::runtime::Runtime,
     host: Host,
+    cache: Option<&Arc<Cache>>,
     tag: &str,
 ) -> Result<(Vec<String>, usize)> {
     let store = Arc::new(Threads::default());
     let db = Arc::new(runtime.block_on(open(&store).into_future())?);
+    runtime.block_on(db.use_cache(cache.cloned()))?;
     let (mut outcomes, mut in_first_poll) = (Vec::new(), 0);
     for (n, (sql, params)) in script(tag).into_iter().enumerate() {
         let outcome = match host {
@@ -556,21 +516,76 @@ fn run_script(
 }
 
 /// A session gives the same answers, and ends as the same database, whether
-/// its calls run in a task from the start or are polled in place first: a
-/// transaction, a savepoint and a rollback among statements some of which
-/// ran in the first poll and some on the runtime.
+/// its calls run in a task from the start or are polled in place first, and
+/// whether it shares programs with the sessions before it or compiles its
+/// own: a transaction, a savepoint and a rollback among statements some of
+/// which ran in the first poll and some on the runtime.
 #[test]
 fn a_session_polled_in_place_is_the_session_run_in_a_task() -> Result<()> {
     let runtime = runtime()?;
-    let (in_a_task, _) = run_script(&runtime, Host::Task, "equivalence")?;
-    let (in_place, ready) = run_script(&runtime, Host::InPlace, "equivalence")?;
-    assert_eq!(in_place, in_a_task);
-    assert!(ready > 0, "no call finished in its first poll");
-    assert!(
-        ready < in_a_task.len(),
-        "every call finished in its first poll"
+    let cache = Arc::new(Cache::default());
+    // A session that shares, after one that published every program.
+    run_script(&runtime, Host::Task, Some(&cache), "equivalence")?;
+    let expected = run_script(&runtime, Host::Task, None, "equivalence")?.0;
+    assert!(expected.last().unwrap().contains("ok"));
+    for (host, cache) in [
+        (Host::Task, Some(&cache)),
+        (Host::InPlace, None),
+        (Host::InPlace, Some(&cache)),
+    ] {
+        let (outcomes, ready) = run_script(&runtime, host, cache, "equivalence")?;
+        assert_eq!(outcomes, expected, "{}", cache.is_some());
+        if host == Host::InPlace {
+            assert!(ready > 0, "no call finished in its first poll");
+            assert!(
+                ready < expected.len(),
+                "every call finished in its first poll"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A program another session compiled needs no preparing: for a text the
+/// process knows to run quickly it runs in the first poll, compiling nothing;
+/// for another it yields first, and runs in the task all the same.
+#[test]
+fn a_shared_program_of_a_known_text_runs_in_the_first_poll() -> Result<()> {
+    let runtime = runtime()?;
+    let cache = Arc::new(Cache::default());
+    let (first, second) = (
+        session(&runtime, &Arc::new(Threads::default()))?,
+        session(&runtime, &Arc::new(Threads::default()))?,
     );
-    assert!(in_a_task.last().unwrap().contains("ok"));
+    for db in [&first, &second] {
+        runtime.block_on(db.use_cache(Some(cache.clone())))?;
+    }
+    let (known, unknown) = (
+        "SELECT v FROM t WHERE id = 1 /*shared known*/",
+        "SELECT v FROM t WHERE id = 2 /*shared unknown*/",
+    );
+    for sql in [known, unknown] {
+        in_a_task(&runtime, query(&first, sql))?; // compiled, run, published
+    }
+    quick_texts::observe(known, Duration::ZERO);
+    // Not known, whatever the first run took: a slow run forgets it.
+    quick_texts::observe(unknown, Duration::ZERO);
+    quick_texts::observe(unknown, Duration::from_millis(5));
+    for (sql, ready, expected) in [(known, true, "one"), (unknown, false, "two")] {
+        let before = runtime.block_on(second.tally());
+        let mut call = query(&second, sql);
+        let polled = first_poll(&runtime, &mut call);
+        assert_eq!(polled.is_ready(), ready, "{sql}");
+        let rows = match polled {
+            Poll::Ready(rows) => rows?,
+            Poll::Pending => in_a_task(&runtime, call)?,
+        };
+        assert_eq!(rows[0][0].to_string(), expected);
+        let after = runtime.block_on(second.tally());
+        assert_eq!(after.compiled, before.compiled, "a hit compiles nothing");
+        assert_eq!(after.shared_hits, before.shared_hits + 1);
+        assert_eq!(after.reprepares, 0);
+    }
     Ok(())
 }
 
@@ -668,6 +683,8 @@ fn polls(runtime: &tokio::runtime::Runtime, db: &Arc<Database>, sql: &str) -> us
 /// change: the polls of each kind of call are at most those of the engine at
 /// 27a8927, counted there with the same calls on a store that answers at once
 /// (the tests' engine I/O yields before each request, which these include).
+/// A DDL may cost one poll more, which reads the new schema's image for the
+/// cache of programs, as any statement that reads a page does.
 #[test]
 fn a_call_in_a_task_polls_no_more_than_before() -> Result<()> {
     let runtime = runtime()?;
@@ -692,7 +709,7 @@ fn a_call_in_a_task_polls_no_more_than_before() -> Result<()> {
         ),
         ("a write, kept", polls(&runtime, &db, upsert), 11),
         ("a write, kept again", polls(&runtime, &db, upsert), 10),
-        ("a DDL", polls(&runtime, &db, "CREATE TABLE d(x)"), 15),
+        ("a DDL", polls(&runtime, &db, "CREATE TABLE d(x)"), 15 + 1),
         ("a DDL, kept", polls(&runtime, &db, exists), 10),
         ("a DDL, kept again", polls(&runtime, &db, exists), 9),
         ("BEGIN", polls(&runtime, &db, "BEGIN"), 2),
@@ -703,5 +720,59 @@ fn a_call_in_a_task_polls_no_more_than_before() -> Result<()> {
     }
     // A kept read, with nothing to make durable, is one poll.
     assert_eq!(counted[1].1, 1);
+    Ok(())
+}
+
+/// What the record knows of a text is that its runs are quick, not that its
+/// compile is: a text that is slow to compile, compiled in a task by one
+/// session, run quickly from its program by another, is not compiled in a poll
+/// outside a task by a third that has no program to take.
+#[test]
+fn a_text_slow_to_compile_is_never_compiled_in_the_first_poll() -> Result<()> {
+    let runtime = runtime()?;
+    let cache = Arc::new(Cache::default());
+    // Joins of tables, which take longer to plan than a lookup.
+    let sql: String = {
+        let tables = (0..5)
+            .map(|n| format!("t t{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let joins = (1..5)
+            .map(|n| format!("t0.id = t{n}.id"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        format!("SELECT count(*) FROM {tables} WHERE {joins} /*slow to compile*/")
+    };
+    let sessions: Vec<_> = (0..3)
+        .map(|_| session(&runtime, &Arc::new(Threads::default())))
+        .collect::<Result<_>>()?;
+    for db in &sessions[..2] {
+        runtime.block_on(db.use_cache(Some(cache.clone())))?;
+    }
+    // A has no program to take, compiles in a task: the first of a session.
+    let compiled = runtime.block_on(sessions[0].tally()).compiled;
+    in_a_task(&runtime, query(&sessions[0], &sql))?;
+    assert_eq!(runtime.block_on(sessions[0].tally()).compiled, compiled + 1);
+    // B takes A's program, and its run is quick: the text is known.
+    let before = runtime.block_on(sessions[1].tally());
+    in_a_task(&runtime, query(&sessions[1], &sql))?;
+    assert_eq!(
+        runtime.block_on(sessions[1].tally()).shared_hits,
+        before.shared_hits + 1
+    );
+    quick_texts::observe(&sql, Duration::ZERO);
+    assert!(quick_texts::known(&sql));
+    // C has no program to take (its own cache has none), and polls in place.
+    runtime.block_on(sessions[2].use_cache(Some(Arc::new(Cache::default()))))?;
+    let before = runtime.block_on(sessions[2].tally());
+    // Pending, with the session held by the call: it yields before it
+    // compiles, which the task then does.
+    let mut call = query(&sessions[2], &sql);
+    assert!(first_poll(&runtime, &mut call).is_pending());
+    in_a_task(&runtime, call)?;
+    assert_eq!(
+        runtime.block_on(sessions[2].tally()).compiled,
+        before.compiled + 1
+    );
     Ok(())
 }

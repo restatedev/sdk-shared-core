@@ -5,8 +5,12 @@ use crate::sql::{Columns, Database, Engine};
 use crate::state::{simulation::MemoryKv, Result, State};
 use std::sync::Arc;
 
+/// A session that compiles what it runs: another session of the process
+/// may have shared the programs of the same texts.
 async fn open() -> Result<Database> {
-    Database::new(State::open(Arc::new(MemoryKv::default())).await?).await
+    let db = Database::new(State::open(Arc::new(MemoryKv::default())).await?).await?;
+    db.use_cache(None).await?;
+    Ok(db)
 }
 
 /// `f` on the session's engine.
@@ -48,12 +52,12 @@ fn the_checkpoint_statement_is_prepared_once_per_session() -> Result<()> {
         let db = open().await?;
         db.execute("CREATE TABLE t(x)").await?; // its commit prepares the checkpoint
         assert!(engine(&db, |e| e.checkpoint_statement.is_some()).await);
-        let compiled = engine(&db, |e| e.compiled).await;
+        let compiled = engine(&db, |e| e.tally.compiled).await;
         db.execute("INSERT INTO t VALUES (1)").await?; // prepared, with its commit
-        assert_eq!(engine(&db, |e| e.compiled).await, compiled + 1);
+        assert_eq!(engine(&db, |e| e.tally.compiled).await, compiled + 1);
         db.execute("INSERT INTO t VALUES (1)").await?; // both kept
         db.execute("INSERT INTO t VALUES (1)").await?;
-        assert_eq!(engine(&db, |e| e.compiled).await, compiled + 1);
+        assert_eq!(engine(&db, |e| e.tally.compiled).await, compiled + 1);
         assert_eq!(
             db.query("SELECT count(*) FROM t").await?[0][0].as_int(),
             Some(3)

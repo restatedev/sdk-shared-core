@@ -26,6 +26,14 @@
 //! there ([`State::park`]); the next session of the namespace reuses it when
 //! nothing changed, keeping the parsed schema and the engine's page cache.
 //!
+//! # Shared statements
+//!
+//! The statements a session compiles are shared with the other sessions of
+//! the process, by the schema they were compiled for and their exact text, so
+//! that a session of a schema that others ran compiles nothing: see the
+//! `statements` module's documentation for what keeps one schema's program
+//! from another's, and its bounds. [`statement_stats`] counts what it does.
+//!
 //! # Ownership
 //!
 //! A session belongs to one invocation of the object's handler, which opens
@@ -76,14 +84,27 @@
 //!   the process's page cache is read, and its changes decoded, in the poll.
 //!
 //! It yields before them, which returns `Pending`; in a task nothing of this
-//! costs a yield that the engine did not make already. How long a statement
-//! is quick is the longest single poll of its last run, not the time it took
-//! in all, which waiting for a page adds to. What remains: one step of a
-//! statement cannot be preempted, so a kept statement that was quick and has
+//! costs a yield that the engine did not make already (a program another
+//! session compiled costs none at all, as nothing is compiled for it). One
+//! exception to the first item: a program another session compiled, of a text
+//! the process knows to run quickly, runs where it is polled, as a kept
+//! statement does. Nothing is ever compiled in such a poll, whatever is known
+//! of the text: the record says that a text's runs are quick, not that its
+//! compile is.
+//!
+//! How long a statement is quick is the longest single poll of its run
+//! (preparing it not included), not the time it took in all, which waiting
+//! for a page adds to. A session's kept statement holds that of its last run;
+//! the process's record of texts is taught by the first run of each text in a
+//! session, and by a slow run of a kept statement. What remains: one step of
+//! a statement cannot be preempted, so a statement that was quick and has
 //! since grown slow (a scan of a table that has grown) holds the thread for
-//! one run, and is then not run in place until a run is quick again; and the
+//! one run, and is then not run in place until runs are quick again; and the
 //! poll also takes the session's lock, binds the call's parameters and
 //! collects its rows, which grow with the call, not with the database.
+//! The polling thread also waits for the locks of the record and of the
+//! cache of programs, which are held for a lookup or an insert, never for a
+//! scan of a schema's image or a compile.
 //!
 //! # Driving the engine
 //!
@@ -132,6 +153,10 @@
 //! In tests, and with the crate's `__bench` feature: the state's in-memory
 //! store, fault injection and latency simulator, and the I/O stats here.
 mod io;
+mod statements;
+
+pub use statements::{statement_stats, StatementStats};
+use statements::{Cache, SchemaId};
 
 /// SQL values, as returned in rows and bound as parameters.
 pub use turso_core::{Numeric, Value};
@@ -241,9 +266,29 @@ struct Engine {
     /// after each run, and dropped wherever [`Self::statements`] are. Boxed:
     /// a statement is large, and an engine is held by value in a [`Session`].
     checkpoint_statement: Option<Box<turso_core::Statement>>,
-    /// Statements this engine compiled, for tests.
+    /// The programs the session shares with the others ([`statements`]): the
+    /// process's cache, unless a test gave it another or none.
+    cache: Option<Arc<Cache>>,
+    /// The schema's id in [`Self::cache`], the key of the shared programs;
+    /// `None` while the engine's SQL may have changed the schema or the
+    /// connection, which keeps it from sharing.
+    schema: Option<SchemaId>,
+    /// The engine read the schema's image since SQL last may have changed
+    /// the schema or the connection, whether or not the cache could take it
+    /// (an image too large for it is not read again).
+    schema_read: bool,
+    /// What this engine compiled and shared, for tests.
     #[cfg(test)]
-    compiled: u64,
+    tally: Tally,
+}
+
+/// An engine's own count of its statements' compiles and shared hits.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Tally {
+    pub compiled: u64,
+    pub shared_hits: u64,
+    pub reprepares: u64,
 }
 
 /// A statement prepared from a call's SQL, a single statement, and how long
@@ -273,9 +318,18 @@ struct Mentions {
     schema: bool,
     /// ROLLBACK.
     rollback: bool,
+    /// ANALYZE, VACUUM, REINDEX or EXPLAIN: not shared, and the schema's
+    /// rows may change ([`statements`]).
+    unshared: bool,
 }
 
 impl Mentions {
+    /// Whether a statement of this text may share its program with other
+    /// sessions: no DDL, nothing that changes the connection.
+    fn shareable(self) -> bool {
+        !(self.connection_state || self.schema || self.unshared)
+    }
+
     /// What `sql` mentions as a whole word, in any case, in one pass over it.
     /// Conservative: a false positive only costs reusing the engine, or
     /// preparing statements again.
@@ -284,6 +338,7 @@ impl Mentions {
             connection_state: false,
             schema: false,
             rollback: false,
+            unshared: false,
         };
         let words = sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'));
         for word in words {
@@ -297,7 +352,9 @@ impl Mentions {
                 6 => {
                     found.connection_state |= is("pragma") || is("attach") || is("detach");
                     found.schema |= is("create");
+                    found.unshared |= is("vacuum");
                 }
+                7 => found.unshared |= is("analyze") || is("reindex") || is("explain"),
                 8 => found.rollback |= is("rollback"),
                 9 => found.connection_state |= is("temporary"),
                 _ => {}
@@ -311,7 +368,8 @@ impl Mentions {
 /// count as quick: its call does not yield before it.
 const QUICK: Duration = Duration::from_millis(1);
 
-/// [`QUICK`] in a poll outside a task, where the thread is a host's own.
+/// [`QUICK`] in a poll outside a task, where the thread is a host's own: also
+/// the bound of the process's record of quick texts ([`quick_texts`]).
 const QUICK_IN_PLACE: Duration = Duration::from_micros(250);
 
 /// The most statements a session keeps prepared: it prepares others each
@@ -870,8 +928,11 @@ impl Engine {
             records: BTreeMap::new(),
             statements: HashMap::new(),
             checkpoint_statement: None,
+            cache: Some(statements::process()),
+            schema: None,
+            schema_read: false,
             #[cfg(test)]
-            compiled: 0,
+            tally: Tally::default(),
         };
         let database = match warm {
             Some(warm) => warm.database,
@@ -893,6 +954,7 @@ impl Engine {
         if !engine.reused && engine.state.is_cached() {
             engine.schema_bytes = Some(engine.measure_schema().await?);
         }
+        engine.share_schema().await?;
         Ok(engine)
     }
 
@@ -1055,6 +1117,12 @@ impl Engine {
         if sql.schema {
             self.schema_changed = true;
         }
+        // Programs compiled from now on are not those of the schema's id or
+        // settings, until a commit settles them again.
+        if !sql.shareable() {
+            self.schema = None;
+            self.schema_read = false;
+        }
     }
 
     /// Bytes of the schema's SQL.
@@ -1072,12 +1140,21 @@ impl Engine {
     /// Weigh the schema again after a statement that may have changed it,
     /// for parking the engine; even one rolled back, which moved no pages.
     async fn measure_changed_schema(&mut self) -> Result<()> {
-        if self.schema_changed && self.state.is_cached() {
+        let weigh = self.schema_changed && self.state.is_cached();
+        // Whatever SQL took the schema's id away has ended: the schema is as
+        // committed (even a rolled back change leaves it as it was).
+        let share = self.cache.is_some() && self.reusable && !self.schema_read;
+        if weigh || share {
             // Reading the schema takes as long as the schema is large.
             yield_outside_task().await;
+        }
+        if weigh {
             // Without a size the engine is just not parked.
             self.schema_bytes = self.measure_schema().await.ok();
             self.schema_changed = false;
+        }
+        if share {
+            self.share_schema().await?;
         }
         Ok(())
     }
@@ -1109,10 +1186,27 @@ impl Engine {
             if prepared.longest >= Self::quick_bound() {
                 yield_now().await;
             }
-            return self.run_prepared(key, prepared, params).await;
+            return self.run_prepared(key, prepared, params, false).await;
         }
-        // Never compiled in a poll outside a task: it takes as long as the
-        // text is long and the schema large. As the engine always did.
+        // A program another session compiled needs no preparing: it runs where
+        // it is polled if its text is known to run quickly, else a task runs
+        // it. Nothing is ever compiled in a poll outside a task: it takes as
+        // long as the text is long and the schema large. As the engine always
+        // did, a text that is not shared yields first.
+        if let Some(statement) = self.shared_statement(sql, mentions) {
+            if outside_task() && !quick_texts::known(sql) {
+                yield_now().await;
+            }
+            let prepared = Prepared {
+                statement,
+                longest: Duration::ZERO,
+                mentions,
+                columns: Columns::from([]),
+            };
+            return self
+                .run_prepared(sql.to_owned(), prepared, params, true)
+                .await;
+        }
         yield_now().await;
         let mut remaining = sql;
         let mut rows = None;
@@ -1122,6 +1216,7 @@ impl Engine {
             }
             self.poisoned = true; // cancellation/error requires discarding the session
             let connection = Arc::clone(self.connection.as_ref().unwrap());
+            let compiling = Instant::now();
             let prepared = match connection.consume_stmt(remaining) {
                 Ok(prepared) => prepared,
                 // A parse or name error: nothing ran.
@@ -1135,7 +1230,7 @@ impl Engine {
                 self.poisoned = false;
                 break;
             };
-            self.compiled();
+            self.compiled(compiling.elapsed());
             remaining = &remaining[end..];
             let only = rows.is_none()
                 && (params.is_some()
@@ -1180,6 +1275,10 @@ impl Engine {
                 .map(|i| statement.get_column_name(i).into_owned())
                 .collect();
             let (ran, longest) = timed(query_engine(&self.io, &mut statement, limit)).await;
+            self.reprepared(&mut statement);
+            if only {
+                quick_texts::observe(sql, longest);
+            }
             let failure = match ran {
                 Ok(result) => {
                     rows = Some((columns.clone(), result));
@@ -1198,6 +1297,7 @@ impl Engine {
                 return Err(error.into());
             }
             if only {
+                self.share(sql, &statement, mentions);
                 self.keep(sql.into(), statement, longest, mentions, columns);
             }
         }
@@ -1210,6 +1310,7 @@ impl Engine {
         key: String,
         prepared: Prepared,
         params: Option<Vec<Value>>,
+        first_run: bool,
     ) -> Result<(Columns, Rows)> {
         let Prepared {
             mut statement,
@@ -1241,6 +1342,13 @@ impl Engine {
             self.max_result_bytes,
         ))
         .await;
+        self.reprepared(&mut statement);
+        // The first run of a text in a session tells the record, hit or
+        // compiled; a kept statement tells it only when it was slow, so that
+        // the others need not wait for the lock of the record.
+        if first_run || longest >= QUICK_IN_PLACE {
+            quick_texts::observe(&key, longest);
+        }
         // Named as it ran: a schema changed since its last run prepares it anew.
         let columns = columns_of(&statement, kept);
         if self.in_body && self.connection.as_ref().unwrap().get_auto_commit() {
@@ -1288,9 +1396,12 @@ impl Engine {
             return Err(ENDED.into());
         }
         self.poisoned = true;
+        let compiling = Instant::now();
         let mut statement = self.connection.as_ref().unwrap().prepare(sql)?;
-        self.compiled();
-        let rows = match query_engine(&self.io, &mut statement, usize::MAX).await {
+        self.compiled(compiling.elapsed());
+        let ran = query_engine(&self.io, &mut statement, usize::MAX).await;
+        self.reprepared(&mut statement);
+        let rows = match ran {
             Ok(rows) => rows,
             Err(Failure::Sql(error)) => return Err(error.into()),
             Err(Failure::Fatal(error)) => return Err(error),
@@ -1309,13 +1420,16 @@ impl Engine {
         let mut statement = match self.checkpoint_statement.take() {
             Some(statement) => statement,
             None => {
+                let compiling = Instant::now();
                 let statement = (self.connection.as_ref().unwrap())
                     .prepare("PRAGMA wal_checkpoint(TRUNCATE)")?;
-                self.compiled();
+                self.compiled(compiling.elapsed());
                 Box::new(statement)
             }
         };
-        let rows = match query_engine(&self.io, &mut statement, usize::MAX).await {
+        let ran = query_engine(&self.io, &mut statement, usize::MAX).await;
+        self.reprepared(&mut statement);
+        let rows = match ran {
             Ok(rows) => rows,
             Err(Failure::Sql(error)) => return Err(error.into()),
             Err(Failure::Fatal(error)) => return Err(error),
@@ -1328,11 +1442,65 @@ impl Engine {
         Ok(rows)
     }
 
-    /// Note a statement compiled.
-    fn compiled(&mut self) {
+    /// Note a statement compiled, which took `elapsed`.
+    fn compiled(&mut self, elapsed: Duration) {
+        statements::count_compile(elapsed.as_nanos() as u64);
         #[cfg(test)]
         {
-            self.compiled += 1;
+            self.tally.compiled += 1;
+        }
+    }
+
+    /// Note the reprepares turso did for `statement`.
+    fn reprepared(&mut self, statement: &mut turso_core::Statement) {
+        let _n = statements::take_reprepares(statement);
+        #[cfg(test)]
+        {
+            self.tally.reprepares += _n;
+        }
+    }
+
+    /// The schema's id in the cache, once the engine knows its image: a read
+    /// of every row of `sqlite_schema`, which takes as long as the schema is
+    /// large.
+    async fn share_schema(&mut self) -> Result<()> {
+        let Some(cache) = self.cache.clone() else {
+            return Ok(());
+        };
+        let rows = self
+            .internal(
+                "SELECT type, name, tbl_name, rootpage, sql FROM sqlite_schema ORDER BY rowid",
+            )
+            .await?;
+        let cookie = self.internal("PRAGMA schema_version").await?;
+        let page_size = self.connection.as_ref().unwrap().get_page_size().get();
+        self.schema = cache.intern(&statements::image(&rows, &cookie, page_size));
+        self.schema_read = true;
+        Ok(())
+    }
+
+    /// A statement of `sql` (mentioning `mentions`) from the shared programs,
+    /// if the engine may share and there is one.
+    fn shared_statement(&mut self, sql: &str, mentions: Mentions) -> Option<turso_core::Statement> {
+        let (cache, schema) = (self.cache.as_ref()?, self.schema?);
+        if !mentions.shareable() {
+            return None;
+        }
+        let found = cache.lookup(schema, sql, self.connection.as_ref()?);
+        #[cfg(test)]
+        if found.is_some() {
+            self.tally.shared_hits += 1;
+        }
+        found
+    }
+
+    /// Share `statement`, compiled from `sql` and run once, with the other
+    /// sessions.
+    fn share(&self, sql: &str, statement: &turso_core::Statement, mentions: Mentions) {
+        if let (Some(cache), Some(schema)) = (&self.cache, self.schema) {
+            if mentions.shareable() {
+                cache.publish(schema, sql, statement);
+            }
         }
     }
 
@@ -1569,3 +1737,81 @@ mod checkpoint_tests;
 
 #[cfg(test)]
 mod tests;
+
+/// The process's record of the statement texts whose runs are quick, which
+/// says nothing of compiling them: a program that another session compiled,
+/// for a known text, runs where it is polled if that is a host's thread
+/// ([`Engine::run_statements`]); a text that must be compiled never does.
+///
+/// A text is known after one run whose longest poll held a thread, preparing
+/// it not included, for less than [`QUICK_IN_PLACE`]. A run that held it for
+/// that or longer makes a known text unknown, which it becomes again after [`RELEARN`] consecutive
+/// quick runs that were the first of a session (the runs of a kept statement
+/// tell the record only when slow). A record at its limit is cleared, not
+/// frozen; a text longer than [`LONGEST_TEXT`] is never known.
+mod quick_texts {
+    use super::{Duration, QUICK_IN_PLACE};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// The most texts recorded.
+    const MOST: usize = 8192;
+    /// The longest text recorded, in bytes: the record holds at most
+    /// `MOST * LONGEST_TEXT` bytes of texts.
+    const LONGEST_TEXT: usize = 512;
+    /// The quick runs a forgotten text needs to be known again.
+    pub(super) const RELEARN: u8 = 8;
+
+    /// For each text, the quick runs it still needs to be known: none for a
+    /// known text.
+    #[derive(Default)]
+    pub(super) struct Record(HashMap<Box<str>, u8>);
+
+    impl Record {
+        pub(super) fn known(&self, sql: &str) -> bool {
+            self.0.get(sql) == Some(&0)
+        }
+
+        /// A run of `sql` whose longest poll held a thread for `longest`.
+        pub(super) fn observe(&mut self, sql: &str, longest: Duration) {
+            if sql.len() > LONGEST_TEXT {
+                return;
+            }
+            if longest >= QUICK_IN_PLACE {
+                if let Some(needs) = self.0.get_mut(sql) {
+                    *needs = RELEARN;
+                }
+            } else if let Some(needs) = self.0.get_mut(sql) {
+                *needs = needs.saturating_sub(1);
+            } else {
+                if self.0.len() >= MOST {
+                    self.0.clear();
+                }
+                self.0.insert(sql.into(), 0);
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn len(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    static RECORD: Mutex<Option<Record>> = Mutex::new(None);
+
+    fn record() -> std::sync::MutexGuard<'static, Option<Record>> {
+        RECORD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn known(sql: &str) -> bool {
+        record().as_ref().is_some_and(|record| record.known(sql))
+    }
+
+    pub(super) fn observe(sql: &str, longest: Duration) {
+        record()
+            .get_or_insert_with(Record::default)
+            .observe(sql, longest);
+    }
+}

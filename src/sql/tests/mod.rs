@@ -3,3 +3,4 @@
 mod integration;
 mod public_api;
 mod runtime;
+mod script;
