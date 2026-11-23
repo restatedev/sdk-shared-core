@@ -191,3 +191,143 @@ fn host_driver_handles_cold_schema_stats_and_cache_eviction() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn mentions_are_whole_words_in_any_case() {
+    let none = Mentions::of("SELECT created, dropped, templates, rollbacks FROM t WHERE a = 'x'");
+    assert!(!none.connection_state && !none.schema && !none.rollback);
+    let all = Mentions::of("pragma x; Attach d; DETACH e; TEMP t; TeMporary u");
+    assert!(all.connection_state && !all.schema && !all.rollback);
+    for (sql, schema) in [
+        ("CREATE TABLE t(a)", true),
+        ("drop table t", true),
+        ("ALTER TABLE t", true),
+        ("SELECT 1", false),
+    ] {
+        assert_eq!(Mentions::of(sql).schema, schema, "{sql}");
+    }
+    assert!(Mentions::of("ROLLBACK TO s").rollback);
+    // A word is a run of letters, digits and underscores: `temp_x` is not `temp`.
+    assert!(!Mentions::of("SELECT temp_x, my_drop FROM t").connection_state);
+    assert!(Mentions::of("SELECT * FROM temp.t").connection_state);
+}
+
+mod timing {
+    use super::*;
+    use std::task::Poll;
+
+    /// What a statement's run is measured by: the longest single poll of it,
+    /// which the time it waits between polls does not add to.
+    #[test]
+    fn timed_gives_the_longest_poll() {
+        let stall = |millis, polls| {
+            let mut polls = polls;
+            std::future::poll_fn(move |cx| {
+                std::thread::sleep(Duration::from_millis(millis));
+                match polls {
+                    0 => Poll::Ready(()),
+                    _ => {
+                        polls -= 1;
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                }
+            })
+        };
+        let ((), longest) = futures::executor::block_on(timed(stall(30, 2)));
+        // Three polls of 30 ms are 30 ms, not 90.
+        assert!(
+            (30..80).contains(&(longest.as_millis() as u64)),
+            "{longest:?}"
+        );
+        let ((), longest) = futures::executor::block_on(timed(stall(1, 0)));
+        assert!(longest < Duration::from_millis(30), "{longest:?}");
+    }
+}
+
+mod quick {
+    use super::*;
+    use crate::sql::quick_texts::{Record, RELEARN};
+
+    const QUICK: Duration = Duration::from_micros(10);
+    const SLOW: Duration = QUICK_IN_PLACE;
+
+    #[test]
+    fn a_text_is_known_after_one_quick_run() {
+        let mut record = Record::default();
+        assert!(!record.known("SELECT 1"));
+        record.observe("SELECT 1", QUICK);
+        assert!(record.known("SELECT 1"));
+        assert!(!record.known("SELECT 2"));
+    }
+
+    /// The bound is on the longest poll: a run that reaches it is slow.
+    #[test]
+    fn a_text_whose_first_run_was_slow_is_not_known() {
+        let mut record = Record::default();
+        record.observe("SELECT 1", SLOW);
+        record.observe("SELECT 2", QUICK_IN_PLACE - Duration::from_nanos(1));
+        assert!(!record.known("SELECT 1"));
+        assert!(record.known("SELECT 2"));
+    }
+
+    #[test]
+    fn a_slow_run_forgets_a_known_text_until_it_runs_quickly_again() {
+        let mut record = Record::default();
+        record.observe("SELECT 1", QUICK);
+        record.observe("SELECT 1", SLOW);
+        assert!(!record.known("SELECT 1"));
+        for _ in 1..RELEARN {
+            record.observe("SELECT 1", QUICK);
+            assert!(!record.known("SELECT 1"));
+        }
+        record.observe("SELECT 1", QUICK);
+        assert!(record.known("SELECT 1"));
+        // Known, a quick run changes nothing.
+        record.observe("SELECT 1", QUICK);
+        assert!(record.known("SELECT 1"));
+    }
+
+    #[test]
+    fn the_quick_runs_that_make_a_text_known_again_are_consecutive() {
+        let mut record = Record::default();
+        record.observe("SELECT 1", QUICK);
+        record.observe("SELECT 1", SLOW);
+        for _ in 1..RELEARN {
+            record.observe("SELECT 1", QUICK);
+        }
+        record.observe("SELECT 1", SLOW);
+        for _ in 1..RELEARN {
+            record.observe("SELECT 1", QUICK);
+        }
+        assert!(!record.known("SELECT 1"), "the count started over");
+        record.observe("SELECT 1", QUICK);
+        assert!(record.known("SELECT 1"));
+    }
+
+    #[test]
+    fn a_full_record_is_cleared_and_learns_again() {
+        let mut record = Record::default();
+        for n in 0..8192 {
+            record.observe(&format!("SELECT {n}"), QUICK);
+        }
+        assert_eq!(record.len(), 8192);
+        assert!(record.known("SELECT 0"));
+        record.observe("SELECT new", QUICK);
+        assert!(record.known("SELECT new"));
+        assert_eq!(record.len(), 1);
+        assert!(!record.known("SELECT 0"));
+        // And the texts it forgot learn again, one quick run each.
+        record.observe("SELECT 0", QUICK);
+        assert!(record.known("SELECT 0"));
+    }
+
+    #[test]
+    fn a_text_too_long_to_record_is_never_known() {
+        let mut record = Record::default();
+        let long = format!("SELECT '{}'", "x".repeat(600));
+        record.observe(&long, QUICK);
+        assert!(!record.known(&long));
+        assert_eq!(record.len(), 0);
+    }
+}

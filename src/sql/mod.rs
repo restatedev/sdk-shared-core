@@ -26,6 +26,14 @@
 //! there ([`State::park`]); the next session of the namespace reuses it when
 //! nothing changed, keeping the parsed schema and the engine's page cache.
 //!
+//! # Shared statements
+//!
+//! The statements a session compiles are shared with the other sessions of
+//! the process, by the schema they were compiled for and their exact text, so
+//! that a session of a schema that others ran compiles nothing: see the
+//! `statements` module's documentation for what keeps one schema's program
+//! from another's, and its bounds. [`statement_stats`] counts what it does.
+//!
 //! # Ownership
 //!
 //! A session belongs to one invocation of the object's handler, which opens
@@ -37,12 +45,9 @@
 //! calls may overlap). Under that lock nothing is contended:
 //!
 //! - The engine, its adapter (`io`) and the state are used only by the call
-//!   holding the session, on its task. A call polled outside any task of a
-//!   multi-thread runtime (on a host's own thread, as the Node addon polls
-//!   one once in place) runs as a task of that runtime, so SQL never runs on
-//!   the host's thread; in a task already, it runs there. No thread or
-//!   channel is created; the executor may move the task between its threads,
-//!   so all of it is `Send`.
+//!   holding the session, on its task, or on the thread that polls it (see
+//!   below). No thread or channel is created; the executor may move the task
+//!   between its threads, so all of it is `Send`.
 //! - Their own locks and atomics are there because turso's `IO` and `File`
 //!   take `&self` and must be `Send + Sync`, and the engine's files share
 //!   the state's handles: one call at a time takes them, never waiting. A
@@ -53,6 +58,53 @@
 //!
 //! What invocations share, and so the one place with real concurrency, is
 //! the process's [`PageCache`].
+//!
+//! # Calls polled in place
+//!
+//! A host may poll a call once itself, on a thread of its own and outside
+//! any task, in the context of a tokio runtime (the Node addon does, on
+//! JavaScript's thread), take the answer if the call is ready, and otherwise
+//! hand the same future to the runtime. The call runs where it is polled
+//! until it must wait or reaches work that must not run there, and goes on
+//! wherever it is polled next.
+//!
+//! The host promises that a call that returned `Pending` is polled again,
+//! promptly, in a task of the runtime, or dropped (which ends the session, as
+//! any dropped call does). The engine promises that in a poll outside a task
+//! a call never:
+//!
+//! - opens the database, or compiles a statement, or runs one it has not run
+//!   in this session, or runs a kept statement whose last run held a thread
+//!   for 250 µs or more;
+//! - makes durable the changes to the database (compresses and stores
+//!   their pages), or weighs a schema that changed;
+//! - runs more than 64 steps of a statement, or a step that needs a page
+//!   that is not in memory: neither in the session's view of the database
+//!   nor in the memory tier of the process's page cache. A page that is in
+//!   the process's page cache is read, and its changes decoded, in the poll.
+//!
+//! It yields before them, which returns `Pending`; in a task nothing of this
+//! costs a yield that the engine did not make already (a program another
+//! session compiled costs none at all, as nothing is compiled for it). One
+//! exception to the first item: a program another session compiled, of a text
+//! the process knows to run quickly, runs where it is polled, as a kept
+//! statement does. Nothing is ever compiled in such a poll, whatever is known
+//! of the text: the record says that a text's runs are quick, not that its
+//! compile is.
+//!
+//! How long a statement is quick is the longest single poll of its run
+//! (preparing it not included), not the time it took in all, which waiting
+//! for a page adds to. A session's kept statement holds that of its last run;
+//! the process's record of texts is taught by the first run of each text in a
+//! session, and by a slow run of a kept statement. What remains: one step of
+//! a statement cannot be preempted, so a statement that was quick and has
+//! since grown slow (a scan of a table that has grown) holds the thread for
+//! one run, and is then not run in place until runs are quick again; and the
+//! poll also takes the session's lock, binds the call's parameters and
+//! collects its rows, which grow with the call, not with the database.
+//! The polling thread also waits for the locks of the record and of the
+//! cache of programs, which are held for a lookup or an insert, never for a
+//! scan of a schema's image or a compile.
 //!
 //! # Driving the engine
 //!
@@ -101,13 +153,17 @@
 //! In tests, and with the crate's `__bench` feature: the state's in-memory
 //! store, fault injection and latency simulator, and the I/O stats here.
 mod io;
+mod statements;
+
+pub use statements::{statement_stats, StatementStats};
+use statements::{Cache, SchemaId};
 
 /// SQL values, as returned in rows and bound as parameters.
 pub use turso_core::{Numeric, Value};
 
 use crate::sql::io::{KvIo, MountedIo, DB_PATH};
 use crate::state::{blobs::BlobStore, kv::KvStore, PageCache, Result, State, StateOptions};
-use crate::state::{off_host_thread, yield_now};
+use crate::state::{outside_task, yield_now, yield_outside_task};
 use bytes::Bytes;
 use futures::lock::{Mutex, MutexGuard};
 use std::{
@@ -118,6 +174,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::{Duration, Instant},
 };
 use turso_core::storage::database::DatabaseFile;
 use turso_core::{
@@ -160,6 +217,9 @@ pub struct IoStats {
 }
 /// Result rows, each a value per column.
 pub type Rows = Vec<Vec<Value>>;
+/// A statement's column names, shared by the statement a session keeps and
+/// the results of its runs.
+pub type Columns = Arc<[String]>;
 
 /// The SQL engine over a state's file: one private SQL view, driven
 /// entirely by the caller's async task, which a [`Database`] holds.
@@ -202,20 +262,115 @@ struct Engine {
     /// The statements of this session's SQL, by its text, each reset and run
     /// again: preparing one costs more than running it. See [`Prepared`].
     statements: HashMap<String, Prepared>,
+    /// The commit's `PRAGMA wal_checkpoint(TRUNCATE)`, prepared once and reset
+    /// after each run, and dropped wherever [`Self::statements`] are. Boxed:
+    /// a statement is large, and an engine is held by value in a [`Session`].
+    checkpoint_statement: Option<Box<turso_core::Statement>>,
+    /// The programs the session shares with the others ([`statements`]): the
+    /// process's cache, unless a test gave it another or none.
+    cache: Option<Arc<Cache>>,
+    /// The schema's id in [`Self::cache`], the key of the shared programs;
+    /// `None` while the engine's SQL may have changed the schema or the
+    /// connection, which keeps it from sharing.
+    schema: Option<SchemaId>,
+    /// The engine read the schema's image since SQL last may have changed
+    /// the schema or the connection, whether or not the cache could take it
+    /// (an image too large for it is not read again).
+    schema_read: bool,
+    /// What this engine compiled and shared, for tests.
+    #[cfg(test)]
+    tally: Tally,
 }
 
-/// A statement prepared from a call's SQL, a single statement, and whether
-/// it ran quickly last time. A call yields before it runs a statement that
-/// did not, or that it prepares, which may run long: so a host that polls a
-/// call once on a thread of its own (the Node.js addon, on JavaScript's)
-/// runs only quick statements there, and the others in the runtime.
+/// An engine's own count of its statements' compiles and shared hits.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Tally {
+    pub compiled: u64,
+    pub shared_hits: u64,
+    pub reprepares: u64,
+}
+
+/// A statement prepared from a call's SQL, a single statement, and how long
+/// its last run held a thread. A call yields before it runs a statement that
+/// held it long, or that it prepares, which may run long: so a host that polls a call once on a thread
+/// of its own (the Node.js addon, on JavaScript's) runs only quick
+/// statements there, and the others in the runtime (see "Calls polled in
+/// place" above).
 struct Prepared {
     statement: turso_core::Statement,
-    quick: bool,
+    /// The longest one poll of its last run held a thread (not preparing it).
+    longest: Duration,
+    /// What its text mentions, which the text alone decides: kept, a call of
+    /// it does not scan the text again.
+    mentions: Mentions,
+    /// Its column names, as of its last run: shared with each result.
+    columns: Columns,
 }
 
-/// How long a statement may run to count as quick.
-const QUICK: std::time::Duration = std::time::Duration::from_millis(1);
+/// The keywords of a call's SQL that the engine acts on.
+#[derive(Clone, Copy)]
+struct Mentions {
+    /// PRAGMA, ATTACH, DETACH or the temp schema: connection state, which
+    /// rules out reusing the engine.
+    connection_state: bool,
+    /// CREATE, DROP or ALTER: the schema may change.
+    schema: bool,
+    /// ROLLBACK.
+    rollback: bool,
+    /// ANALYZE, VACUUM, REINDEX or EXPLAIN: not shared, and the schema's
+    /// rows may change ([`statements`]).
+    unshared: bool,
+}
+
+impl Mentions {
+    /// Whether a statement of this text may share its program with other
+    /// sessions: no DDL, nothing that changes the connection.
+    fn shareable(self) -> bool {
+        !(self.connection_state || self.schema || self.unshared)
+    }
+
+    /// What `sql` mentions as a whole word, in any case, in one pass over it.
+    /// Conservative: a false positive only costs reusing the engine, or
+    /// preparing statements again.
+    fn of(sql: &str) -> Self {
+        let mut found = Mentions {
+            connection_state: false,
+            schema: false,
+            rollback: false,
+            unshared: false,
+        };
+        let words = sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'));
+        for word in words {
+            let is = |keyword: &str| word.eq_ignore_ascii_case(keyword);
+            match word.len() {
+                4 => {
+                    found.connection_state |= is("temp");
+                    found.schema |= is("drop");
+                }
+                5 => found.schema |= is("alter"),
+                6 => {
+                    found.connection_state |= is("pragma") || is("attach") || is("detach");
+                    found.schema |= is("create");
+                    found.unshared |= is("vacuum");
+                }
+                7 => found.unshared |= is("analyze") || is("reindex") || is("explain"),
+                8 => found.rollback |= is("rollback"),
+                9 => found.connection_state |= is("temporary"),
+                _ => {}
+            }
+        }
+        found
+    }
+}
+
+/// How long a poll of a statement may hold a thread for the statement to
+/// count as quick: its call does not yield before it.
+const QUICK: Duration = Duration::from_millis(1);
+
+/// [`QUICK`] in a poll outside a task, where the thread is a host's own: also
+/// the bound of the process's record of quick texts ([`quick_texts`]).
+const QUICK_IN_PLACE: Duration = Duration::from_micros(250);
 
 /// The most statements a session keeps prepared: it prepares others each
 /// time it runs them.
@@ -260,7 +415,7 @@ impl WarmEngine {
 /// with [`Self::save`], which leaves a clean engine to the next session of
 /// the namespace, [`Self::close`], or a failure; later calls fail.
 pub struct Database {
-    /// What a call takes with it onto the runtime ([`Self::on_runtime`]).
+    /// What a call takes with it ([`Self::call_session`]).
     shared: Arc<Shared>,
     /// The engine's adapter, for its I/O stats.
     #[cfg(any(test, feature = "__bench"))]
@@ -381,10 +536,11 @@ impl IntoFuture for Open {
     type IntoFuture = Pin<Box<dyn Future<Output = Result<Database>> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        // Opening reads pages, and runs the engine: on the runtime too.
-        Box::pin(off_host_thread(async move {
+        // Opening reads pages, and runs the engine: not in a poll of a host's.
+        Box::pin(async move {
+            yield_outside_task().await;
             Database::new(self.0.await?).await
-        }))
+        })
     }
 }
 
@@ -434,8 +590,20 @@ impl Database {
         sql: &str,
         params: Option<Vec<Value>>,
     ) -> Result<(Vec<String>, Rows)> {
-        let sql = sql.to_owned();
-        self.on_runtime(move |db| async move {
+        let (columns, rows) = self.query_columns_owned(sql.to_owned(), params).await?;
+        Ok((columns.to_vec(), rows))
+    }
+
+    /// [`Self::query_columns`] for SQL the caller owns: the call runs on the
+    /// runtime and needs it there, so a host that has a `String` hands it
+    /// over rather than have it copied. The column names are shared with
+    /// the statement the session keeps, and with the next run's results.
+    pub async fn query_columns_owned(
+        &self,
+        sql: String,
+        params: Option<Vec<Value>>,
+    ) -> Result<(Columns, Rows)> {
+        self.call_session(move |db| async move {
             db.call(async |engine| engine.query(&sql, params).await)
                 .await
         })
@@ -475,7 +643,7 @@ impl Database {
     /// `BEGIN` the transaction of the host's `transaction()` body: until its
     /// `commit` or `rollback`, a statement that ends it ends the session.
     pub async fn begin(&self) -> Result<()> {
-        self.on_runtime(|db| async move {
+        self.call_session(|db| async move {
             db.call(async |engine| {
                 if engine.in_body {
                     return Err("transactions do not nest; use SAVEPOINT".into());
@@ -496,7 +664,7 @@ impl Database {
     /// leaves the transaction open, for `rollback`. See [`Self::record`].
     pub async fn commit(&self, records: impl IntoIterator<Item = (String, Bytes)>) -> Result<()> {
         let records: Vec<(String, Bytes)> = records.into_iter().collect();
-        self.on_runtime(move |db| async move {
+        self.call_session(move |db| async move {
             db.call(async |engine| {
                 engine.in_body = false;
                 // Nothing commits on a session a failure ended: the records
@@ -522,7 +690,7 @@ impl Database {
     /// `ROLLBACK` the transaction of a `transaction()` body, if it is still
     /// open and no failure ended the session.
     pub async fn rollback(&self) -> Result<()> {
-        self.on_runtime(|db| async move {
+        self.call_session(|db| async move {
             db.call(async |engine| {
                 engine.in_body = false;
                 match engine.is_usable() && engine.in_transaction() {
@@ -610,7 +778,7 @@ impl Database {
     /// checkpoint's pack after it. Nothing with an empty database.
     #[cfg(test)]
     pub(crate) async fn checkpoint(&self) -> Result<crate::state::FlushReport> {
-        self.on_runtime(|db| async move {
+        self.call_session(|db| async move {
             db.call(async |engine| {
                 let mut mutation = engine.state.mutation();
                 if let Some(first) = engine.state.file().read(0).await? {
@@ -624,11 +792,10 @@ impl Database {
         .await
     }
 
-    /// The call `call` makes of the session, as a task of the runtime unless
-    /// it is polled in one already ([`off_host_thread`]): SQL runs on the
-    /// runtime's threads, never on the host's own (a JavaScript thread, say,
-    /// that polls a call once in place before it spawns it).
-    async fn on_runtime<T, F>(&self, call: impl FnOnce(Arc<Shared>) -> F) -> Result<T>
+    /// The call `call` makes of the session, where it is polled ([the module
+    /// documentation](self#calls-polled-in-place)): dropped before it
+    /// returns, it ends the session.
+    async fn call_session<T, F>(&self, call: impl FnOnce(Arc<Shared>) -> F) -> Result<T>
     where
         T: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
@@ -644,9 +811,9 @@ impl Database {
             }
         }
         let mut returned = Abandon(&self.shared, false);
-        // Boxed: in place (no runtime, or in a task already), a call's
-        // future would otherwise nest in its caller's, on its stack.
-        let result = off_host_thread(Box::pin(call(self.shared.clone()))).await;
+        // Boxed: a call's future would otherwise nest in its caller's, on its
+        // stack.
+        let result = Box::pin(call(self.shared.clone())).await;
         returned.1 = true;
         result
     }
@@ -760,6 +927,12 @@ impl Engine {
             schema_changed_in_transaction: false,
             records: BTreeMap::new(),
             statements: HashMap::new(),
+            checkpoint_statement: None,
+            cache: Some(statements::process()),
+            schema: None,
+            schema_read: false,
+            #[cfg(test)]
+            tally: Tally::default(),
         };
         let database = match warm {
             Some(warm) => warm.database,
@@ -781,12 +954,14 @@ impl Engine {
         if !engine.reused && engine.state.is_cached() {
             engine.schema_bytes = Some(engine.measure_schema().await?);
         }
+        engine.share_schema().await?;
         Ok(engine)
     }
 
     /// Close the connection, with the statements, which hold it.
     fn disconnect(&mut self) {
         self.statements.clear();
+        self.checkpoint_statement = None;
         drop(self.connection.take());
     }
 
@@ -835,14 +1010,17 @@ impl Engine {
     /// it; see [`Self::is_usable`]. Cached execution yields every 64 steps;
     /// one engine call cannot be preempted. An engine helper requiring
     /// synchronous nonresident I/O returns an error.
-    async fn query(
-        &mut self,
-        sql: &str,
-        params: Option<Vec<Value>>,
-    ) -> Result<(Vec<String>, Rows)> {
-        self.screen(sql);
-        let ran = self.run_statements(sql, params).await;
-        self.expire_statements(sql);
+    async fn query(&mut self, sql: &str, params: Option<Vec<Value>>) -> Result<(Columns, Rows)> {
+        // Taken out, to be put back when it has run: with its text, which the
+        // call then does not copy, and what the text mentions.
+        let kept = self.statements.remove_entry(sql);
+        let mentions = match &kept {
+            Some((_, prepared)) => prepared.mentions,
+            None => Mentions::of(sql),
+        };
+        self.screen(mentions);
+        let ran = self.run_statements(sql, params, kept, mentions).await;
+        self.expire_statements(mentions);
         ran
     }
 
@@ -862,14 +1040,13 @@ impl Engine {
     /// other end comes before more SQL of the call: a statement that fails
     /// ends the call, and `COMMIT` only moves the cookie forward. A
     /// `ROLLBACK TO` costs preparing the statements again.
-    fn expire_statements(&mut self, sql: &str) {
-        if self.schema_changed_in_transaction
-            && (!self.in_transaction() || mentions(sql, &["rollback"]))
-        {
+    fn expire_statements(&mut self, sql: Mentions) {
+        if self.schema_changed_in_transaction && (!self.in_transaction() || sql.rollback) {
             self.statements.clear();
+            self.checkpoint_statement = None;
             self.schema_changed_in_transaction = false;
         }
-        if self.in_transaction() && mentions(sql, &["create", "drop", "alter"]) {
+        if self.in_transaction() && sql.schema {
             self.schema_changed_in_transaction = true;
         }
     }
@@ -888,11 +1065,14 @@ impl Engine {
     /// [`Refused`] error. Any other failure ends the state, and the engine
     /// with it.
     async fn commit(&mut self) -> Result<()> {
-        if self.io.has_changes() || !self.records.is_empty() {
-            // Compressing the pages and storing them may take long: see
-            // [`Prepared`].
-            yield_now().await;
+        if !self.io.has_changes() && self.records.is_empty() {
+            // Nothing to make durable: a flush of nothing writes nothing and
+            // leaves the state as it is, so there is none.
+            return self.measure_changed_schema().await;
         }
+        // Compressing the pages and storing them may take long: see
+        // [`Prepared`].
+        yield_now().await;
         let mut mutation = self.state.mutation();
         for (name, value) in &self.records {
             mutation.set_record(name, value.clone())?;
@@ -930,12 +1110,18 @@ impl Engine {
 
     /// Note what `sql` may change besides the database: connection state, which
     /// rules out reuse, and the schema, which a parked engine is weighed by.
-    fn screen(&mut self, sql: &str) {
-        if changes_connection_state(sql) {
+    fn screen(&mut self, sql: Mentions) {
+        if sql.connection_state {
             self.reusable = false;
         }
-        if mentions(sql, &["create", "drop", "alter"]) {
+        if sql.schema {
             self.schema_changed = true;
+        }
+        // Programs compiled from now on are not those of the schema's id or
+        // settings, until a commit settles them again.
+        if !sql.shareable() {
+            self.schema = None;
+            self.schema_read = false;
         }
     }
 
@@ -954,12 +1140,34 @@ impl Engine {
     /// Weigh the schema again after a statement that may have changed it,
     /// for parking the engine; even one rolled back, which moved no pages.
     async fn measure_changed_schema(&mut self) -> Result<()> {
-        if self.schema_changed && self.state.is_cached() {
+        let weigh = self.schema_changed && self.state.is_cached();
+        // Whatever SQL took the schema's id away has ended: the schema is as
+        // committed (even a rolled back change leaves it as it was).
+        let share = self.cache.is_some() && self.reusable && !self.schema_read;
+        if weigh || share {
+            // Reading the schema takes as long as the schema is large.
+            yield_outside_task().await;
+        }
+        if weigh {
             // Without a size the engine is just not parked.
             self.schema_bytes = self.measure_schema().await.ok();
             self.schema_changed = false;
         }
+        if share && self.share_schema().await.is_err() {
+            // Sharing is an optimization: the commit goes on, without an id
+            // (screen took the last one away) until a later read succeeds.
+            self.schema = None;
+        }
         Ok(())
+    }
+
+    /// How long a kept statement's last run may have held a thread for the
+    /// call to run it in this poll: less in a poll outside a task.
+    fn quick_bound() -> Duration {
+        match outside_task() {
+            true => QUICK_IN_PLACE,
+            false => QUICK,
+        }
     }
 
     /// Whether the engine can run more SQL: see [`Database::is_usable`].
@@ -973,12 +1181,33 @@ impl Engine {
         &mut self,
         sql: &str,
         mut params: Option<Vec<Value>>,
-    ) -> Result<(Vec<String>, Rows)> {
-        if let Some(prepared) = self.statements.remove(sql) {
-            if !prepared.quick {
+        kept: Option<(String, Prepared)>,
+        mentions: Mentions,
+    ) -> Result<(Columns, Rows)> {
+        if let Some((key, prepared)) = kept {
+            if prepared.longest >= Self::quick_bound() {
                 yield_now().await;
             }
-            return self.run_prepared(sql, prepared.statement, params).await;
+            return self.run_prepared(key, prepared, params, false).await;
+        }
+        // A program another session compiled needs no preparing: it runs where
+        // it is polled if its text is known to run quickly, else a task runs
+        // it. Nothing is ever compiled in a poll outside a task: it takes as
+        // long as the text is long and the schema large. As the engine always
+        // did, a text that is not shared yields first.
+        if let Some(statement) = self.shared_statement(sql, mentions) {
+            if outside_task() && !quick_texts::known(sql) {
+                yield_now().await;
+            }
+            let prepared = Prepared {
+                statement,
+                longest: Duration::ZERO,
+                mentions,
+                columns: Columns::from([]),
+            };
+            return self
+                .run_prepared(sql.to_owned(), prepared, params, true)
+                .await;
         }
         yield_now().await;
         let mut remaining = sql;
@@ -989,6 +1218,7 @@ impl Engine {
             }
             self.poisoned = true; // cancellation/error requires discarding the session
             let connection = Arc::clone(self.connection.as_ref().unwrap());
+            let compiling = Instant::now();
             let prepared = match connection.consume_stmt(remaining) {
                 Ok(prepared) => prepared,
                 // A parse or name error: nothing ran.
@@ -1002,6 +1232,7 @@ impl Engine {
                 self.poisoned = false;
                 break;
             };
+            self.compiled(compiling.elapsed());
             remaining = &remaining[end..];
             let only = rows.is_none()
                 && (params.is_some()
@@ -1042,15 +1273,17 @@ impl Engine {
                 }
             }
             let limit = self.max_result_bytes;
-            let columns = (0..statement.num_columns())
+            let columns: Columns = (0..statement.num_columns())
                 .map(|i| statement.get_column_name(i).into_owned())
                 .collect();
-            let started = std::time::Instant::now();
-            let ran = query_engine(&self.io, &mut statement, limit).await;
-            let quick = started.elapsed() < QUICK;
+            let (ran, longest) = timed(query_engine(&self.io, &mut statement, limit)).await;
+            self.reprepared(&mut statement);
+            if only {
+                quick_texts::observe(sql, longest);
+            }
             let failure = match ran {
                 Ok(result) => {
-                    rows = Some((columns, result));
+                    rows = Some((columns.clone(), result));
                     None
                 }
                 Err(Failure::Sql(error)) => Some(error),
@@ -1066,7 +1299,8 @@ impl Engine {
                 return Err(error.into());
             }
             if only {
-                self.keep(sql, statement, quick);
+                self.share(sql, &statement, mentions);
+                self.keep(sql.into(), statement, longest, mentions, columns);
             }
         }
         rows.ok_or_else(|| "the SQL contains no statements".into())
@@ -1075,10 +1309,17 @@ impl Engine {
     /// Run `statement`, prepared from `sql` before, again with `params`.
     async fn run_prepared(
         &mut self,
-        sql: &str,
-        mut statement: turso_core::Statement,
+        key: String,
+        prepared: Prepared,
         params: Option<Vec<Value>>,
-    ) -> Result<(Vec<String>, Rows)> {
+        first_run: bool,
+    ) -> Result<(Columns, Rows)> {
+        let Prepared {
+            mut statement,
+            mentions,
+            columns: kept,
+            ..
+        } = prepared;
         if !self.is_usable() {
             return Err(ENDED.into());
         }
@@ -1097,13 +1338,21 @@ impl Engine {
             }
         }
         self.poisoned = true;
-        let started = std::time::Instant::now();
-        let ran = query_engine(&self.io, &mut statement, self.max_result_bytes).await;
-        let quick = started.elapsed() < QUICK;
+        let (ran, longest) = timed(query_engine(
+            &self.io,
+            &mut statement,
+            self.max_result_bytes,
+        ))
+        .await;
+        self.reprepared(&mut statement);
+        // The first run of a text in a session tells the record, hit or
+        // compiled; a kept statement tells it only when it was slow, so that
+        // the others need not wait for the lock of the record.
+        if first_run || longest >= QUICK_IN_PLACE {
+            quick_texts::observe(&key, longest);
+        }
         // Named as it ran: a schema changed since its last run prepares it anew.
-        let columns = (0..statement.num_columns())
-            .map(|i| statement.get_column_name(i).into_owned())
-            .collect();
+        let columns = columns_of(&statement, kept);
         if self.in_body && self.connection.as_ref().unwrap().get_auto_commit() {
             return Err(Refused::boxed(BODY_ENDED));
         }
@@ -1116,16 +1365,30 @@ impl Engine {
             Err(Failure::Fatal(error)) => return Err(error),
         };
         self.poisoned = false;
-        self.keep(sql, statement, quick);
+        self.keep(key.into(), statement, longest, mentions, columns.clone());
         Ok((columns, rows))
     }
 
     /// Keep `statement`, of `sql`, which ran to its end, for the next call of
     /// it, reset: a statement left mid-way holds the version it read, which
     /// a checkpoint would wait for.
-    fn keep(&mut self, sql: &str, mut statement: turso_core::Statement, quick: bool) {
+    fn keep(
+        &mut self,
+        sql: std::borrow::Cow<'_, str>,
+        mut statement: turso_core::Statement,
+        longest: Duration,
+        mentions: Mentions,
+        columns: Columns,
+    ) {
         if self.statements.len() < MAX_STATEMENTS && statement.reset().is_ok() {
-            (self.statements).insert(sql.to_owned(), Prepared { statement, quick });
+            // A key that came out of the map goes back in; only a new one is a copy.
+            let prepared = Prepared {
+                statement,
+                longest,
+                mentions,
+                columns,
+            };
+            (self.statements).insert(sql.into_owned(), prepared);
         }
     }
 
@@ -1135,8 +1398,12 @@ impl Engine {
             return Err(ENDED.into());
         }
         self.poisoned = true;
+        let compiling = Instant::now();
         let mut statement = self.connection.as_ref().unwrap().prepare(sql)?;
-        let rows = match query_engine(&self.io, &mut statement, usize::MAX).await {
+        self.compiled(compiling.elapsed());
+        let ran = query_engine(&self.io, &mut statement, usize::MAX).await;
+        self.reprepared(&mut statement);
+        let rows = match ran {
             Ok(rows) => rows,
             Err(Failure::Sql(error)) => return Err(error.into()),
             Err(Failure::Fatal(error)) => return Err(error),
@@ -1145,12 +1412,106 @@ impl Engine {
         Ok(rows)
     }
 
+    /// [`Self::internal`] for the commit's checkpoint, whose statement stays
+    /// prepared for the next commit. A run that fails drops it.
+    async fn run_checkpoint(&mut self) -> Result<Rows> {
+        if !self.is_usable() {
+            return Err(ENDED.into());
+        }
+        self.poisoned = true;
+        let mut statement = match self.checkpoint_statement.take() {
+            Some(statement) => statement,
+            None => {
+                let compiling = Instant::now();
+                let statement = (self.connection.as_ref().unwrap())
+                    .prepare("PRAGMA wal_checkpoint(TRUNCATE)")?;
+                self.compiled(compiling.elapsed());
+                Box::new(statement)
+            }
+        };
+        let ran = query_engine(&self.io, &mut statement, usize::MAX).await;
+        self.reprepared(&mut statement);
+        let rows = match ran {
+            Ok(rows) => rows,
+            Err(Failure::Sql(error)) => return Err(error.into()),
+            Err(Failure::Fatal(error)) => return Err(error),
+        };
+        self.poisoned = false;
+        // Reset, as a kept statement is: one left mid-way holds the version it read.
+        if statement.reset().is_ok() {
+            self.checkpoint_statement = Some(statement);
+        }
+        Ok(rows)
+    }
+
+    /// Note a statement compiled, which took `elapsed`.
+    fn compiled(&mut self, elapsed: Duration) {
+        statements::count_compile(elapsed.as_nanos() as u64);
+        #[cfg(test)]
+        {
+            self.tally.compiled += 1;
+        }
+    }
+
+    /// Note the reprepares turso did for `statement`.
+    fn reprepared(&mut self, statement: &mut turso_core::Statement) {
+        let _n = statements::take_reprepares(statement);
+        #[cfg(test)]
+        {
+            self.tally.reprepares += _n;
+        }
+    }
+
+    /// The schema's id in the cache, once the engine knows its image: a read
+    /// of every row of `sqlite_schema`, which takes as long as the schema is
+    /// large.
+    async fn share_schema(&mut self) -> Result<()> {
+        let Some(cache) = self.cache.clone() else {
+            return Ok(());
+        };
+        let rows = self
+            .internal(
+                "SELECT type, name, tbl_name, rootpage, sql FROM sqlite_schema ORDER BY rowid",
+            )
+            .await?;
+        let cookie = self.internal("PRAGMA schema_version").await?;
+        let page_size = self.connection.as_ref().unwrap().get_page_size().get();
+        self.schema = cache.intern(&statements::image(&rows, &cookie, page_size));
+        self.schema_read = true;
+        Ok(())
+    }
+
+    /// A statement of `sql` (mentioning `mentions`) from the shared programs,
+    /// if the engine may share and there is one.
+    fn shared_statement(&mut self, sql: &str, mentions: Mentions) -> Option<turso_core::Statement> {
+        let (cache, schema) = (self.cache.as_ref()?, self.schema?);
+        if !mentions.shareable() {
+            return None;
+        }
+        let found = cache.lookup(schema, sql, self.connection.as_ref()?);
+        #[cfg(test)]
+        if found.is_some() {
+            self.tally.shared_hits += 1;
+        }
+        found
+    }
+
+    /// Share `statement`, compiled from `sql` and run once, with the other
+    /// sessions.
+    fn share(&self, sql: &str, statement: &turso_core::Statement, mentions: Mentions) {
+        if let (Some(cache), Some(schema)) = (&self.cache, self.schema) {
+            if mentions.shareable() {
+                cache.publish(schema, sql, statement);
+            }
+        }
+    }
+
     /// Merge the private engine WAL into the private database overlay and truncate it.
     ///
     /// This is a local barrier, **not** backend durability. Failure poisons the
     /// engine. A successful checkpoint may still be discarded without saving.
     async fn checkpoint(&mut self) -> Result<()> {
-        let rows = self.internal("PRAGMA wal_checkpoint(TRUNCATE)").await?;
+        let rows = self.run_checkpoint().await?;
         if rows.len() != 1
             || rows[0].len() != 3
             || rows[0][0].as_int() != Some(0)
@@ -1178,21 +1539,31 @@ impl Drop for Engine {
     }
 }
 
-/// Whether SQL may change per-connection state rather than the database:
-/// PRAGMA settings, ATTACH/DETACH or the temp schema. Conservative: a false
-/// positive only costs reusing the engine.
-fn changes_connection_state(sql: &str) -> bool {
-    mentions(sql, &["pragma", "attach", "detach", "temp", "temporary"])
+/// What `future` returns, and the longest one poll of it held a thread.
+async fn timed<F: Future>(future: F) -> (F::Output, Duration) {
+    let mut future = std::pin::pin!(future);
+    let mut longest = Duration::ZERO;
+    let output = std::future::poll_fn(|cx| {
+        let started = Instant::now();
+        let polled = future.as_mut().poll(cx);
+        longest = longest.max(started.elapsed());
+        polled
+    })
+    .await;
+    (output, longest)
 }
 
-/// Whether `sql` contains one of `keywords` as a whole word, in any case.
-fn mentions(sql: &str, keywords: &[&str]) -> bool {
-    sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .any(|word| {
-            keywords
-                .iter()
-                .any(|keyword| word.eq_ignore_ascii_case(keyword))
-        })
+/// `statement`'s column names: `kept`, shared, when they are the ones it was
+/// kept with; else new ones (a schema changed since its last run, which a
+/// statement prepares again for).
+fn columns_of(statement: &turso_core::Statement, kept: Columns) -> Columns {
+    let count = statement.num_columns();
+    if count == kept.len() && (0..count).all(|i| *statement.get_column_name(i) == *kept[i]) {
+        return kept;
+    }
+    (0..count)
+        .map(|i| statement.get_column_name(i).into_owned())
+        .collect()
 }
 
 /// Resume an engine completion only after the host has driven all submitted I/O.
@@ -1368,3 +1739,81 @@ mod checkpoint_tests;
 
 #[cfg(test)]
 mod tests;
+
+/// The process's record of the statement texts whose runs are quick, which
+/// says nothing of compiling them: a program that another session compiled,
+/// for a known text, runs where it is polled if that is a host's thread
+/// ([`Engine::run_statements`]); a text that must be compiled never does.
+///
+/// A text is known after one run whose longest poll held a thread, preparing
+/// it not included, for less than [`QUICK_IN_PLACE`]. A run that held it for
+/// that or longer makes a known text unknown, which it becomes again after [`RELEARN`] consecutive
+/// quick runs that were the first of a session (the runs of a kept statement
+/// tell the record only when slow). A record at its limit is cleared, not
+/// frozen; a text longer than [`LONGEST_TEXT`] is never known.
+mod quick_texts {
+    use super::{Duration, QUICK_IN_PLACE};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// The most texts recorded.
+    const MOST: usize = 8192;
+    /// The longest text recorded, in bytes: the record holds at most
+    /// `MOST * LONGEST_TEXT` bytes of texts.
+    const LONGEST_TEXT: usize = 512;
+    /// The quick runs a forgotten text needs to be known again.
+    pub(super) const RELEARN: u8 = 8;
+
+    /// For each text, the quick runs it still needs to be known: none for a
+    /// known text.
+    #[derive(Default)]
+    pub(super) struct Record(HashMap<Box<str>, u8>);
+
+    impl Record {
+        pub(super) fn known(&self, sql: &str) -> bool {
+            self.0.get(sql) == Some(&0)
+        }
+
+        /// A run of `sql` whose longest poll held a thread for `longest`.
+        pub(super) fn observe(&mut self, sql: &str, longest: Duration) {
+            if sql.len() > LONGEST_TEXT {
+                return;
+            }
+            if longest >= QUICK_IN_PLACE {
+                if let Some(needs) = self.0.get_mut(sql) {
+                    *needs = RELEARN;
+                }
+            } else if let Some(needs) = self.0.get_mut(sql) {
+                *needs = needs.saturating_sub(1);
+            } else {
+                if self.0.len() >= MOST {
+                    self.0.clear();
+                }
+                self.0.insert(sql.into(), 0);
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn len(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    static RECORD: Mutex<Option<Record>> = Mutex::new(None);
+
+    fn record() -> std::sync::MutexGuard<'static, Option<Record>> {
+        RECORD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn known(sql: &str) -> bool {
+        record().as_ref().is_some_and(|record| record.known(sql))
+    }
+
+    pub(super) fn observe(sql: &str, longest: Duration) {
+        record()
+            .get_or_insert_with(Record::default)
+            .observe(sql, longest);
+    }
+}

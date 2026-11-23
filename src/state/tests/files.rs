@@ -323,3 +323,38 @@ fn the_chain_starts_over_at_a_checkpoint() -> Result<()> {
         Ok(())
     })
 }
+
+/// A page just written reads from the state's memory: no get of the store
+/// (it has no cache here, so nothing else could serve it), before and after
+/// a checkpoint, which rebuilds it from the same chain.
+#[test]
+fn a_page_just_flushed_is_read_without_the_store() -> Result<()> {
+    futures::executor::block_on(async {
+        let store = Arc::new(MemoryKv::default());
+        let state = State::open(store.clone()).options(tail_only()).await?;
+        let file = state.file();
+        let mut image = noise(1, 4);
+        flush_changes(&state, &image, &[0; 4 * 4096]).await?;
+        // Pages written again on top of their changes since the checkpoint.
+        let before = image.clone();
+        image[100..108].copy_from_slice(&noise(2, 1)[..8]);
+        image[3 * 4096 + 5..3 * 4096 + 13].copy_from_slice(&noise(3, 1)[..8]);
+        flush_changes(&state, &image, &before).await?;
+        store.reset_stats();
+        assert_eq!(contents(&file, 4).await?, image);
+        assert_eq!(store.stats().gets, 0, "{:?}", store.stats());
+
+        let mut mutation = state.mutation();
+        mutation.checkpoint();
+        mutation.write(1, Some(image[4096..2 * 4096].to_vec().into()))?;
+        assert!(mutation.flush().await?.checkpoint.is_some());
+        assert_eq!(contents(&file, 4).await?, image);
+        // The page the checkpoint flush wrote again is the commit's own.
+        store.reset_stats();
+        assert_eq!(file.read(1).await?.as_deref(), Some(&image[4096..8192]));
+        assert_eq!(store.stats().gets, 0, "{:?}", store.stats());
+        let reopened = State::open(store).options(tail_only()).await?;
+        assert_eq!(contents(&reopened.file(), 4).await?, image);
+        Ok(())
+    })
+}
