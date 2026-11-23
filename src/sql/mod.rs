@@ -1153,8 +1153,10 @@ impl Engine {
             self.schema_bytes = self.measure_schema().await.ok();
             self.schema_changed = false;
         }
-        if share {
-            self.share_schema().await?;
+        if share && self.share_schema().await.is_err() {
+            // Sharing is an optimization: the commit goes on, without an id
+            // (screen took the last one away) until a later read succeeds.
+            self.schema = None;
         }
         Ok(())
     }
