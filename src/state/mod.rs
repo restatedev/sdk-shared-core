@@ -522,6 +522,12 @@ impl State {
         self.shared.snapshot().version()
     }
 
+    /// The snapshot the state holds: another after a flush replaced it.
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> Arc<store::Snapshot> {
+        self.shared.snapshot()
+    }
+
     /// Whether the state opened in a [`PageCache`] ([`Open::cached`]).
     pub(crate) fn is_cached(&self) -> bool {
         self.shared.cache.is_some()

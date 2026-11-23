@@ -191,3 +191,23 @@ fn host_driver_handles_cold_schema_stats_and_cache_eviction() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn mentions_are_whole_words_in_any_case() {
+    let none = Mentions::of("SELECT created, dropped, templates, rollbacks FROM t WHERE a = 'x'");
+    assert!(!none.connection_state && !none.schema && !none.rollback);
+    let all = Mentions::of("pragma x; Attach d; DETACH e; TEMP t; TeMporary u");
+    assert!(all.connection_state && !all.schema && !all.rollback);
+    for (sql, schema) in [
+        ("CREATE TABLE t(a)", true),
+        ("drop table t", true),
+        ("ALTER TABLE t", true),
+        ("SELECT 1", false),
+    ] {
+        assert_eq!(Mentions::of(sql).schema, schema, "{sql}");
+    }
+    assert!(Mentions::of("ROLLBACK TO s").rollback);
+    // A word is a run of letters, digits and underscores: `temp_x` is not `temp`.
+    assert!(!Mentions::of("SELECT temp_x, my_drop FROM t").connection_state);
+    assert!(Mentions::of("SELECT * FROM temp.t").connection_state);
+}

@@ -160,6 +160,9 @@ pub struct IoStats {
 }
 /// Result rows, each a value per column.
 pub type Rows = Vec<Vec<Value>>;
+/// A statement's column names, shared by the statement a session keeps and
+/// the results of its runs.
+pub type Columns = Arc<[String]>;
 
 /// The SQL engine over a state's file: one private SQL view, driven
 /// entirely by the caller's async task, which a [`Database`] holds.
@@ -202,6 +205,13 @@ struct Engine {
     /// The statements of this session's SQL, by its text, each reset and run
     /// again: preparing one costs more than running it. See [`Prepared`].
     statements: HashMap<String, Prepared>,
+    /// The commit's `PRAGMA wal_checkpoint(TRUNCATE)`, prepared once and reset
+    /// after each run, and dropped wherever [`Self::statements`] are. Boxed:
+    /// a statement is large, and an engine is held by value in a [`Session`].
+    checkpoint_statement: Option<Box<turso_core::Statement>>,
+    /// Statements this engine compiled, for tests.
+    #[cfg(test)]
+    compiled: u64,
 }
 
 /// A statement prepared from a call's SQL, a single statement, and whether
@@ -212,6 +222,55 @@ struct Engine {
 struct Prepared {
     statement: turso_core::Statement,
     quick: bool,
+    /// What its text mentions, which the text alone decides: kept, a call of
+    /// it does not scan the text again.
+    mentions: Mentions,
+    /// Its column names, as of its last run: shared with each result.
+    columns: Columns,
+}
+
+/// The keywords of a call's SQL that the engine acts on.
+#[derive(Clone, Copy)]
+struct Mentions {
+    /// PRAGMA, ATTACH, DETACH or the temp schema: connection state, which
+    /// rules out reusing the engine.
+    connection_state: bool,
+    /// CREATE, DROP or ALTER: the schema may change.
+    schema: bool,
+    /// ROLLBACK.
+    rollback: bool,
+}
+
+impl Mentions {
+    /// What `sql` mentions as a whole word, in any case, in one pass over it.
+    /// Conservative: a false positive only costs reusing the engine, or
+    /// preparing statements again.
+    fn of(sql: &str) -> Self {
+        let mut found = Mentions {
+            connection_state: false,
+            schema: false,
+            rollback: false,
+        };
+        let words = sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'));
+        for word in words {
+            let is = |keyword: &str| word.eq_ignore_ascii_case(keyword);
+            match word.len() {
+                4 => {
+                    found.connection_state |= is("temp");
+                    found.schema |= is("drop");
+                }
+                5 => found.schema |= is("alter"),
+                6 => {
+                    found.connection_state |= is("pragma") || is("attach") || is("detach");
+                    found.schema |= is("create");
+                }
+                8 => found.rollback |= is("rollback"),
+                9 => found.connection_state |= is("temporary"),
+                _ => {}
+            }
+        }
+        found
+    }
 }
 
 /// How long a statement may run to count as quick.
@@ -434,7 +493,19 @@ impl Database {
         sql: &str,
         params: Option<Vec<Value>>,
     ) -> Result<(Vec<String>, Rows)> {
-        let sql = sql.to_owned();
+        let (columns, rows) = self.query_columns_owned(sql.to_owned(), params).await?;
+        Ok((columns.to_vec(), rows))
+    }
+
+    /// [`Self::query_columns`] for SQL the caller owns: the call runs on the
+    /// runtime and needs it there, so a host that has a `String` hands it
+    /// over rather than have it copied. The column names are shared with
+    /// the statement the session keeps, and with the next run's results.
+    pub async fn query_columns_owned(
+        &self,
+        sql: String,
+        params: Option<Vec<Value>>,
+    ) -> Result<(Columns, Rows)> {
         self.on_runtime(move |db| async move {
             db.call(async |engine| engine.query(&sql, params).await)
                 .await
@@ -760,6 +831,9 @@ impl Engine {
             schema_changed_in_transaction: false,
             records: BTreeMap::new(),
             statements: HashMap::new(),
+            checkpoint_statement: None,
+            #[cfg(test)]
+            compiled: 0,
         };
         let database = match warm {
             Some(warm) => warm.database,
@@ -787,6 +861,7 @@ impl Engine {
     /// Close the connection, with the statements, which hold it.
     fn disconnect(&mut self) {
         self.statements.clear();
+        self.checkpoint_statement = None;
         drop(self.connection.take());
     }
 
@@ -835,14 +910,17 @@ impl Engine {
     /// it; see [`Self::is_usable`]. Cached execution yields every 64 steps;
     /// one engine call cannot be preempted. An engine helper requiring
     /// synchronous nonresident I/O returns an error.
-    async fn query(
-        &mut self,
-        sql: &str,
-        params: Option<Vec<Value>>,
-    ) -> Result<(Vec<String>, Rows)> {
-        self.screen(sql);
-        let ran = self.run_statements(sql, params).await;
-        self.expire_statements(sql);
+    async fn query(&mut self, sql: &str, params: Option<Vec<Value>>) -> Result<(Columns, Rows)> {
+        // Taken out, to be put back when it has run: with its text, which the
+        // call then does not copy, and what the text mentions.
+        let kept = self.statements.remove_entry(sql);
+        let mentions = match &kept {
+            Some((_, prepared)) => prepared.mentions,
+            None => Mentions::of(sql),
+        };
+        self.screen(mentions);
+        let ran = self.run_statements(sql, params, kept, mentions).await;
+        self.expire_statements(mentions);
         ran
     }
 
@@ -862,14 +940,13 @@ impl Engine {
     /// other end comes before more SQL of the call: a statement that fails
     /// ends the call, and `COMMIT` only moves the cookie forward. A
     /// `ROLLBACK TO` costs preparing the statements again.
-    fn expire_statements(&mut self, sql: &str) {
-        if self.schema_changed_in_transaction
-            && (!self.in_transaction() || mentions(sql, &["rollback"]))
-        {
+    fn expire_statements(&mut self, sql: Mentions) {
+        if self.schema_changed_in_transaction && (!self.in_transaction() || sql.rollback) {
             self.statements.clear();
+            self.checkpoint_statement = None;
             self.schema_changed_in_transaction = false;
         }
-        if self.in_transaction() && mentions(sql, &["create", "drop", "alter"]) {
+        if self.in_transaction() && sql.schema {
             self.schema_changed_in_transaction = true;
         }
     }
@@ -888,11 +965,14 @@ impl Engine {
     /// [`Refused`] error. Any other failure ends the state, and the engine
     /// with it.
     async fn commit(&mut self) -> Result<()> {
-        if self.io.has_changes() || !self.records.is_empty() {
-            // Compressing the pages and storing them may take long: see
-            // [`Prepared`].
-            yield_now().await;
+        if !self.io.has_changes() && self.records.is_empty() {
+            // Nothing to make durable: a flush of nothing writes nothing and
+            // leaves the state as it is, so there is none.
+            return self.measure_changed_schema().await;
         }
+        // Compressing the pages and storing them may take long: see
+        // [`Prepared`].
+        yield_now().await;
         let mut mutation = self.state.mutation();
         for (name, value) in &self.records {
             mutation.set_record(name, value.clone())?;
@@ -930,11 +1010,11 @@ impl Engine {
 
     /// Note what `sql` may change besides the database: connection state, which
     /// rules out reuse, and the schema, which a parked engine is weighed by.
-    fn screen(&mut self, sql: &str) {
-        if changes_connection_state(sql) {
+    fn screen(&mut self, sql: Mentions) {
+        if sql.connection_state {
             self.reusable = false;
         }
-        if mentions(sql, &["create", "drop", "alter"]) {
+        if sql.schema {
             self.schema_changed = true;
         }
     }
@@ -973,12 +1053,14 @@ impl Engine {
         &mut self,
         sql: &str,
         mut params: Option<Vec<Value>>,
-    ) -> Result<(Vec<String>, Rows)> {
-        if let Some(prepared) = self.statements.remove(sql) {
+        kept: Option<(String, Prepared)>,
+        mentions: Mentions,
+    ) -> Result<(Columns, Rows)> {
+        if let Some((key, prepared)) = kept {
             if !prepared.quick {
                 yield_now().await;
             }
-            return self.run_prepared(sql, prepared.statement, params).await;
+            return self.run_prepared(key, prepared, params).await;
         }
         yield_now().await;
         let mut remaining = sql;
@@ -1002,6 +1084,7 @@ impl Engine {
                 self.poisoned = false;
                 break;
             };
+            self.compiled();
             remaining = &remaining[end..];
             let only = rows.is_none()
                 && (params.is_some()
@@ -1042,7 +1125,7 @@ impl Engine {
                 }
             }
             let limit = self.max_result_bytes;
-            let columns = (0..statement.num_columns())
+            let columns: Columns = (0..statement.num_columns())
                 .map(|i| statement.get_column_name(i).into_owned())
                 .collect();
             let started = std::time::Instant::now();
@@ -1050,7 +1133,7 @@ impl Engine {
             let quick = started.elapsed() < QUICK;
             let failure = match ran {
                 Ok(result) => {
-                    rows = Some((columns, result));
+                    rows = Some((columns.clone(), result));
                     None
                 }
                 Err(Failure::Sql(error)) => Some(error),
@@ -1066,7 +1149,7 @@ impl Engine {
                 return Err(error.into());
             }
             if only {
-                self.keep(sql, statement, quick);
+                self.keep(sql.into(), statement, quick, mentions, columns);
             }
         }
         rows.ok_or_else(|| "the SQL contains no statements".into())
@@ -1075,10 +1158,16 @@ impl Engine {
     /// Run `statement`, prepared from `sql` before, again with `params`.
     async fn run_prepared(
         &mut self,
-        sql: &str,
-        mut statement: turso_core::Statement,
+        key: String,
+        prepared: Prepared,
         params: Option<Vec<Value>>,
-    ) -> Result<(Vec<String>, Rows)> {
+    ) -> Result<(Columns, Rows)> {
+        let Prepared {
+            mut statement,
+            mentions,
+            columns: kept,
+            ..
+        } = prepared;
         if !self.is_usable() {
             return Err(ENDED.into());
         }
@@ -1101,9 +1190,7 @@ impl Engine {
         let ran = query_engine(&self.io, &mut statement, self.max_result_bytes).await;
         let quick = started.elapsed() < QUICK;
         // Named as it ran: a schema changed since its last run prepares it anew.
-        let columns = (0..statement.num_columns())
-            .map(|i| statement.get_column_name(i).into_owned())
-            .collect();
+        let columns = columns_of(&statement, kept);
         if self.in_body && self.connection.as_ref().unwrap().get_auto_commit() {
             return Err(Refused::boxed(BODY_ENDED));
         }
@@ -1116,16 +1203,30 @@ impl Engine {
             Err(Failure::Fatal(error)) => return Err(error),
         };
         self.poisoned = false;
-        self.keep(sql, statement, quick);
+        self.keep(key.into(), statement, quick, mentions, columns.clone());
         Ok((columns, rows))
     }
 
     /// Keep `statement`, of `sql`, which ran to its end, for the next call of
     /// it, reset: a statement left mid-way holds the version it read, which
     /// a checkpoint would wait for.
-    fn keep(&mut self, sql: &str, mut statement: turso_core::Statement, quick: bool) {
+    fn keep(
+        &mut self,
+        sql: std::borrow::Cow<'_, str>,
+        mut statement: turso_core::Statement,
+        quick: bool,
+        mentions: Mentions,
+        columns: Columns,
+    ) {
         if self.statements.len() < MAX_STATEMENTS && statement.reset().is_ok() {
-            (self.statements).insert(sql.to_owned(), Prepared { statement, quick });
+            // A key that came out of the map goes back in; only a new one is a copy.
+            let prepared = Prepared {
+                statement,
+                quick,
+                mentions,
+                columns,
+            };
+            (self.statements).insert(sql.into_owned(), prepared);
         }
     }
 
@@ -1136,6 +1237,7 @@ impl Engine {
         }
         self.poisoned = true;
         let mut statement = self.connection.as_ref().unwrap().prepare(sql)?;
+        self.compiled();
         let rows = match query_engine(&self.io, &mut statement, usize::MAX).await {
             Ok(rows) => rows,
             Err(Failure::Sql(error)) => return Err(error.into()),
@@ -1145,12 +1247,49 @@ impl Engine {
         Ok(rows)
     }
 
+    /// [`Self::internal`] for the commit's checkpoint, whose statement stays
+    /// prepared for the next commit. A run that fails drops it.
+    async fn run_checkpoint(&mut self) -> Result<Rows> {
+        if !self.is_usable() {
+            return Err(ENDED.into());
+        }
+        self.poisoned = true;
+        let mut statement = match self.checkpoint_statement.take() {
+            Some(statement) => statement,
+            None => {
+                let statement = (self.connection.as_ref().unwrap())
+                    .prepare("PRAGMA wal_checkpoint(TRUNCATE)")?;
+                self.compiled();
+                Box::new(statement)
+            }
+        };
+        let rows = match query_engine(&self.io, &mut statement, usize::MAX).await {
+            Ok(rows) => rows,
+            Err(Failure::Sql(error)) => return Err(error.into()),
+            Err(Failure::Fatal(error)) => return Err(error),
+        };
+        self.poisoned = false;
+        // Reset, as a kept statement is: one left mid-way holds the version it read.
+        if statement.reset().is_ok() {
+            self.checkpoint_statement = Some(statement);
+        }
+        Ok(rows)
+    }
+
+    /// Note a statement compiled.
+    fn compiled(&mut self) {
+        #[cfg(test)]
+        {
+            self.compiled += 1;
+        }
+    }
+
     /// Merge the private engine WAL into the private database overlay and truncate it.
     ///
     /// This is a local barrier, **not** backend durability. Failure poisons the
     /// engine. A successful checkpoint may still be discarded without saving.
     async fn checkpoint(&mut self) -> Result<()> {
-        let rows = self.internal("PRAGMA wal_checkpoint(TRUNCATE)").await?;
+        let rows = self.run_checkpoint().await?;
         if rows.len() != 1
             || rows[0].len() != 3
             || rows[0][0].as_int() != Some(0)
@@ -1178,21 +1317,17 @@ impl Drop for Engine {
     }
 }
 
-/// Whether SQL may change per-connection state rather than the database:
-/// PRAGMA settings, ATTACH/DETACH or the temp schema. Conservative: a false
-/// positive only costs reusing the engine.
-fn changes_connection_state(sql: &str) -> bool {
-    mentions(sql, &["pragma", "attach", "detach", "temp", "temporary"])
-}
-
-/// Whether `sql` contains one of `keywords` as a whole word, in any case.
-fn mentions(sql: &str, keywords: &[&str]) -> bool {
-    sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .any(|word| {
-            keywords
-                .iter()
-                .any(|keyword| word.eq_ignore_ascii_case(keyword))
-        })
+/// `statement`'s column names: `kept`, shared, when they are the ones it was
+/// kept with; else new ones (a schema changed since its last run, which a
+/// statement prepares again for).
+fn columns_of(statement: &turso_core::Statement, kept: Columns) -> Columns {
+    let count = statement.num_columns();
+    if count == kept.len() && (0..count).all(|i| *statement.get_column_name(i) == *kept[i]) {
+        return kept;
+    }
+    (0..count)
+        .map(|i| statement.get_column_name(i).into_owned())
+        .collect()
 }
 
 /// Resume an engine completion only after the host has driven all submitted I/O.
