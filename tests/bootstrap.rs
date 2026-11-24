@@ -15,7 +15,10 @@ fn bootstrap() {
         .enum_attribute(".", "#[allow(clippy::enum_variant_names)]")
         .out_dir(out_dir.clone())
         .compile_protos(
-            &[root_dir.join("service-protocol/dev/restate/service/protocol.proto")],
+            &[
+                root_dir.join("service-protocol/dev/restate/service/protocol.proto"),
+                root_dir.join("service-protocol/dev/restate/service/explicit_recovery.proto"),
+            ],
             &[root_dir.join("service-protocol")],
         )
     {

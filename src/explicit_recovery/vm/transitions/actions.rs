@@ -1,20 +1,22 @@
-use crate::explicit_recovery::vm::async_results_state::NotificationId;
-use crate::explicit_recovery::vm::context::{Context, EagerGetState, EagerGetStateKeys};
-use crate::explicit_recovery::vm::errors::unknown_trace;
+use crate::explicit_recovery::vm::async_results_state::Expect;
+use crate::explicit_recovery::vm::context::Context;
+use crate::explicit_recovery::vm::errors::unknown_span;
+use crate::explicit_recovery::vm::local_state::{LocalGet, LocalGetKeys, StateOp};
+use crate::explicit_recovery::vm::span_state::SpanOp;
+use crate::explicit_recovery::vm::transitions::group::{check_scope, record_fields, RecordFields};
 use crate::explicit_recovery::vm::transitions::TransitionAndReturn;
 use crate::explicit_recovery::vm::State;
-use crate::explicit_recovery::{CallHandle, SendHandle, TraceId};
-use crate::service_protocol::messages::{
-    attach_invocation_command_message, propose_run_completion_message, send_signal_command_message,
-    AttachInvocationCommandMessage, CallCommandMessage, ClearAllStateCommandMessage,
-    ClearStateCommandMessage, GetLazyStateCommandMessage, GetLazyStateKeysCommandMessage,
-    GetStateEphemeralCommandMessage, IdempotentRequestTarget, OneWayCallCommandMessage,
-    ProposeRunCompletionMessage, RunCommandMessage, SendSignalCommandMessage,
-    SetStateCommandMessage, WithFlags, WorkflowTarget,
+use crate::explicit_recovery::{ActionOptions, Input, SpanId, StateScope};
+use crate::service_protocol::explicit_recovery::messages::{
+    self, attach_invocation_action_message, send_signal_action_message, span_end_action_message,
+    AttachInvocationActionMessage, CallActionMessage, CancelInvocationActionMessage,
+    ClearAllStateActionMessage, ClearStateActionMessage, FlushActionMessage, GetStateActionMessage,
+    GetStateKeysActionMessage, IdempotentRequestTarget, ReadSignalActionMessage,
+    SendSignalActionMessage, SetStateActionMessage, SpanEndActionMessage, SpanStartActionMessage,
+    WorkflowTarget,
 };
-use crate::service_protocol::{MessageFlags, Version, CANCEL_SIGNAL_ID};
 use crate::{
-    AttachInvocationTarget, Error, Header, Input, NonEmptyValue, NotificationHandle, Target, Value,
+    AttachInvocationTarget, Error, Header, NonEmptyValue, NotificationHandle, Target, Value,
 };
 use bytes::Bytes;
 
@@ -30,31 +32,36 @@ impl TransitionAndReturn<Context, GetInput> for State {
         context: &mut Context,
         _: GetInput,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing { ref input, .. } = self else {
-            return Err(self.as_unexpected_state("SysInput"));
-        };
+        if !matches!(self, State::Running(_) | State::InAtomicGroup(..)) {
+            return Err(self.as_unexpected_state("GetInput"));
+        }
         let start_info = context.expect_start_info();
         let input = Input {
             invocation_id: start_info.debug_id.clone(),
-            random_seed: start_info.random_seed,
             key: start_info.key.clone(),
-            headers: input.headers.iter().cloned().map(Header::from).collect(),
-            input: input
-                .value
-                .as_ref()
-                .map(|v| v.content.clone())
-                .unwrap_or_default(),
+            headers: start_info
+                .headers
+                .iter()
+                .cloned()
+                .map(Header::from)
+                .collect(),
+            input: start_info.input.clone(),
             scope: start_info.scope.clone(),
             limit_key: start_info.limit_key.clone(),
             idempotency_key: start_info.idempotency_key.clone(),
+            attempt: start_info.attempt,
         };
         Ok((self, input))
     }
 }
 
-// --- State
+// --- State: the reads. Their result is what they are for, and a group cannot hold them.
 
-pub(crate) struct CmdStateGet(pub(crate) String, pub(crate) Option<String>);
+pub(crate) struct CmdStateGet(
+    pub(crate) StateScope,
+    pub(crate) String,
+    pub(crate) ActionOptions,
+);
 
 impl TransitionAndReturn<Context, CmdStateGet> for State {
     type Output = NotificationHandle;
@@ -62,53 +69,37 @@ impl TransitionAndReturn<Context, CmdStateGet> for State {
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        CmdStateGet(key, name): CmdStateGet,
+        CmdStateGet(scope, key, options): CmdStateGet,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ref eager_state,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysStateGet"));
+        let State::Running(attempt) = &mut self else {
+            return Err(self.as_unexpected_state("CmdStateGet"));
         };
+        check_scope(context.expect_start_info(), scope)?;
 
-        let handle = match eager_state.get(&key) {
-            EagerGetState::Value(value) => async_results.create_resolved_handle(
-                NotificationId::EphemeralCompletionId(
-                    context.journal.next_ephemeral_completion_id(),
-                ),
-                Value::Success(value),
-            ),
-            EagerGetState::Empty => async_results.create_resolved_handle(
-                NotificationId::EphemeralCompletionId(
-                    context.journal.next_ephemeral_completion_id(),
-                ),
-                Value::Void,
-            ),
-            EagerGetState::Unknown if context.negotiated_protocol_version >= Version::V8 => {
-                let ephemeral_completion_id = context.journal.next_ephemeral_completion_id();
-                let handle = async_results.create_handle(NotificationId::EphemeralCompletionId(
-                    ephemeral_completion_id,
-                ));
-                context.output.send(&GetStateEphemeralCommandMessage {
-                    ephemeral_completion_id: ephemeral_completion_id.into(),
+        let handle = match attempt.local_state.get(scope, &key) {
+            // Known here: answered without asking, which G6 makes sound.
+            LocalGet::Value(value) => attempt
+                .async_results
+                .create_resolved_handle(Value::Success(value)),
+            LocalGet::Absent => attempt.async_results.create_resolved_handle(Value::Void),
+            LocalGet::Unknown => {
+                let RecordFields {
+                    name,
+                    parent_span_id,
+                    record,
+                } = record_fields(options, &attempt.spans, None)?;
+                let result_id = context.ids.next_result_id()?;
+                let handle = attempt
+                    .async_results
+                    .create_handle(result_id, Expect::ValueOrVoid);
+                context.output.send(&GetStateActionMessage {
+                    scope: messages::StateScope::from(scope) as i32,
                     key: Bytes::from(key),
+                    result_id: result_id.get(),
+                    name,
+                    parent_span_id,
+                    record,
                 });
-                handle
-            }
-            EagerGetState::Unknown => {
-                // This command's index in the journal.
-                context.journal.next_command_index();
-                let result_completion_id = context.journal.next_completion_notification_id();
-                let handle =
-                    async_results.create_handle(NotificationId::CompletionId(result_completion_id));
-                let msg = &GetLazyStateCommandMessage {
-                    key: Bytes::from(key),
-                    result_completion_id: result_completion_id.into(),
-                    name: name.unwrap_or_default(),
-                };
-                context.output.send(msg);
                 handle
             }
         };
@@ -116,7 +107,7 @@ impl TransitionAndReturn<Context, CmdStateGet> for State {
     }
 }
 
-pub(crate) struct CmdStateGetKeys(pub(crate) Option<String>);
+pub(crate) struct CmdStateGetKeys(pub(crate) StateScope, pub(crate) ActionOptions);
 
 impl TransitionAndReturn<Context, CmdStateGetKeys> for State {
     type Output = NotificationHandle;
@@ -124,35 +115,34 @@ impl TransitionAndReturn<Context, CmdStateGetKeys> for State {
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        CmdStateGetKeys(name): CmdStateGetKeys,
+        CmdStateGetKeys(scope, options): CmdStateGetKeys,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ref eager_state,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysStateGetKeys"));
+        let State::Running(attempt) = &mut self else {
+            return Err(self.as_unexpected_state("CmdStateGetKeys"));
         };
+        check_scope(context.expect_start_info(), scope)?;
 
-        let handle = match eager_state.get_keys() {
-            EagerGetStateKeys::Keys(keys) => async_results.create_resolved_handle(
-                NotificationId::EphemeralCompletionId(
-                    context.journal.next_ephemeral_completion_id(),
-                ),
-                Value::StateKeys(keys),
-            ),
-            EagerGetStateKeys::Unknown => {
-                // This command's index in the journal.
-                context.journal.next_command_index();
-                let result_completion_id = context.journal.next_completion_notification_id();
-                let handle =
-                    async_results.create_handle(NotificationId::CompletionId(result_completion_id));
-                let msg = &GetLazyStateKeysCommandMessage {
-                    result_completion_id: result_completion_id.into(),
-                    name: name.unwrap_or_default(),
-                };
-                context.output.send(msg);
+        let handle = match attempt.local_state.get_keys(scope) {
+            LocalGetKeys::Keys(keys) => attempt
+                .async_results
+                .create_resolved_handle(Value::StateKeys(keys)),
+            LocalGetKeys::Unknown => {
+                let RecordFields {
+                    name,
+                    parent_span_id,
+                    record,
+                } = record_fields(options, &attempt.spans, None)?;
+                let result_id = context.ids.next_result_id()?;
+                let handle = attempt
+                    .async_results
+                    .create_handle(result_id, Expect::StateKeys);
+                context.output.send(&GetStateKeysActionMessage {
+                    scope: messages::StateScope::from(scope) as i32,
+                    result_id: result_id.get(),
+                    name,
+                    parent_span_id,
+                    record,
+                });
                 handle
             }
         };
@@ -160,278 +150,173 @@ impl TransitionAndReturn<Context, CmdStateGetKeys> for State {
     }
 }
 
+// --- State: the writes. Their result only says "applied", and a group can hold them.
+
 pub(crate) struct CmdStateSet(
+    pub(crate) StateScope,
     pub(crate) String,
     pub(crate) Bytes,
-    pub(crate) Option<String>,
+    pub(crate) ActionOptions,
     pub(crate) bool,
 );
 
 impl TransitionAndReturn<Context, CmdStateSet> for State {
-    type Output = NotificationHandle;
+    type Output = Option<NotificationHandle>;
 
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        CmdStateSet(key, value, name, ack): CmdStateSet,
+        CmdStateSet(scope, key, value, options, want_result): CmdStateSet,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ref mut eager_state,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysStateSet"));
-        };
-
-        // This command's index in the journal, which its ack carries.
-        let command_index = context.journal.next_command_index_nonzero();
-
-        eager_state.set(key.clone(), value.clone());
-        let msg = &SetStateCommandMessage {
+        let mut writing = self.writing(context, "CmdStateSet")?;
+        check_scope(writing.start_info, scope)?;
+        let RecordFields {
+            name,
+            parent_span_id,
+            record,
+        } = writing.record_fields(options)?;
+        let (result_id, handle) = writing.optional_result(want_result, Expect::Void)?;
+        writing.state_op(StateOp::Set(scope, key.clone(), value.clone()));
+        writing.send(SetStateActionMessage {
+            scope: messages::StateScope::from(scope) as i32,
             key: Bytes::from(key),
             value: Some(value.into()),
-            name: name.unwrap_or_default(),
-        };
-        let handle = match if ack {
-            context
-                .output
-                .send(&WithFlags(msg, &[MessageFlags::RequestedAck]));
-            Some(async_results.create_handle(NotificationId::CommandAck(command_index)))
-        } else {
-            context.output.send(msg);
-            None
-        } {
-            Some(handle) => handle,
-            None => async_results.create_resolved_handle(
-                NotificationId::EphemeralCompletionId(
-                    context.journal.next_ephemeral_completion_id(),
-                ),
-                Value::Void,
-            ),
-        };
+            result_id,
+            name,
+            parent_span_id,
+            record,
+        });
         Ok((self, handle))
     }
 }
 
 pub(crate) struct CmdStateClear(
+    pub(crate) StateScope,
     pub(crate) String,
-    pub(crate) Option<String>,
+    pub(crate) ActionOptions,
     pub(crate) bool,
 );
 
 impl TransitionAndReturn<Context, CmdStateClear> for State {
-    type Output = NotificationHandle;
+    type Output = Option<NotificationHandle>;
 
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        CmdStateClear(key, name, ack): CmdStateClear,
+        CmdStateClear(scope, key, options, want_result): CmdStateClear,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ref mut eager_state,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysStateClear"));
-        };
-
-        // This command's index in the journal, which its ack carries.
-        let command_index = context.journal.next_command_index_nonzero();
-
-        eager_state.clear(key.clone());
-        let msg = &ClearStateCommandMessage {
+        let mut writing = self.writing(context, "CmdStateClear")?;
+        check_scope(writing.start_info, scope)?;
+        let RecordFields {
+            name,
+            parent_span_id,
+            record,
+        } = writing.record_fields(options)?;
+        let (result_id, handle) = writing.optional_result(want_result, Expect::Void)?;
+        writing.state_op(StateOp::Clear(scope, key.clone()));
+        writing.send(ClearStateActionMessage {
+            scope: messages::StateScope::from(scope) as i32,
             key: Bytes::from(key),
-            name: name.unwrap_or_default(),
-        };
-        let handle = match if ack {
-            context
-                .output
-                .send(&WithFlags(msg, &[MessageFlags::RequestedAck]));
-            Some(async_results.create_handle(NotificationId::CommandAck(command_index)))
-        } else {
-            context.output.send(msg);
-            None
-        } {
-            Some(handle) => handle,
-            None => async_results.create_resolved_handle(
-                NotificationId::EphemeralCompletionId(
-                    context.journal.next_ephemeral_completion_id(),
-                ),
-                Value::Void,
-            ),
-        };
+            result_id,
+            name,
+            parent_span_id,
+            record,
+        });
         Ok((self, handle))
     }
 }
 
-pub(crate) struct CmdStateClearAll(pub(crate) Option<String>, pub(crate) bool);
+pub(crate) struct CmdStateClearAll(
+    pub(crate) StateScope,
+    pub(crate) ActionOptions,
+    pub(crate) bool,
+);
 
 impl TransitionAndReturn<Context, CmdStateClearAll> for State {
-    type Output = NotificationHandle;
+    type Output = Option<NotificationHandle>;
 
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        CmdStateClearAll(name, ack): CmdStateClearAll,
+        CmdStateClearAll(scope, options, want_result): CmdStateClearAll,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ref mut eager_state,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysStateClearAll"));
-        };
-
-        // This command's index in the journal, which its ack carries.
-        let command_index = context.journal.next_command_index_nonzero();
-
-        eager_state.clear_all();
-        let msg = &ClearAllStateCommandMessage {
-            name: name.unwrap_or_default(),
-        };
-        let handle = match if ack {
-            context
-                .output
-                .send(&WithFlags(msg, &[MessageFlags::RequestedAck]));
-            Some(async_results.create_handle(NotificationId::CommandAck(command_index)))
-        } else {
-            context.output.send(msg);
-            None
-        } {
-            Some(handle) => handle,
-            None => async_results.create_resolved_handle(
-                NotificationId::EphemeralCompletionId(
-                    context.journal.next_ephemeral_completion_id(),
-                ),
-                Value::Void,
-            ),
-        };
+        let mut writing = self.writing(context, "CmdStateClearAll")?;
+        check_scope(writing.start_info, scope)?;
+        let RecordFields {
+            name,
+            parent_span_id,
+            record,
+        } = writing.record_fields(options)?;
+        let (result_id, handle) = writing.optional_result(want_result, Expect::Void)?;
+        writing.state_op(StateOp::ClearAll(scope));
+        writing.send(ClearAllStateActionMessage {
+            scope: messages::StateScope::from(scope) as i32,
+            result_id,
+            name,
+            parent_span_id,
+            record,
+        });
         Ok((self, handle))
     }
 }
 
 // --- Calls, sends and invocations
 
+/// A call, or with `false` a send: a call without a result id.
 pub(crate) struct CmdCall(
     pub(crate) Target,
     pub(crate) Bytes,
-    pub(crate) Option<String>,
+    /// Invoke time, in milliseconds since the UNIX epoch; 0: as soon as possible.
+    pub(crate) u64,
+    pub(crate) ActionOptions,
+    pub(crate) bool,
 );
 
 impl TransitionAndReturn<Context, CmdCall> for State {
-    type Output = CallHandle;
+    /// The handle of the invocation id, and that of what the callee returned, if wanted.
+    type Output = (NotificationHandle, Option<NotificationHandle>);
 
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        CmdCall(target, input, name): CmdCall,
+        CmdCall(target, input, invoke_time, options, want_result): CmdCall,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysCall"));
-        };
-
-        // This command's index in the journal.
-        context.journal.next_command_index();
-
-        let invocation_id_notification_idx = context.journal.next_completion_notification_id();
-        let invocation_id_notification_handle = async_results
-            .create_handle(NotificationId::CompletionId(invocation_id_notification_idx));
-        let result_completion_id = context.journal.next_completion_notification_id();
-        let call_notification_handle =
-            async_results.create_handle(NotificationId::CompletionId(result_completion_id));
-        let target_headers = target.headers;
-        let msg = &CallCommandMessage {
+        let mut writing = self.writing(context, "CmdCall")?;
+        let RecordFields {
+            name,
+            parent_span_id,
+            record,
+        } = writing.record_fields(options)?;
+        // The invocation id always comes, and comes first.
+        let (invocation_id_result_id, invocation_id_handle) =
+            writing.result(Expect::InvocationId)?;
+        let (result_id, result_handle) =
+            writing.optional_result(want_result, Expect::ValueOrFailure)?;
+        writing.send(CallActionMessage {
             service_name: target.service,
             handler_name: target.handler,
             key: target.key.unwrap_or_default(),
+            parameter: Some(input.into()),
+            headers: target
+                .headers
+                .into_iter()
+                .map(messages::Header::from)
+                .collect(),
             idempotency_key: target.idempotency_key,
             scope: target.scope,
             limit_key: target.limit_key,
-            headers: target_headers
-                .into_iter()
-                .map(crate::service_protocol::messages::Header::from)
-                .collect(),
-            parameter: input,
-            invocation_id_notification_idx: invocation_id_notification_idx.into(),
-            result_completion_id: result_completion_id.into(),
-            name: name.unwrap_or_default(),
-        };
-        context.output.send(msg);
-        Ok((
-            self,
-            CallHandle {
-                invocation_id_notification_handle,
-                call_notification_handle,
-            },
-        ))
-    }
-}
-
-pub(crate) struct CmdSend(
-    pub(crate) Target,
-    pub(crate) Bytes,
-    /// Invoke time, in milliseconds since the UNIX epoch.
-    pub(crate) u64,
-    pub(crate) Option<String>,
-);
-
-impl TransitionAndReturn<Context, CmdSend> for State {
-    type Output = SendHandle;
-
-    fn transition_and_return(
-        mut self,
-        context: &mut Context,
-        CmdSend(target, input, invoke_time, name): CmdSend,
-    ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysSend"));
-        };
-
-        // This command's index in the journal.
-        context.journal.next_command_index();
-
-        let invocation_id_notification_idx = context.journal.next_completion_notification_id();
-        let invocation_id_notification_handle = async_results
-            .create_handle(NotificationId::CompletionId(invocation_id_notification_idx));
-        let target_headers = target.headers;
-        let msg = &OneWayCallCommandMessage {
-            service_name: target.service,
-            handler_name: target.handler,
-            key: target.key.unwrap_or_default(),
-            idempotency_key: target.idempotency_key,
-            scope: target.scope,
-            limit_key: target.limit_key,
-            headers: target_headers
-                .into_iter()
-                .map(crate::service_protocol::messages::Header::from)
-                .collect(),
-            parameter: input,
             invoke_time,
-            invocation_id_notification_idx: invocation_id_notification_idx.into(),
-            name: name.unwrap_or_default(),
-        };
-        context.output.send(msg);
-        Ok((
-            self,
-            SendHandle {
-                invocation_id_notification_handle,
-            },
-        ))
+            invocation_id_result_id,
+            result_id,
+            name,
+            parent_span_id,
+            record,
+        });
+        Ok((self, (invocation_id_handle, result_handle)))
     }
 }
 
-pub(crate) struct CmdAttachInvocation(pub(crate) AttachInvocationTarget, pub(crate) Option<String>);
+pub(crate) struct CmdAttachInvocation(pub(crate) AttachInvocationTarget, pub(crate) ActionOptions);
 
 impl TransitionAndReturn<Context, CmdAttachInvocation> for State {
     type Output = NotificationHandle;
@@ -439,29 +324,27 @@ impl TransitionAndReturn<Context, CmdAttachInvocation> for State {
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        CmdAttachInvocation(target, name): CmdAttachInvocation,
+        CmdAttachInvocation(target, options): CmdAttachInvocation,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysAttachInvocation"));
+        let State::Running(attempt) = &mut self else {
+            return Err(self.as_unexpected_state("CmdAttachInvocation"));
         };
-
-        // This command's index in the journal.
-        context.journal.next_command_index();
-
-        let result_completion_id = context.journal.next_completion_notification_id();
-        let handle =
-            async_results.create_handle(NotificationId::CompletionId(result_completion_id));
-        let msg = &AttachInvocationCommandMessage {
+        let RecordFields {
+            name,
+            parent_span_id,
+            record,
+        } = record_fields(options, &attempt.spans, None)?;
+        let result_id = context.ids.next_result_id()?;
+        let handle = attempt
+            .async_results
+            .create_handle(result_id, Expect::ValueOrFailure);
+        context.output.send(&AttachInvocationActionMessage {
             target: Some(match target {
                 AttachInvocationTarget::InvocationId(id) => {
-                    attach_invocation_command_message::Target::InvocationId(id)
+                    attach_invocation_action_message::Target::InvocationId(id)
                 }
                 AttachInvocationTarget::WorkflowId { name, key, scope } => {
-                    attach_invocation_command_message::Target::WorkflowTarget(WorkflowTarget {
+                    attach_invocation_action_message::Target::WorkflowTarget(WorkflowTarget {
                         workflow_name: name,
                         workflow_key: key,
                         scope,
@@ -473,7 +356,7 @@ impl TransitionAndReturn<Context, CmdAttachInvocation> for State {
                     handler_name,
                     idempotency_key,
                     scope,
-                } => attach_invocation_command_message::Target::IdempotentRequestTarget(
+                } => attach_invocation_action_message::Target::IdempotentRequestTarget(
                     IdempotentRequestTarget {
                         service_name,
                         service_key,
@@ -483,143 +366,213 @@ impl TransitionAndReturn<Context, CmdAttachInvocation> for State {
                     },
                 ),
             }),
-            result_completion_id: result_completion_id.into(),
-            name: name.unwrap_or_default(),
-        };
-        context.output.send(msg);
+            result_id: result_id.get(),
+            name,
+            parent_span_id,
+            record,
+        });
         Ok((self, handle))
     }
 }
 
-pub(crate) struct CmdCancelInvocation(
-    pub(crate) String,
-    pub(crate) Option<String>,
-    pub(crate) bool,
-);
+pub(crate) struct CmdCancelInvocation(pub(crate) String, pub(crate) ActionOptions, pub(crate) bool);
 
 impl TransitionAndReturn<Context, CmdCancelInvocation> for State {
+    type Output = Option<NotificationHandle>;
+
+    fn transition_and_return(
+        mut self,
+        context: &mut Context,
+        CmdCancelInvocation(invocation_id, options, want_result): CmdCancelInvocation,
+    ) -> Result<(Self, Self::Output), Error> {
+        let mut writing = self.writing(context, "CmdCancelInvocation")?;
+        let RecordFields {
+            name,
+            parent_span_id,
+            record,
+        } = writing.record_fields(options)?;
+        let (result_id, handle) = writing.optional_result(want_result, Expect::Void)?;
+        writing.send(CancelInvocationActionMessage {
+            invocation_id,
+            result_id,
+            name,
+            parent_span_id,
+            record,
+        });
+        Ok((self, handle))
+    }
+}
+
+// --- Signals
+
+pub(crate) struct CmdSignalRead(pub(crate) String, pub(crate) u32, pub(crate) ActionOptions);
+
+impl TransitionAndReturn<Context, CmdSignalRead> for State {
     type Output = NotificationHandle;
 
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        CmdCancelInvocation(target_invocation_id, name, ack): CmdCancelInvocation,
+        CmdSignalRead(signal_name, signal_index, options): CmdSignalRead,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut async_results,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysCancelInvocation"));
+        let State::Running(attempt) = &mut self else {
+            return Err(self.as_unexpected_state("CmdSignalRead"));
         };
-
-        // This command's index in the journal, which its ack carries.
-        let command_index = context.journal.next_command_index_nonzero();
-
-        let msg = &SendSignalCommandMessage {
-            target_invocation_id,
-            entry_name: name.unwrap_or_default(),
-            signal_id: Some(send_signal_command_message::SignalId::Idx(CANCEL_SIGNAL_ID)),
-            result: Some(send_signal_command_message::Result::Void(Default::default())),
-        };
-        let handle = match if ack {
-            context
-                .output
-                .send(&WithFlags(msg, &[MessageFlags::RequestedAck]));
-            Some(async_results.create_handle(NotificationId::CommandAck(command_index)))
-        } else {
-            context.output.send(msg);
-            None
-        } {
-            Some(handle) => handle,
-            None => async_results.create_resolved_handle(
-                NotificationId::EphemeralCompletionId(
-                    context.journal.next_ephemeral_completion_id(),
-                ),
-                Value::Void,
-            ),
-        };
+        let RecordFields {
+            name,
+            parent_span_id,
+            record,
+        } = record_fields(options, &attempt.spans, None)?;
+        let result_id = context.ids.next_result_id()?;
+        let handle = attempt
+            .async_results
+            .create_handle(result_id, Expect::VoidValueOrFailure);
+        context.output.send(&ReadSignalActionMessage {
+            signal_name,
+            signal_index,
+            result_id: result_id.get(),
+            name,
+            parent_span_id,
+            record,
+        });
         Ok((self, handle))
     }
 }
 
-// --- Traces
+pub(crate) struct CmdSignalSend(
+    pub(crate) String,
+    pub(crate) String,
+    pub(crate) Option<NonEmptyValue>,
+    pub(crate) ActionOptions,
+    pub(crate) bool,
+);
 
-pub(crate) struct TraceStart(pub(crate) String, pub(crate) Option<TraceId>);
-
-impl TransitionAndReturn<Context, TraceStart> for State {
-    type Output = TraceId;
+impl TransitionAndReturn<Context, CmdSignalSend> for State {
+    type Output = Option<NotificationHandle>;
 
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        TraceStart(name, parent): TraceStart,
+        CmdSignalSend(target_invocation_id, signal_name, value, options, want_result): CmdSignalSend,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut trace_state,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysStartTrace"));
-        };
-
-        // In this version of the protocol, the parent is in the run's name.
-        let name = match parent {
-            None => name,
-            Some(parent) if trace_state.is_started(parent.into()) => {
-                format!("{name} (parent trace {})", u32::from(parent))
-            }
-            Some(parent) => return Err(unknown_trace(parent)),
-        };
-
-        // This command's index in the journal.
-        context.journal.next_command_index();
-        let result_completion_id = context.journal.next_completion_notification_id().into();
-        trace_state.start(result_completion_id);
-        let msg = &RunCommandMessage {
+        let mut writing = self.writing(context, "CmdSignalSend")?;
+        let RecordFields {
             name,
-            result_completion_id,
-        };
-        context.output.send(msg);
-        Ok((self, TraceId::from(result_completion_id)))
+            parent_span_id,
+            record,
+        } = writing.record_fields(options)?;
+        let (result_id, handle) = writing.optional_result(want_result, Expect::Void)?;
+        writing.send(SendSignalActionMessage {
+            target_invocation_id,
+            signal_name,
+            result: Some(match value {
+                None => send_signal_action_message::Result::Void(Default::default()),
+                Some(NonEmptyValue::Success(value)) => {
+                    send_signal_action_message::Result::Value(value.into())
+                }
+                Some(NonEmptyValue::Failure(failure)) => {
+                    send_signal_action_message::Result::Failure(failure.into())
+                }
+            }),
+            result_id,
+            name,
+            parent_span_id,
+            record,
+        });
+        Ok((self, handle))
     }
 }
 
-pub(crate) struct TraceEnd(pub(crate) TraceId, pub(crate) NonEmptyValue);
+// --- Flush
 
-impl TransitionAndReturn<Context, TraceEnd> for State {
+pub(crate) struct CmdFlush(pub(crate) ActionOptions);
+
+impl TransitionAndReturn<Context, CmdFlush> for State {
+    type Output = NotificationHandle;
+
+    fn transition_and_return(
+        mut self,
+        context: &mut Context,
+        CmdFlush(options): CmdFlush,
+    ) -> Result<(Self, Self::Output), Error> {
+        let State::Running(attempt) = &mut self else {
+            return Err(self.as_unexpected_state("CmdFlush"));
+        };
+        let RecordFields {
+            name,
+            parent_span_id,
+            record,
+        } = record_fields(options, &attempt.spans, None)?;
+        let result_id = context.ids.next_result_id()?;
+        let handle = attempt.async_results.create_handle(result_id, Expect::Void);
+        context.output.send(&FlushActionMessage {
+            result_id: result_id.get(),
+            name,
+            parent_span_id,
+            record,
+        });
+        Ok((self, handle))
+    }
+}
+
+// --- Spans
+
+pub(crate) struct SpanStart(pub(crate) String, pub(crate) Option<SpanId>);
+
+impl TransitionAndReturn<Context, SpanStart> for State {
+    type Output = SpanId;
+
+    fn transition_and_return(
+        mut self,
+        context: &mut Context,
+        SpanStart(name, parent): SpanStart,
+    ) -> Result<(Self, Self::Output), Error> {
+        let mut writing = self.writing(context, "SpanStart")?;
+        // The span's name and parent are the action's own.
+        let RecordFields { parent_span_id, .. } = writing.record_fields(ActionOptions {
+            parent_span: parent,
+            ..Default::default()
+        })?;
+        let span_id = writing.ids.next_span_id();
+        writing.span_op(SpanOp::Start(span_id));
+        writing.send(SpanStartActionMessage {
+            span_id: span_id.get(),
+            name,
+            parent_span_id,
+            ..Default::default()
+        });
+        Ok((self, SpanId::from(span_id)))
+    }
+}
+
+pub(crate) struct SpanEnd(pub(crate) SpanId, pub(crate) Option<NonEmptyValue>);
+
+impl TransitionAndReturn<Context, SpanEnd> for State {
     type Output = ();
 
     fn transition_and_return(
         mut self,
         context: &mut Context,
-        TraceEnd(trace, trace_result): TraceEnd,
+        SpanEnd(span, result): SpanEnd,
     ) -> Result<(Self, Self::Output), Error> {
-        let State::Processing {
-            ref mut trace_state,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("SysEndTrace"));
-        };
-
-        if !trace_state.end(trace.into()) {
-            return Err(unknown_trace(trace));
+        let mut writing = self.writing(context, "SpanEnd")?;
+        if !writing.span_is_open(span.0) {
+            return Err(unknown_span(span));
         }
-        let completion_id = trace.into();
-        let result = match trace_result {
-            NonEmptyValue::Success(value) => propose_run_completion_message::Result::Value(value),
-            NonEmptyValue::Failure(failure) => {
-                propose_run_completion_message::Result::Failure(failure.into())
-            }
-        };
-        context.output.send(&WithFlags(
-            &ProposeRunCompletionMessage {
-                result_completion_id: completion_id,
-                result: Some(result),
-            },
-            &[MessageFlags::RequestedAck],
-        ));
+        writing.span_op(SpanOp::End(span.0));
+        writing.send(SpanEndActionMessage {
+            span_id: span.0.get(),
+            result: Some(match result {
+                None => span_end_action_message::Result::Void(Default::default()),
+                Some(NonEmptyValue::Success(value)) => {
+                    span_end_action_message::Result::Value(value.into())
+                }
+                Some(NonEmptyValue::Failure(failure)) => {
+                    span_end_action_message::Result::Failure(failure.into())
+                }
+            }),
+            ..Default::default()
+        });
         Ok((self, ()))
     }
 }

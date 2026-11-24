@@ -1,205 +1,118 @@
-use crate::service_protocol::messages::RestateEncodableMessage;
-use crate::service_protocol::{CompletionId, Encoder, Version};
+use crate::explicit_recovery::vm::errors::result_ids_exhausted;
+use crate::explicit_recovery::Options;
+use crate::service_protocol::explicit_recovery::messages::{self, RestateMessage};
+use crate::service_protocol::explicit_recovery::ProtocolVersion;
+use crate::Error;
 use bytes::Bytes;
 use bytes_utils::SegmentedBuf;
-use std::collections::HashMap;
 use std::num::NonZero;
 
+/// What `StartMessage` says of the invocation and of this attempt.
 #[derive(Clone, Debug)]
 pub(crate) struct StartInfo {
     pub(crate) debug_id: String,
     pub(crate) key: String,
-    /// The entries the earlier attempts stored, which the runtime sends after the start message.
-    pub(crate) known_entries: u32,
-    pub(crate) random_seed: u64,
+    pub(crate) headers: Vec<messages::Header>,
+    pub(crate) input: Bytes,
     pub(crate) scope: Option<String>,
     pub(crate) limit_key: Option<String>,
     pub(crate) idempotency_key: Option<String>,
+    pub(crate) attempt: u32,
+    /// The invocation received the cancel signal before this attempt.
+    pub(crate) cancelled: bool,
+    /// The features the runtime supports in this attempt, beyond the version's baseline.
+    pub(crate) features: Vec<u32>,
 }
 
-/// The numbering of the attempt's commands and completion ids.
-///
-/// Nothing is replayed, but the runtime still numbers the commands of the earlier attempts: this
-/// attempt's continue after them, see [`Journal::skip_to`].
-pub(crate) struct Journal {
-    command_index: u32,
-    completion_index: NonZero<CompletionId>,
-    /// The completion ids below are those of the earlier attempts.
-    first_completion_id: NonZero<CompletionId>,
-    ephemeral_completion_index: NonZero<u32>,
+/// The ids the attempt picks: result ids, from `StartMessage.next_result_id` and strictly
+/// increasing, and span ids.
+#[derive(Debug)]
+pub(crate) struct Ids {
+    /// `None` once `u32::MAX` was handed out: ids never wrap.
+    next_result_id: Option<NonZero<u32>>,
+    /// The ids below are those of the earlier attempts.
+    first_result_id: u32,
+    next_span_id: NonZero<u32>,
 }
 
-impl Default for Journal {
+impl Default for Ids {
     fn default() -> Self {
-        Journal {
-            command_index: 0,
-            // Clever trick for protobuf here
-            completion_index: unsafe { NonZero::new_unchecked(1) },
-            first_completion_id: unsafe { NonZero::new_unchecked(1) },
-            ephemeral_completion_index: unsafe { NonZero::new_unchecked(1) },
+        Ids {
+            next_result_id: NonZero::new(1),
+            first_result_id: 1,
+            next_span_id: NonZero::new(1).unwrap(),
         }
     }
 }
 
-impl Journal {
-    /// Number this attempt's commands after the `earlier_commands` of the earlier attempts (the
-    /// input included), and its completion ids after theirs: as CoreVM's journal skip does,
-    /// completion ids start at 1, and a command after the input takes at most two.
-    pub(crate) fn skip_to(&mut self, earlier_commands: u32) {
-        self.command_index = earlier_commands;
-        self.first_completion_id = earlier_commands
-            .saturating_sub(1)
-            .saturating_mul(2)
-            .saturating_add(1)
-            .try_into()
-            .unwrap();
-        self.completion_index = self.first_completion_id;
+impl Ids {
+    pub(crate) fn start_at(&mut self, next_result_id: NonZero<u32>) {
+        self.next_result_id = Some(next_result_id);
+        self.first_result_id = next_result_id.get();
     }
 
-    pub(crate) fn next_command_index(&mut self) -> u32 {
-        let next = self.command_index;
-        self.command_index += 1;
+    pub(crate) fn next_result_id(&mut self) -> Result<NonZero<u32>, Error> {
+        let next = self.next_result_id.ok_or_else(result_ids_exhausted)?;
+        self.next_result_id = next.checked_add(1);
+        Ok(next)
+    }
+
+    /// Whether `result_id` is below the ids of this attempt: one of an earlier attempt's actions.
+    pub(crate) fn is_earlier_result_id(&self, result_id: u32) -> bool {
+        result_id < self.first_result_id
+    }
+
+    pub(crate) fn next_span_id(&mut self) -> NonZero<u32> {
+        let next = self.next_span_id;
+        self.next_span_id = self.next_span_id.saturating_add(1);
         next
-    }
-
-    pub(crate) fn next_command_index_nonzero(&mut self) -> NonZero<u32> {
-        NonZero::new(self.next_command_index())
-            .expect("this attempt's commands come after the input, which is command 0")
-    }
-
-    pub(crate) fn next_completion_notification_id(&mut self) -> NonZero<CompletionId> {
-        let next = self.completion_index;
-        self.completion_index = self.completion_index.saturating_add(1);
-        next
-    }
-
-    pub(crate) fn next_ephemeral_completion_id(&mut self) -> NonZero<u32> {
-        let next = self.ephemeral_completion_index;
-        self.ephemeral_completion_index = self.ephemeral_completion_index.saturating_add(1);
-        next
-    }
-
-    /// Whether `completion_id` is one of an earlier attempt's commands.
-    pub(crate) fn is_earlier_completion_id(&self, completion_id: CompletionId) -> bool {
-        completion_id < u32::from(self.first_completion_id)
     }
 }
 
 pub(crate) struct Output {
-    encoder: Encoder,
     pub(crate) buffer: SegmentedBuf<Bytes>,
     is_closed: bool,
 }
 
 impl Output {
-    pub(crate) fn new(version: Version) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            encoder: Encoder::new(version),
             buffer: Default::default(),
             is_closed: false,
         }
     }
 
     /// Ignored once closed: nothing follows the message that ends the attempt.
-    pub(crate) fn send<M: RestateEncodableMessage>(&mut self, msg: &M) {
+    pub(crate) fn send<M: RestateMessage>(&mut self, msg: &M) {
         if !self.is_closed {
-            self.buffer.push(self.encoder.encode(msg))
+            self.buffer.push(messages::encode(msg))
         }
     }
 
     pub(crate) fn send_eof(&mut self) {
         self.is_closed = true;
     }
-}
 
-pub(crate) enum EagerGetState {
-    /// Means we don't have sufficient information to establish whether state is there or not, so the VM should interact with the runtime to deal with it.
-    Unknown,
-    Empty,
-    Value(Bytes),
-}
-
-pub(crate) enum EagerGetStateKeys {
-    /// Means we don't have sufficient information to establish whether state is there or not, so the VM should interact with the runtime to deal with it.
-    Unknown,
-    Keys(Vec<String>),
-}
-
-/// The state values known without asking the runtime: those it sent at the start, and those this
-/// attempt wrote since.
-#[derive(Debug)]
-pub(crate) struct EagerState {
-    is_partial: bool,
-    // None means Void, Value means value
-    values: HashMap<String, Option<Bytes>>,
-}
-
-impl EagerState {
-    pub(crate) fn new(is_partial: bool, values: Vec<(String, Bytes)>) -> Self {
-        Self {
-            is_partial,
-            values: values
-                .into_iter()
-                .map(|(key, val)| (key, Some(val)))
-                .collect(),
-        }
-    }
-
-    pub(crate) fn get(&self, k: &str) -> EagerGetState {
-        self.values
-            .get(k)
-            .map(|opt| match opt {
-                None => EagerGetState::Empty,
-                Some(s) => EagerGetState::Value(s.clone()),
-            })
-            .unwrap_or(if self.is_partial {
-                EagerGetState::Unknown
-            } else {
-                EagerGetState::Empty
-            })
-    }
-
-    /// Unlike CoreVM's, the cleared keys are left out.
-    pub(crate) fn get_keys(&self) -> EagerGetStateKeys {
-        if self.is_partial {
-            EagerGetStateKeys::Unknown
-        } else {
-            let mut keys: Vec<_> = self
-                .values
-                .iter()
-                .filter(|(_, value)| value.is_some())
-                .map(|(key, _)| key.clone())
-                .collect();
-            keys.sort();
-            EagerGetStateKeys::Keys(keys)
-        }
-    }
-
-    pub(crate) fn set(&mut self, k: String, v: Bytes) {
-        self.values.insert(k, Some(v));
-    }
-
-    pub(crate) fn clear(&mut self, k: String) {
-        self.values.insert(k, None);
-    }
-
-    pub(crate) fn clear_all(&mut self) {
-        self.values.clear();
-        self.is_partial = false;
+    /// The last message is written: nothing follows it.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.is_closed
     }
 }
 
 /// Context of the current attempt. Holds some state across all the different FSM transitions.
 pub(crate) struct Context {
     pub(crate) start_info: Option<StartInfo>,
-    pub(crate) journal: Journal,
-    pub(crate) negotiated_protocol_version: Version,
+    pub(crate) negotiated_protocol_version: ProtocolVersion,
+    pub(crate) options: Options,
+    pub(crate) ids: Ids,
 
     pub(crate) input_is_closed: bool,
     pub(crate) output: Output,
 
-    /// Whether a cancellation signal was received, by this attempt or an earlier one.
-    pub(crate) cancelled: bool,
+    /// The runtime sent the cancel signal in this attempt.
+    pub(crate) cancel_received: bool,
+    /// The cancel signal was handed out by `take_next_notification`.
+    pub(crate) cancel_taken: bool,
 }
 
 impl Context {

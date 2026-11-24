@@ -39,6 +39,32 @@ pub trait KvStore: Send + Sync {
             Err(error) => Box::pin(futures::future::ready(Err(error))),
         }
     }
+    /// A flush's last step: put `puts`, delete `deletes`, put `head` under `head_key`,
+    /// the one write that commits, and wait until all of it is durable. Every write is queued
+    /// when this is called, as [`KvStore::put`]'s is.
+    ///
+    /// By default, those calls one by one, in that order, with [`KvStore::put_and_sync`] for the
+    /// head: a crash keeps a prefix of them. A store that can apply several writes together
+    /// (Restate's atomic group) overrides it, to apply all of them or none.
+    fn commit<'a>(
+        &'a self,
+        puts: Vec<(String, Bytes)>,
+        deletes: &'a [String],
+        head_key: &'a str,
+        head: Bytes,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        for (key, value) in puts {
+            if let Err(error) = self.put(&key, value) {
+                return Box::pin(futures::future::ready(Err(error)));
+            }
+        }
+        for key in deletes {
+            if let Err(error) = self.delete(key) {
+                return Box::pin(futures::future::ready(Err(error)));
+            }
+        }
+        self.put_and_sync(head_key, head)
+    }
     /// Every key, stored or written since, as Restate's `getKeys`: what
     /// checkpoints kept here need, to delete the packs no checkpoint needs. A store that cannot fails with
     /// [`io::ErrorKind::Unsupported`]; its garbage stays.

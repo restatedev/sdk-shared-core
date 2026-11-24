@@ -61,8 +61,20 @@ impl Encoder {
 
 // --- Input protocol.message decoder
 
+/// Generic over the registry of message types, as [`MessageHeader`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct RawMessage(MessageHeader, Bytes);
+pub struct RawMessage<T = MessageType>(MessageHeader<T>, Bytes);
+
+impl<T: Copy> RawMessage<T> {
+    /// The message's type, flags and length.
+    pub fn raw_header(&self) -> MessageHeader<T> {
+        self.0
+    }
+
+    pub fn into_payload(self) -> Bytes {
+        self.1
+    }
+}
 
 impl RawMessage {
     pub fn ty(&self) -> MessageType {
@@ -105,9 +117,12 @@ impl RawMessage {
 }
 
 /// Stateful decoder to decode [`RestateMessage`]
-pub struct Decoder {
+///
+/// Generic over the registry of message types, as [`MessageHeader`]. The framing is the
+/// same in both protocol families: an 8-byte header, then the payload.
+pub struct Decoder<T = MessageType> {
     buf: SegmentedBuf<Bytes>,
-    state: DecoderState,
+    state: DecoderState<T>,
 }
 
 impl Decoder {
@@ -118,6 +133,13 @@ impl Decoder {
             Version::minimum_supported_version(),
             Version::maximum_supported_version()
         );
+        Self::for_registry()
+    }
+}
+
+impl<T: Copy + TryFrom<u16, Error = UnknownMessageType>> Decoder<T> {
+    /// A decoder of the messages whose types `T` lists.
+    pub fn for_registry() -> Self {
         Self {
             buf: SegmentedBuf::new(),
             state: DecoderState::WaitingHeader,
@@ -130,7 +152,7 @@ impl Decoder {
     }
 
     /// Try to consume the next protocol.message in the internal buffer.
-    pub fn consume_next(&mut self) -> Result<Option<RawMessage>, DecodingError> {
+    pub fn consume_next(&mut self) -> Result<Option<RawMessage<T>>, DecodingError> {
         loop {
             let remaining = self.buf.remaining();
 
@@ -146,30 +168,30 @@ impl Decoder {
 }
 
 #[derive(Default)]
-enum DecoderState {
+enum DecoderState<T> {
     #[default]
     WaitingHeader,
-    WaitingPayload(MessageHeader),
+    WaitingPayload(MessageHeader<T>),
 }
 
-impl DecoderState {
+impl<T: Copy + TryFrom<u16, Error = UnknownMessageType>> DecoderState<T> {
     fn needs_bytes(&self) -> usize {
         match self {
             DecoderState::WaitingHeader => 8,
-            DecoderState::WaitingPayload(h) => h.message_length() as usize,
+            DecoderState::WaitingPayload(h) => h.length() as usize,
         }
     }
 
-    fn decode(&mut self, mut buf: impl Buf) -> Result<Option<RawMessage>, DecodingError> {
+    fn decode(&mut self, mut buf: impl Buf) -> Result<Option<RawMessage<T>>, DecodingError> {
         let mut res = None;
 
         *self = match mem::take(self) {
             DecoderState::WaitingHeader => {
-                let header: MessageHeader = buf.get_u64().try_into()?;
+                let header: MessageHeader<T> = buf.get_u64().try_into()?;
                 DecoderState::WaitingPayload(header)
             }
             DecoderState::WaitingPayload(h) => {
-                let msg = RawMessage(h, buf.copy_to_bytes(h.message_length() as usize));
+                let msg = RawMessage(h, buf.copy_to_bytes(h.length() as usize));
                 res = Some(msg);
                 DecoderState::WaitingHeader
             }

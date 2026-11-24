@@ -1,94 +1,155 @@
 use crate::explicit_recovery::Notification;
-use crate::service_protocol::CompletionId;
-use crate::{NotificationHandle, Value};
-use std::collections::HashMap;
+use crate::service_protocol::explicit_recovery::messages::result_notification_message;
+use crate::{NotificationHandle, Value, CANCEL_NOTIFICATION_HANDLE};
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZero;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub(crate) enum NotificationId {
-    CompletionId(NonZero<CompletionId>),
-    EphemeralCompletionId(NonZero<u32>),
-    CommandAck(NonZero<u32>),
+/// The variants of `ResultNotificationMessage.result` an action allows: what the proto says on
+/// its `result_id`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Expect {
+    Void,
+    ValueOrVoid,
+    ValueOrFailure,
+    VoidValueOrFailure,
+    InvocationId,
+    StateKeys,
 }
 
-/// The async results of the attempt: which handle each response notifies, and the notifications
-/// ready to be taken, in no particular order.
-///
-/// Unlike CoreVM's, there is no future to resolve: a notification is ready as soon as its response
-/// arrives (or at once, for a result known locally), and the SDK takes them as they come.
+impl Expect {
+    fn allows(&self, result: &result_notification_message::Result) -> bool {
+        use result_notification_message::Result;
+        matches!(
+            (self, result),
+            (Expect::Void, Result::Void(_))
+                | (Expect::ValueOrVoid, Result::Value(_) | Result::Void(_))
+                | (
+                    Expect::ValueOrFailure,
+                    Result::Value(_) | Result::Failure(_)
+                )
+                | (
+                    Expect::VoidValueOrFailure,
+                    Result::Void(_) | Result::Value(_) | Result::Failure(_)
+                )
+                | (Expect::InvocationId, Result::InvocationId(_))
+                | (Expect::StateKeys, Result::StateKeys(_))
+        )
+    }
+}
+
+pub(crate) enum Notified {
+    Ok,
+    /// No action of this attempt waits for that result id.
+    UnknownResultId,
+    /// The result is of a variant the action does not allow.
+    UnexpectedVariant(Expect),
+}
+
+#[derive(Debug)]
+struct Ready {
+    notification: Notification,
+    /// Whether the runtime sent it: those are counted in `ShutdownMessage`. A result the VM knew
+    /// by itself (a read answered from the state it holds) is not.
+    from_runtime: bool,
+}
+
+/// The results of the attempt: which handle each result id notifies, and the notifications ready
+/// to be taken, in the order they arrived.
 #[derive(Debug)]
 pub(crate) struct AsyncResultsState {
-    async_results: HashMap<NotificationId, (NotificationHandle, Option<Value>)>,
-
+    pending: HashMap<NonZero<u32>, (NotificationHandle, Expect)>,
+    ready: VecDeque<Ready>,
     next_notification_handle: u32,
+    /// How many of the notifications the runtime sent were handed out:
+    /// `ShutdownMessage.processed_notifications`.
+    processed_notifications: u32,
 }
 
 impl Default for AsyncResultsState {
     fn default() -> Self {
         Self {
-            async_results: Default::default(),
-            // 1 to 16 are reserved, as CoreVM's built-in signals.
+            pending: Default::default(),
+            ready: Default::default(),
+            // 1 to 16 are reserved, as CoreVM's built-in signals: 1 is the cancel signal.
             next_notification_handle: 17,
+            processed_notifications: 0,
         }
     }
 }
 
 impl AsyncResultsState {
-    /// A handle for the given notification id.
-    pub(crate) fn create_handle(&mut self, notification_id: NotificationId) -> NotificationHandle {
-        let handle = self.next_handle();
-        self.async_results.insert(notification_id, (handle, None));
-        handle
-    }
-
-    /// A handle for the given notification id, already resolved.
-    pub(crate) fn create_resolved_handle(
+    /// A handle for the result `result_id`.
+    pub(crate) fn create_handle(
         &mut self,
-        notification_id: NotificationId,
-        result: Value,
+        result_id: NonZero<u32>,
+        expect: Expect,
     ) -> NotificationHandle {
         let handle = self.next_handle();
-        self.async_results
-            .insert(notification_id, (handle, Some(result)));
+        self.pending.insert(result_id, (handle, expect));
         handle
     }
 
-    /// Returns false if result is dropped because the handle didnt exist.
+    /// A handle for a result the VM knows by itself, ready at once.
+    pub(crate) fn create_resolved_handle(&mut self, value: Value) -> NotificationHandle {
+        let handle = self.next_handle();
+        self.ready.push_back(Ready {
+            notification: Notification { handle, value },
+            from_runtime: false,
+        });
+        handle
+    }
+
+    /// The runtime sent the result `result_id`.
     pub(crate) fn notify_result(
         &mut self,
-        notification_id: NotificationId,
-        value: impl Into<Value>,
-    ) -> bool {
-        let Some((_, result)) = self.async_results.get_mut(&notification_id) else {
-            return false;
+        result_id: NonZero<u32>,
+        result: result_notification_message::Result,
+    ) -> Notified {
+        let Some((_, expect)) = self.pending.get(&result_id) else {
+            return Notified::UnknownResultId;
         };
-        *result = Some(value.into());
-        true
-    }
-
-    // Take any ready notification.
-    pub(crate) fn take_ready(&mut self) -> Option<Notification> {
-        self.async_results
-            .extract_if(|_, (_, result)| result.is_some())
-            .next()
-            .map(|(_, (handle, result))| Notification {
+        if !expect.allows(&result) {
+            return Notified::UnexpectedVariant(*expect);
+        }
+        let (handle, _) = self.pending.remove(&result_id).unwrap();
+        self.ready.push_back(Ready {
+            notification: Notification {
                 handle,
-                value: result.unwrap(),
-            })
+                value: result.into(),
+            },
+            from_runtime: true,
+        });
+        Notified::Ok
     }
 
-    /// The completion ids of the pending responses.
-    pub(crate) fn waiting_notifications(&self) -> Vec<NotificationId> {
-        self.async_results
-            .iter()
-            .filter_map(|(notif_id, (_, result))| {
-                if result.is_none() {
-                    Some(*notif_id)
-                } else {
-                    None
-                }
-            })
-            .collect()
+    /// The runtime sent the cancel signal.
+    pub(crate) fn notify_cancel(&mut self) {
+        self.ready.push_back(Ready {
+            notification: Notification {
+                handle: CANCEL_NOTIFICATION_HANDLE,
+                value: Value::Void,
+            },
+            from_runtime: true,
+        });
+    }
+
+    /// Hand out the next notification, in arrival order.
+    pub(crate) fn take_next(&mut self) -> Option<Notification> {
+        let ready = self.ready.pop_front()?;
+        if ready.from_runtime {
+            self.processed_notifications += 1;
+        }
+        Some(ready.notification)
+    }
+
+    /// Forget `handle`, of an action that was never sent.
+    pub(crate) fn forget(&mut self, handle: NotificationHandle) {
+        self.pending.retain(|_, (pending, _)| *pending != handle);
+        self.ready.retain(|r| r.notification.handle != handle);
+    }
+
+    pub(crate) fn processed_notifications(&self) -> u32 {
+        self.processed_notifications
     }
 
     fn next_handle(&mut self) -> NotificationHandle {

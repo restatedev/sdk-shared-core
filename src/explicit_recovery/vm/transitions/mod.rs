@@ -1,14 +1,16 @@
 mod actions;
 mod async_results;
+mod group;
 mod input;
 mod terminal;
 
 use crate::explicit_recovery::vm::context::Context;
 use crate::explicit_recovery::vm::{CoreExplicitRecoveryVM, State};
-use crate::service_protocol::messages::ErrorMessage;
+use crate::service_protocol::explicit_recovery::messages::ErrorMessage;
 use crate::Error;
 pub(crate) use actions::*;
 pub(crate) use async_results::*;
+pub(crate) use group::*;
 pub(crate) use input::*;
 use std::mem;
 pub(crate) use terminal::*;
@@ -54,7 +56,7 @@ impl CoreExplicitRecoveryVM {
     {
         match mem::replace(&mut self.last_transition, Ok(State::WaitingStart)) {
             Err(e) => {
-                // The state machine is in error mode (failed, or shut down), we just propagate back the error
+                // The attempt failed, or was shut down: every call returns why.
                 self.last_transition = Err(e.clone());
                 Err(e)
             }
@@ -71,8 +73,8 @@ impl CoreExplicitRecoveryVM {
                         self.last_transition = Err(e.clone());
 
                         if !was_closed {
-                            // We write it out only if it wasn't closed before. A shutdown closed
-                            // the output already: nothing follows its message.
+                            // Ignored after a shutdown, which closed the output: nothing
+                            // follows `ShutdownMessage`.
                             self.context.output.send(&ErrorMessage::from(&e));
                             self.context.output.send_eof();
                         }

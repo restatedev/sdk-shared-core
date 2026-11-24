@@ -76,6 +76,10 @@ sql = [
 # stability): the state's in-memory stores, fault injection and latency
 # simulator, which tests always have.
 __bench = ["sql"]
+# Internal, for the tests of SDKs (hence the `__`: no API stability): a fake Restate runtime for
+# the explicit recovery protocol, `explicit_recovery::fake_runtime`, which the crate's own tests
+# always have. No I/O and no dependency: it builds wherever the VM does.
+__fake_runtime = []
 # Checkpoints' packs in an object store, L1 (`src/state/l1.rs`):
 # `state::ObjectStoreL1` names one from a URL (`from_url`) or the environment
 # (`from_env`, `RESTATE_SQL_OBJECT_STORE`), and gives each database its own

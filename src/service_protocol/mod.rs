@@ -9,7 +9,8 @@
 // by the Apache License, Version 2.0.
 
 mod encoding;
-mod header;
+pub(crate) mod explicit_recovery;
+pub(crate) mod header;
 pub(crate) mod messages;
 mod version;
 

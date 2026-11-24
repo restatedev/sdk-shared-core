@@ -185,13 +185,15 @@ impl Tiered {
         parts: Vec<Bytes>,
         deletes: &[String],
     ) -> io::Result<()> {
-        for (key, part) in head.entry_keys(head.version).iter().zip(parts) {
-            self.restate.put(key, part)?;
-        }
-        for key in deletes {
-            self.restate.delete(key)?;
-        }
-        self.restate.put_and_sync(HEAD_KEY, head.encode()).await
+        // One call, so that a store with atomic groups applies the flush as one.
+        let puts = head
+            .entry_keys(head.version)
+            .into_iter()
+            .zip(parts)
+            .collect();
+        self.restate
+            .commit(puts, deletes, HEAD_KEY, head.encode())
+            .await
     }
 
     /// The packs `head`'s checkpoints need: those their manifests name.

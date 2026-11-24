@@ -704,6 +704,23 @@ impl KvStore for CachedKv {
         })
     }
 
+    /// Forwarded as one call, so that the store's own `commit` is reached; what it puts is
+    /// kept as [`KvStore::put`] keeps it.
+    fn commit<'a>(
+        &'a self,
+        puts: Vec<(String, Bytes)>,
+        deletes: &'a [String],
+        head_key: &'a str,
+        head: Bytes,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        for (key, value) in &puts {
+            if immutable(key) {
+                self.cache.keep_value(key, value);
+            }
+        }
+        self.store.commit(puts, deletes, head_key, head)
+    }
+
     fn keys(&self) -> BoxFuture<'_, io::Result<Vec<String>>> {
         self.store.keys()
     }

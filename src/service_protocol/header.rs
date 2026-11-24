@@ -21,7 +21,7 @@ type MessageTypeId = u16;
 
 #[derive(Debug, thiserror::Error)]
 #[error("unknown protocol.message code {0:#x}")]
-pub struct UnknownMessageType(u16);
+pub struct UnknownMessageType(pub(crate) u16);
 
 // This macro generates the MessageKind enum, together with the conversions back and forth to MessageTypeId
 macro_rules! gen_message_type_enum {
@@ -144,11 +144,42 @@ impl fmt::Display for MessageType {
     }
 }
 
+/// Generic over the registry of message types, `T`: the durable execution protocol's
+/// [`MessageType`] by default, so that every existing use is unchanged.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct MessageHeader {
-    ty: MessageType,
+pub struct MessageHeader<T = MessageType> {
+    ty: T,
     length: u32,
     flags: u16,
+}
+
+impl<T: Copy> MessageHeader<T> {
+    /// A header with no flag set.
+    #[inline]
+    pub fn new_plain(ty: T, length: u32) -> Self {
+        Self {
+            ty,
+            length,
+            flags: 0,
+        }
+    }
+
+    #[inline]
+    pub fn ty(&self) -> T {
+        self.ty
+    }
+
+    #[inline]
+    pub fn length(&self) -> u32 {
+        self.length
+    }
+
+    /// The 16 bits after the type: flags in the durable execution protocol, reserved (zero) in
+    /// the explicit recovery protocol.
+    #[inline]
+    pub fn flags(&self) -> u16 {
+        self.flags
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -194,14 +225,14 @@ impl MessageHeader {
     }
 }
 
-impl TryFrom<u64> for MessageHeader {
+impl<T: TryFrom<u16, Error = UnknownMessageType>> TryFrom<u64> for MessageHeader<T> {
     type Error = UnknownMessageType;
 
     /// Deserialize the protocol header.
     /// See https://github.com/restatedev/sdk-shared-core/blob/main/docs/service-invocation-protocol.md#message-header
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let ty_code = (value >> 48) as u16;
-        let ty: MessageType = ty_code.try_into()?;
+        let ty: T = ty_code.try_into()?;
         let flags = (value >> 32) as u16;
         let length = value as u32;
 
@@ -209,11 +240,11 @@ impl TryFrom<u64> for MessageHeader {
     }
 }
 
-impl From<MessageHeader> for u64 {
+impl<T: Into<u16>> From<MessageHeader<T>> for u64 {
     /// Serialize the protocol header.
     /// See https://github.com/restatedev/sdk-shared-core/blob/main/docs/service-invocation-protocol.md#message-header
-    fn from(message_header: MessageHeader) -> Self {
-        ((u16::from(message_header.ty) as u64) << 48)
+    fn from(message_header: MessageHeader<T>) -> Self {
+        ((message_header.ty.into() as u64) << 48)
             | ((message_header.flags as u64) << 32)
             | (message_header.length as u64)
     }

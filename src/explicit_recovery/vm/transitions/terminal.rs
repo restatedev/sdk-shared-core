@@ -1,19 +1,12 @@
-use crate::explicit_recovery::vm::async_results_state::NotificationId;
 use crate::explicit_recovery::vm::context::Context;
-use crate::explicit_recovery::vm::errors::{attempt_shut_down, restart_attempt};
+use crate::explicit_recovery::vm::errors::attempt_shut_down;
 use crate::explicit_recovery::vm::transitions::Transition;
 use crate::explicit_recovery::vm::State;
-use crate::service_protocol::messages::{
-    output_command_message, propose_run_completion_message, CombinatorType, EndMessage,
-    ErrorMessage, Future, OutputCommandMessage, ProposeRunCompletionMessage, SuspensionMessage,
-    WithFlags,
+use crate::service_protocol::explicit_recovery::messages::{
+    end_message, EndMessage, ShutdownMessage,
 };
-use crate::service_protocol::{MessageFlags, CANCEL_SIGNAL_ID};
-use crate::{Error, NonEmptyValue, TerminalFailure};
+use crate::{Error, NonEmptyValue};
 use tracing::debug;
-
-/// The failure of a trace still open when the handler ends.
-const UNENDED_TRACE_MESSAGE: &str = "the handler ended before the trace";
 
 pub(crate) struct HitError(pub(crate) Error);
 
@@ -24,65 +17,25 @@ impl Transition<Context, HitError> for State {
     }
 }
 
-/// The runtime shut the attempt down, closing the input stream: no response can arrive anymore.
+/// The runtime shut the attempt down, closing its side of the stream: no notification can arrive
+/// anymore.
 ///
-/// The attempt suspends on the responses that take long (calls, attachments), on which the
-/// runtime starts the next attempt, and on the cancellation of the invocation unless it was
-/// cancelled already. With no response pending, it fails with a retry delay of zero: the runtime
-/// starts the next attempt at once, without counting a retry. Either way the attempt ends with
-/// [`attempt_shut_down`], which every later call returns.
+/// The VM answers at once, without waiting for user code, with how many notifications it had
+/// handed out: those the SDK took, not those it merely received. The runtime decides what
+/// comes next. An open atomic group is dropped: it was never closed, so it is not sent.
 pub(crate) struct HitShutdown;
 
 impl Transition<Context, HitShutdown> for State {
     fn transition(self, context: &mut Context, _: HitShutdown) -> Result<Self, Error> {
-        let async_results = match self {
-            State::Processing { async_results, .. } => async_results,
+        let attempt = match self {
+            State::Running(attempt) | State::InAtomicGroup(attempt, _) => attempt,
             s => return Err(s.as_unexpected_state("HitShutdown")),
         };
-
-        let waiting_notifications = async_results.waiting_notifications();
-        // TODO the current protocol versions dont support a way to notify im waiting for an ack, only for completions...
-        let waiting_completions = waiting_notifications
-            .into_iter()
-            .filter_map(|notification_id| match notification_id {
-                NotificationId::CompletionId(completion_id) => Some(completion_id.into()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if waiting_completions.is_empty() {
-            debug!("Shut down with no call pending, starting a new attempt");
-            context.output.send(&ErrorMessage::from(&restart_attempt()));
-        } else {
-            debug!("Shut down, suspending until any of the completions {waiting_completions:?}");
-            context.output.send(&SuspensionMessage {
-                awaiting_on: Some(Future {
-                    waiting_completions,
-                    // The cancellation is awaited next to the responses, so that cancelling an
-                    // invocation suspended here starts its next attempt, which is given the
-                    // cancellation. Without it the invocation stays suspended until a call
-                    // answers, and for good if none ever does: no SDK code runs meanwhile, so
-                    // nothing else can reach it.
-                    //
-                    // Not once this attempt knows of the cancellation. The runtime resolves a
-                    // suspension against the notifications it has stored, and resumes instead
-                    // of suspending when one is there: naming a stored cancellation would start
-                    // a new attempt at every shutdown, for as long as the handler goes on
-                    // waiting. An attempt that knows of it awaits the responses alone, and is
-                    // suspended until one comes.
-                    //
-                    // A cancellation the runtime stored after it closed the input is not known
-                    // here, and is named: that costs one resume, and the next attempt finds it
-                    // among the earlier entries.
-                    waiting_signals: if context.cancelled {
-                        vec![]
-                    } else {
-                        vec![CANCEL_SIGNAL_ID]
-                    },
-                    combinator_type: CombinatorType::FirstCompleted as i32,
-                    ..Default::default()
-                }),
-            });
-        }
+        let processed_notifications = attempt.async_results.processed_notifications();
+        debug!("Shut down, {processed_notifications} notifications processed");
+        context.output.send(&ShutdownMessage {
+            processed_notifications,
+        });
         context.output.send_eof();
 
         // do_transition keeps this error, and writes nothing more: the output is closed.
@@ -95,46 +48,18 @@ pub(crate) struct CmdEnd(pub(crate) NonEmptyValue);
 impl Transition<Context, CmdEnd> for State {
     fn transition(self, context: &mut Context, CmdEnd(value): CmdEnd) -> Result<Self, Error> {
         match self {
-            State::Processing { trace_state, .. } => {
-                // Send messages to end dangling traces.
-                for completion_id in trace_state.end_dangling_traces() {
-                    let result = propose_run_completion_message::Result::Failure(
-                        TerminalFailure {
-                            code: 500,
-                            message: UNENDED_TRACE_MESSAGE.to_owned(),
-                            metadata: vec![],
-                        }
-                        .into(),
-                    );
-                    context.output.send(&WithFlags(
-                        &ProposeRunCompletionMessage {
-                            result_completion_id: completion_id,
-                            result: Some(result),
-                        },
-                        &[MessageFlags::RequestedAck],
-                    ));
-                }
-
-                // Send output message
-                context.journal.next_command_index();
-                context.output.send(&OutputCommandMessage {
-                    result: Some(match value {
-                        NonEmptyValue::Success(b) => {
-                            output_command_message::Result::Value(b.into())
-                        }
-                        NonEmptyValue::Failure(f) => {
-                            output_command_message::Result::Failure(f.into())
-                        }
+            State::Running(_) => {
+                context.output.send(&EndMessage {
+                    output: Some(match value {
+                        NonEmptyValue::Success(b) => end_message::Output::Value(b.into()),
+                        NonEmptyValue::Failure(f) => end_message::Output::Failure(f.into()),
                     }),
-                    ..Default::default()
                 });
-
-                // End
-                context.output.send(&EndMessage {});
                 context.output.send_eof();
                 debug!("End of the invocation");
                 Ok(State::Closed)
             }
+            // Also with a group still open.
             s => Err(s.as_unexpected_state("CmdEnd")),
         }
     }

@@ -1,67 +1,80 @@
-//! The [`ExplicitRecoveryVM`] implementation, shaped as [`crate::CoreVM`]'s: a state machine whose
+//! The [`ExplicitRecoveryVM`] implementation, shaped as [`crate::CoreVM`]: a state machine whose
 //! states hold the attempt's state, moved by transitions ([`transitions`]) through
 //! [`CoreExplicitRecoveryVM::do_transition`].
 
 mod async_results_state;
 mod context;
-mod earlier_entries;
 pub(crate) mod errors;
-mod trace_state;
+mod local_state;
+mod span_state;
 mod transitions;
 
-pub use errors::request_response_unsupported;
+pub use errors::missing_features;
 
-use super::{AttemptState, CallHandle, ExplicitRecoveryVM, Notification, SendHandle, TraceId};
-use crate::service_protocol::messages::InputCommandMessage;
-use crate::service_protocol::{Decoder, Version};
+use super::{
+    ActionOptions, AttemptState, ExplicitRecoveryVM, Input, Notification, Options, ResponseHead,
+    SpanId, StateScope,
+};
+use crate::service_protocol::explicit_recovery::messages::atomic_group_action_message;
+use crate::service_protocol::explicit_recovery::{Decoder, ProtocolVersion};
 use crate::vm::errors::{
     codes, empty_idempotency_key, empty_limit_key, empty_scope, missing_content_type, ClosedError,
     OutOfBoundsDuration, UnexpectedStateError,
 };
 use crate::{
-    AttachInvocationTarget, Error, Header, HeaderMap, Input, NonEmptyValue, NotificationHandle,
-    ResponseHead, Target, VMResult,
+    AttachInvocationTarget, CallHandle, Error, Header, HeaderMap, NonEmptyValue,
+    NotificationHandle, SendHandle, Target, VMResult,
 };
 use async_results_state::AsyncResultsState;
 use bytes::{Buf, Bytes};
-use context::{Context, EagerState, Output};
-use earlier_entries::EarlierEntries;
+use context::{Context, Output};
+use local_state::{LocalState, StateOp};
+use span_state::{SpanOp, SpanState};
 use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
 use strum::IntoStaticStr;
-use trace_state::TraceState;
 use transitions::*;
 
 const CONTENT_TYPE: &str = "content-type";
 
+/// What a running attempt holds.
+#[derive(Debug)]
+pub(crate) struct Attempt {
+    async_results: AsyncResultsState,
+    local_state: LocalState,
+    spans: SpanState,
+}
+
+/// The open atomic group: its actions, kept until the group is closed, and what they change
+/// in the attempt once it is.
+#[derive(Debug, Default)]
+pub(crate) struct OpenGroup {
+    actions: Vec<atomic_group_action_message::Action>,
+    state_ops: Vec<StateOp>,
+    span_ops: Vec<SpanOp>,
+    /// The handles the actions in the group returned.
+    handles: Vec<NotificationHandle>,
+}
+
 #[derive(Debug, IntoStaticStr)]
 pub(crate) enum State {
     WaitingStart,
-    /// Receiving the entries the earlier attempts stored: nothing is replayed, the VM only takes
-    /// from them what [`EarlierEntries`] keeps.
-    WaitingEarlierEntries {
-        received_entries: u32,
-        earlier_entries: EarlierEntries,
-        async_results: AsyncResultsState,
-        eager_state: EagerState,
-    },
-    Processing {
-        /// The input command, which [`ExplicitRecoveryVM::get_input`] returns.
-        input: InputCommandMessage,
-        async_results: AsyncResultsState,
-        eager_state: EagerState,
-        trace_state: TraceState,
-    },
+    /// The handler runs.
+    Running(Attempt),
+    /// The handler runs, and opened an atomic group.
+    InAtomicGroup(Attempt, OpenGroup),
+    /// The handler ended: `EndMessage` was written.
     Closed,
 }
 
 impl State {
     fn as_unexpected_state(&self, event: impl ToString) -> Error {
-        if matches!(self, State::Closed) {
-            return ClosedError::new(event.to_string()).into();
+        match self {
+            State::Closed => ClosedError::new(event.to_string()).into(),
+            State::InAtomicGroup(..) => errors::not_allowed_in_atomic_group(event.to_string()),
+            s => UnexpectedStateError::new(s.into(), event.to_string()).into(),
         }
-        UnexpectedStateError::new(self.into(), event.to_string()).into()
     }
 }
 
@@ -72,6 +85,8 @@ pub struct CoreExplicitRecoveryVM {
 
     // State machine
     context: Context,
+    /// `Err`: the attempt failed (`ErrorMessage` was written), or was shut down
+    /// (`ShutdownMessage` was).
     last_transition: Result<State, Error>,
 }
 
@@ -84,16 +99,14 @@ impl fmt::Debug for CoreExplicitRecoveryVM {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = f.debug_struct("CoreExplicitRecoveryVM");
         s.field("version", &self.context.negotiated_protocol_version);
-
         if let Some(start_info) = self.context.start_info() {
             s.field("invocation_id", &start_info.debug_id);
+            s.field("attempt", &start_info.attempt);
         }
-
         match &self.last_transition {
             Ok(state) => s.field("last_transition", &<&'static str>::from(state)),
             Err(_) => s.field("last_transition", &"Errored"),
         };
-
         s.finish()
     }
 }
@@ -109,12 +122,25 @@ impl CoreExplicitRecoveryVM {
         if target.limit_key.as_deref() == Some("") {
             self.do_transition(HitError(empty_limit_key()))?;
         }
+        if target.limit_key.is_some() && target.scope.is_none() {
+            self.do_transition(HitError(errors::limit_key_without_scope()))?;
+        }
         Ok(())
+    }
+
+    fn invoke_time(&mut self, invoke_at: Option<Duration>) -> VMResult<u64> {
+        match u64::try_from(invoke_at.unwrap_or_default().as_millis()) {
+            Ok(invoke_time) => Ok(invoke_time),
+            Err(e) => {
+                self.do_transition(HitError(OutOfBoundsDuration("invoke time", e).into()))?;
+                unreachable!();
+            }
+        }
     }
 }
 
 impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
-    fn new(request_headers: impl HeaderMap) -> VMResult<Self> {
+    fn new(request_headers: impl HeaderMap, options: Options) -> VMResult<Self> {
         let version = request_headers
             .extract(CONTENT_TYPE)
             .map_err(|e| {
@@ -124,29 +150,19 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
                 )
             })?
             .ok_or_else(missing_content_type)?
-            .parse::<Version>()?;
-
-        if version < Version::V7 || version > Version::maximum_supported_version() {
-            return Err(Error::new(
-                codes::UNSUPPORTED_MEDIA_TYPE,
-                format!(
-                    "Unsupported protocol version {version:?} for a session object handler, not within [{:?} to {:?}]. \
-                    You might need to rediscover the service, check https://docs.restate.dev/references/errors/#RT0015",
-                    Version::V7,
-                    Version::maximum_supported_version()
-                ),
-            ));
-        }
+            .parse::<ProtocolVersion>()?;
 
         Ok(Self {
-            decoder: Decoder::new(version),
+            decoder: Decoder::for_registry(),
             context: Context {
                 start_info: None,
-                journal: Default::default(),
                 negotiated_protocol_version: version,
+                options,
+                ids: Default::default(),
                 input_is_closed: false,
-                output: Output::new(version),
-                cancelled: false,
+                output: Output::new(),
+                cancel_received: false,
+                cancel_taken: false,
             },
             last_transition: Ok(State::WaitingStart),
         })
@@ -176,9 +192,10 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
                     return;
                 }
                 Err(e) => {
-                    if self.do_transition(HitError(e.into())).is_err() {
-                        return;
-                    }
+                    // A message type this version does not define: the runtime violated the
+                    // protocol.
+                    let _ = self.do_transition(HitError(errors::protocol_violation(e.to_string())));
+                    return;
                 }
             }
         }
@@ -196,10 +213,14 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
             .copy_to_bytes(self.context.output.buffer.remaining())
     }
 
+    fn should_close_output(&self) -> bool {
+        self.context.output.is_closed() && self.context.input_is_closed
+    }
+
     fn is_ready_to_execute(&self) -> VMResult<bool> {
         match &self.last_transition {
-            Ok(State::WaitingStart) | Ok(State::WaitingEarlierEntries { .. }) => Ok(false),
-            Ok(State::Processing { .. }) => Ok(true),
+            Ok(State::WaitingStart) => Ok(false),
+            Ok(State::Running(_)) | Ok(State::InAtomicGroup(..)) => Ok(true),
             Ok(s) => Err(s.as_unexpected_state("IsReadyToExecute")),
             Err(e) => Err(e.clone()),
         }
@@ -209,83 +230,101 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
         self.do_transition(GetInput)
     }
 
+    fn is_feature_supported(&self, feature: u32) -> bool {
+        // Version 1 has no feature in its baseline.
+        self.context
+            .start_info()
+            .is_some_and(|start_info| start_info.features.contains(&feature))
+    }
+
     fn take_next_notification(&mut self) -> VMResult<Option<Notification>> {
         self.do_transition(TakeNextNotification)
     }
 
     fn cmd_state_get(
         &mut self,
+        scope: StateScope,
         key: String,
-        cmd_name: Option<String>,
+        options: ActionOptions,
     ) -> VMResult<NotificationHandle> {
-        self.do_transition(CmdStateGet(key, cmd_name))
+        self.do_transition(CmdStateGet(scope, key, options))
     }
 
-    fn cmd_state_get_keys(&mut self, cmd_name: Option<String>) -> VMResult<NotificationHandle> {
-        self.do_transition(CmdStateGetKeys(cmd_name))
+    fn cmd_state_get_keys(
+        &mut self,
+        scope: StateScope,
+        options: ActionOptions,
+    ) -> VMResult<NotificationHandle> {
+        self.do_transition(CmdStateGetKeys(scope, options))
     }
 
     fn cmd_state_set(
         &mut self,
+        scope: StateScope,
         key: String,
         value: Bytes,
-        cmd_name: Option<String>,
-        cmd_stored_ack: bool,
-    ) -> VMResult<NotificationHandle> {
-        self.do_transition(CmdStateSet(key, value, cmd_name, cmd_stored_ack))
+        options: ActionOptions,
+        want_result: bool,
+    ) -> VMResult<Option<NotificationHandle>> {
+        self.do_transition(CmdStateSet(scope, key, value, options, want_result))
     }
 
     fn cmd_state_clear(
         &mut self,
+        scope: StateScope,
         key: String,
-        cmd_name: Option<String>,
-        cmd_stored_ack: bool,
-    ) -> VMResult<NotificationHandle> {
-        self.do_transition(CmdStateClear(key, cmd_name, cmd_stored_ack))
+        options: ActionOptions,
+        want_result: bool,
+    ) -> VMResult<Option<NotificationHandle>> {
+        self.do_transition(CmdStateClear(scope, key, options, want_result))
     }
 
     fn cmd_state_clear_all(
         &mut self,
-        cmd_name: Option<String>,
-        cmd_stored_ack: bool,
-    ) -> VMResult<NotificationHandle> {
-        self.do_transition(CmdStateClearAll(cmd_name, cmd_stored_ack))
+        scope: StateScope,
+        options: ActionOptions,
+        want_result: bool,
+    ) -> VMResult<Option<NotificationHandle>> {
+        self.do_transition(CmdStateClearAll(scope, options, want_result))
     }
 
     fn cmd_call(
         &mut self,
         target: Target,
         input: Bytes,
-        cmd_name: Option<String>,
+        invoke_at: Option<Duration>,
+        options: ActionOptions,
     ) -> VMResult<CallHandle> {
         self.verify_target(&target)?;
-        self.do_transition(CmdCall(target, input, cmd_name))
+        let invoke_time = self.invoke_time(invoke_at)?;
+        let (invocation_id_notification_handle, result) =
+            self.do_transition(CmdCall(target, input, invoke_time, options, true))?;
+        Ok(CallHandle {
+            invocation_id_notification_handle,
+            call_notification_handle: result.expect("the call asked for its result"),
+        })
     }
 
     fn cmd_send(
         &mut self,
         target: Target,
         input: Bytes,
-        execute_at: Option<Duration>,
-        cmd_name: Option<String>,
+        invoke_at: Option<Duration>,
+        options: ActionOptions,
     ) -> VMResult<SendHandle> {
         self.verify_target(&target)?;
-        let invoke_time = match u64::try_from(execute_at.unwrap_or_default().as_millis()) {
-            Ok(invoke_time) => invoke_time,
-            Err(e) => {
-                self.do_transition(HitError(
-                    OutOfBoundsDuration("send execution time", e).into(),
-                ))?;
-                unreachable!();
-            }
-        };
-        self.do_transition(CmdSend(target, input, invoke_time, cmd_name))
+        let invoke_time = self.invoke_time(invoke_at)?;
+        let (invocation_id_notification_handle, _) =
+            self.do_transition(CmdCall(target, input, invoke_time, options, false))?;
+        Ok(SendHandle {
+            invocation_id_notification_handle,
+        })
     }
 
     fn cmd_attach_invocation(
         &mut self,
         target: AttachInvocationTarget,
-        cmd_name: Option<String>,
+        options: ActionOptions,
     ) -> VMResult<NotificationHandle> {
         if let AttachInvocationTarget::WorkflowId {
             scope: Some(scope), ..
@@ -298,24 +337,70 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
                 self.do_transition(HitError(empty_scope()))?;
             }
         }
-        self.do_transition(CmdAttachInvocation(target, cmd_name))
+        self.do_transition(CmdAttachInvocation(target, options))
     }
 
     fn cmd_cancel_invocation(
         &mut self,
         invocation_id: String,
-        cmd_name: Option<String>,
-        cmd_stored_ack: bool,
+        options: ActionOptions,
+        want_result: bool,
+    ) -> VMResult<Option<NotificationHandle>> {
+        self.do_transition(CmdCancelInvocation(invocation_id, options, want_result))
+    }
+
+    fn cmd_signal_read(
+        &mut self,
+        name: String,
+        index: u32,
+        options: ActionOptions,
     ) -> VMResult<NotificationHandle> {
-        self.do_transition(CmdCancelInvocation(invocation_id, cmd_name, cmd_stored_ack))
+        self.do_transition(CmdSignalRead(name, index, options))
     }
 
-    fn trace_start(&mut self, name: String, parent: Option<TraceId>) -> VMResult<TraceId> {
-        self.do_transition(TraceStart(name, parent))
+    fn cmd_signal_send(
+        &mut self,
+        target_invocation_id: String,
+        name: String,
+        value: Option<NonEmptyValue>,
+        options: ActionOptions,
+        want_result: bool,
+    ) -> VMResult<Option<NotificationHandle>> {
+        self.do_transition(CmdSignalSend(
+            target_invocation_id,
+            name,
+            value,
+            options,
+            want_result,
+        ))
     }
 
-    fn trace_end(&mut self, trace: TraceId, result: NonEmptyValue) -> VMResult<()> {
-        self.do_transition(TraceEnd(trace, result))
+    fn cmd_flush(&mut self, options: ActionOptions) -> VMResult<NotificationHandle> {
+        self.do_transition(CmdFlush(options))
+    }
+
+    fn atomic_group_start(&mut self) -> VMResult<()> {
+        self.do_transition(AtomicGroupStart)
+    }
+
+    fn atomic_group_end(
+        &mut self,
+        options: ActionOptions,
+        want_result: bool,
+    ) -> VMResult<Option<NotificationHandle>> {
+        self.do_transition(AtomicGroupEnd(options, want_result))
+    }
+
+    fn atomic_group_abort(&mut self) -> VMResult<Vec<NotificationHandle>> {
+        self.do_transition(AtomicGroupAbort)
+    }
+
+    fn span_start(&mut self, name: String, parent: Option<SpanId>) -> VMResult<SpanId> {
+        self.do_transition(SpanStart(name, parent))
+    }
+
+    fn span_end(&mut self, span: SpanId, result: Option<NonEmptyValue>) -> VMResult<()> {
+        self.do_transition(SpanEnd(span, result))
     }
 
     fn heartbeat(&mut self) -> VMResult<()> {
@@ -330,16 +415,27 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
         let _ = self.do_transition(HitError(error));
     }
 
+    fn shutdown(&mut self) {
+        if matches!(
+            self.last_transition,
+            Ok(State::Running(_)) | Ok(State::InAtomicGroup(..))
+        ) {
+            let _ = self.do_transition(HitShutdown);
+        }
+    }
+
     fn is_cancelled(&self) -> bool {
-        self.context.cancelled
+        self.context.cancel_taken
+            || self
+                .context
+                .start_info()
+                .is_some_and(|start_info| start_info.cancelled)
     }
 
     fn state(&self) -> AttemptState {
         match &self.last_transition {
-            Ok(State::WaitingStart) | Ok(State::WaitingEarlierEntries { .. }) => {
-                AttemptState::Starting
-            }
-            Ok(State::Processing { .. }) => AttemptState::Running,
+            Ok(State::WaitingStart) => AttemptState::Starting,
+            Ok(State::Running(_)) | Ok(State::InAtomicGroup(..)) => AttemptState::Running,
             Ok(State::Closed) | Err(_) => AttemptState::Closed,
         }
     }

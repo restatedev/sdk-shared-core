@@ -1,56 +1,56 @@
-use crate::explicit_recovery::vm::async_results_state;
-use crate::explicit_recovery::vm::context::{Context, EagerState, StartInfo};
+use crate::explicit_recovery::vm::async_results_state::Notified;
+use crate::explicit_recovery::vm::context::{Context, StartInfo};
 use crate::explicit_recovery::vm::errors::{
-    empty_ephemeral_notification, input_closed_while_waiting_entries, missing_input_command,
-    unexpected_message,
+    input_closed_before_start, protocol_violation, unexpected_message,
 };
+use crate::explicit_recovery::vm::local_state::LocalState;
 use crate::explicit_recovery::vm::transitions::{HitShutdown, Transition};
-use crate::explicit_recovery::vm::State;
-use crate::service_protocol::messages::{
-    get_state_ephemeral_notification_message, CommandAckMessage,
-    GetStateEphemeralNotificationMessage, InputCommandMessage, RunCommandMessage, StartMessage,
-    WithFlags,
+use crate::explicit_recovery::vm::{Attempt, State};
+use crate::explicit_recovery::StateScope;
+use crate::service_protocol::explicit_recovery::messages::{
+    self, result_notification_message, BuiltInSignal, RestateMessage, ResultNotificationMessage,
+    SignalNotificationMessage, StartMessage, Void,
 };
-use crate::service_protocol::{
-    MessageFlags, MessageType, NotificationId, RawMessage, CANCEL_SIGNAL_ID,
-};
-use crate::vm::errors::{
-    known_entries_is_zero, unexpected_entry_message, unexpected_input_message,
-    BadEagerStateKeyError,
-};
-use crate::{Error, Value};
-use bytes::Bytes;
+use crate::service_protocol::explicit_recovery::{MessageType, RawMessage};
+use crate::vm::errors::BadEagerStateKeyError;
+use crate::Error;
 use std::num::NonZero;
-use tracing::{debug, trace, warn};
+use tracing::debug;
+
+/// The payload of `msg` as an `M`. The runtime sent it: what cannot be decoded violates the protocol.
+fn decode<M: RestateMessage>(msg: RawMessage) -> Result<M, Error> {
+    M::decode(msg.into_payload())
+        .map_err(|e| protocol_violation(format!("Cannot decode '{:?}': {e}", M::ty())))
+}
 
 pub(crate) struct NewMessage(pub(crate) RawMessage);
 
 impl Transition<Context, NewMessage> for State {
     fn transition(self, context: &mut Context, NewMessage(msg): NewMessage) -> Result<Self, Error> {
-        match (&self, msg.ty()) {
-            (State::Closed, _) => {
-                // Can ignore
-                Ok(self)
+        if matches!(self, State::Closed) {
+            // The handler ended: what still comes is ignored.
+            return Ok(self);
+        }
+        let header = msg.raw_header();
+        if header.flags() != 0 {
+            return Err(protocol_violation(format!(
+                "The reserved bits of the header of '{:?}' are set: {:#06x}",
+                header.ty(),
+                header.flags()
+            )));
+        }
+        match (&self, header.ty()) {
+            (State::WaitingStart, MessageType::Start) => {
+                self.transition(context, NewStartMessage(decode(msg)?))
             }
-            (_, MessageType::Start) => {
-                self.transition(context, NewStartMessage(msg.decode_to::<StartMessage>(0)?))
+            (State::Running(_) | State::InAtomicGroup(..), MessageType::ResultNotification) => {
+                self.transition(context, NewResultNotification(decode(msg)?))
             }
-            (State::WaitingEarlierEntries { .. }, _) => {
-                self.transition(context, NewEarlierEntry(msg))
+            (State::Running(_) | State::InAtomicGroup(..), MessageType::SignalNotification) => {
+                self.transition(context, NewSignalNotification(decode(msg)?))
             }
-            (_, ty) if ty.is_notification() => {
-                self.transition(context, NewNotificationMessage(msg))
-            }
-            (_, MessageType::CommandAck) => self.transition(context, NewCommandAckMessage(msg)),
-            (_, MessageType::ProposeRunCompletionAck) => {
-                self.transition(context, NewProposeRunCompletionAckMessage)
-            }
-            (_, MessageType::GetStateEphemeralNotification) => {
-                self.transition(context, NewGetStateEphemeralNotificationMessage(msg))
-            }
-            // The runtime sends commands only as the earlier attempts' entries.
-            (_, ty) if ty.is_command() => Err(unexpected_entry_message()),
-            _ => Err(unexpected_input_message()),
+            // A second start, a notification before the start, or a message only the SDK sends.
+            (state, ty) => Err(unexpected_message(ty, state.into())),
         }
     }
 }
@@ -63,259 +63,131 @@ impl Transition<Context, NewStartMessage> for State {
         context: &mut Context,
         NewStartMessage(msg): NewStartMessage,
     ) -> Result<Self, Error> {
-        if !matches!(self, State::WaitingStart) {
-            return Err(self.as_unexpected_state("NewStartMessage"));
-        }
+        let next_result_id = NonZero::new(msg.next_result_id)
+            .ok_or_else(|| protocol_violation("StartMessage.next_result_id is 0"))?;
+        context.ids.start_at(next_result_id);
+
+        let preloaded = msg
+            .state_map
+            .into_iter()
+            .map(|entry| {
+                let scope = match messages::StateScope::try_from(entry.scope) {
+                    Ok(messages::StateScope::Object) => StateScope::Object,
+                    Ok(messages::StateScope::Invocation) => StateScope::Invocation,
+                    Ok(messages::StateScope::Unspecified) | Err(_) => {
+                        return Err(protocol_violation(format!(
+                            "StartMessage.state_map names the state scope {}, which is not a scope of this version",
+                            entry.scope
+                        )))
+                    }
+                };
+                let key = String::from_utf8(entry.key.to_vec()).map_err(BadEagerStateKeyError)?;
+                // Unset: the key is known to have no value.
+                Ok((scope, key, entry.value.map(|value| value.content)))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let local_state = LocalState::new(
+            preloaded,
+            msg.is_object_scope_partial_state,
+            msg.is_invocation_scope_partial_state,
+        );
+
         context.start_info = Some(StartInfo {
             debug_id: msg.debug_id,
             key: msg.key,
-            known_entries: msg.known_entries,
-            random_seed: msg.random_seed,
+            headers: msg.headers,
+            input: msg.input.map(|value| value.content).unwrap_or_default(),
             scope: msg.scope,
             limit_key: msg.limit_key,
             idempotency_key: msg.idempotency_key,
+            attempt: msg.attempt,
+            cancelled: msg.cancelled,
+            features: msg.features,
         });
-        let eager_state = EagerState::new(
-            msg.partial_state,
-            msg.state_map
-                .into_iter()
-                .map(|e| {
-                    Ok::<(String, Bytes), BadEagerStateKeyError>((
-                        String::from_utf8(e.key.to_vec()).map_err(BadEagerStateKeyError)?,
-                        e.value,
-                    ))
-                })
-                .collect::<Result<Vec<(String, Bytes)>, _>>()?,
-        );
 
-        debug!("Start invocation");
+        debug!("Start of attempt {}", msg.attempt);
 
-        if msg.known_entries == 0 {
-            return Err(known_entries_is_zero());
-        }
-
-        Ok(State::WaitingEarlierEntries {
-            received_entries: 0,
-            earlier_entries: Default::default(),
+        // There is nothing else to wait for: the handler starts.
+        Ok(State::Running(Attempt {
             async_results: Default::default(),
-            eager_state,
-        })
+            local_state,
+            spans: Default::default(),
+        }))
     }
 }
 
-/// An entry the earlier attempts stored: the VM takes what `EarlierEntries` keeps, and a
-/// cancellation.
-struct NewEarlierEntry(RawMessage);
+struct NewResultNotification(ResultNotificationMessage);
 
-impl Transition<Context, NewEarlierEntry> for State {
+impl Transition<Context, NewResultNotification> for State {
     fn transition(
         mut self,
         context: &mut Context,
-        NewEarlierEntry(msg): NewEarlierEntry,
+        NewResultNotification(msg): NewResultNotification,
     ) -> Result<Self, Error> {
-        let State::WaitingEarlierEntries {
-            ref mut received_entries,
-            ref mut earlier_entries,
-            ..
-        } = self
-        else {
-            return Err(self.as_unexpected_state("NewEarlierEntry"));
+        let (State::Running(attempt) | State::InAtomicGroup(attempt, _)) = &mut self else {
+            return Err(self.as_unexpected_state("NewResultNotification"));
         };
-
-        let ty = msg.ty();
-        if ty.is_command() {
-            match ty {
-                MessageType::InputCommand => {
-                    earlier_entries.input = Some(
-                        msg.decode_to::<InputCommandMessage>(earlier_entries.commands as i64)?,
-                    );
-                }
-                MessageType::RunCommand => {
-                    let run =
-                        msg.decode_to::<RunCommandMessage>(earlier_entries.commands as i64)?;
-                    earlier_entries
-                        .open_runs
-                        .insert(run.result_completion_id, run.name);
-                }
-                _ => {
-                    // We just ignore in the other cases
-                }
+        // A oneof that carries a payload with nothing set reads as void.
+        let result = msg
+            .result
+            .unwrap_or(result_notification_message::Result::Void(Void {}));
+        let result_id = NonZero::new(msg.result_id)
+            .ok_or_else(|| protocol_violation("ResultNotificationMessage.result_id is 0"))?;
+        match attempt.async_results.notify_result(result_id, result) {
+            Notified::Ok => {}
+            Notified::UnknownResultId if context.ids.is_earlier_result_id(result_id.get()) => {
+                // The runtime drops the results of earlier attempts' actions (G7).
+                return Err(protocol_violation(format!(
+                    "Result {result_id}: the id is below this attempt's next_result_id, so it belongs to an earlier attempt"
+                )));
             }
-            earlier_entries.commands += 1;
-        } else if ty.is_notification() {
-            match msg.decode_as_notification()?.id {
-                // Either a run that completed, or a completion no one needs anymore.
-                NotificationId::CompletionId(completion_id) => {
-                    earlier_entries.open_runs.remove(&completion_id);
-                }
-                NotificationId::SignalId(CANCEL_SIGNAL_ID) => context.cancelled = true,
-                // Other signals are dropped.
-                _ => {}
+            Notified::UnknownResultId => {
+                return Err(protocol_violation(format!(
+                    "Result {result_id}: this attempt sent no action with that result id, or the result came twice"
+                )))
             }
-        } else {
-            return Err(unexpected_message(
-                ty,
-                "receiving the entries of the earlier attempts",
-            ));
+            Notified::UnexpectedVariant(expect) => {
+                return Err(protocol_violation(format!(
+                    "Result {result_id} is of a variant its action does not allow, expected {expect:?}"
+                )))
+            }
         }
-
-        *received_entries += 1;
-        if *received_entries < context.expect_start_info().known_entries {
-            return Ok(self);
-        }
-
-        // That was the last one: the attempt is ready to execute.
-        let State::WaitingEarlierEntries {
-            earlier_entries,
-            async_results,
-            eager_state,
-            ..
-        } = self
-        else {
-            unreachable!("matched above");
-        };
-
-        context.journal.skip_to(earlier_entries.commands);
-        let (Some(input), resolved_dangling_traces) =
-            earlier_entries.get_input_and_close_dangling_traces()
-        else {
-            return Err(missing_input_command());
-        };
-        for msg in resolved_dangling_traces {
-            // Asking for the ack, as the other proposals do, rather than the whole completion back.
-            context
-                .output
-                .send(&WithFlags(&msg, &[MessageFlags::RequestedAck]));
-        }
-
-        Ok(State::Processing {
-            input,
-            async_results,
-            eager_state,
-            trace_state: Default::default(),
-        })
+        Ok(self)
     }
 }
 
-struct NewNotificationMessage(RawMessage);
+struct NewSignalNotification(SignalNotificationMessage);
 
-impl Transition<Context, NewNotificationMessage> for State {
+impl Transition<Context, NewSignalNotification> for State {
     fn transition(
         mut self,
         context: &mut Context,
-        NewNotificationMessage(msg): NewNotificationMessage,
+        NewSignalNotification(msg): NewSignalNotification,
     ) -> Result<Self, Error> {
-        let async_results = match &mut self {
-            State::Processing { async_results, .. } => async_results,
-            s => return Err(s.as_unexpected_state("NewNotificationMessage")),
+        let (State::Running(attempt) | State::InAtomicGroup(attempt, _)) = &mut self else {
+            return Err(self.as_unexpected_state("NewSignalNotification"));
         };
-        let notification = msg.decode_as_notification()?;
-        match notification.id {
-            NotificationId::CompletionId(completion_id) => {
-                let notified = NonZero::new(completion_id).is_some_and(|completion_id| {
-                    async_results.notify_result(
-                        async_results_state::NotificationId::CompletionId(completion_id),
-                        notification.result,
-                    )
-                });
-                if !notified {
-                    if context.journal.is_earlier_completion_id(completion_id) {
-                        trace!("Dropping the completion {completion_id} of an earlier attempt");
-                    } else {
-                        // E.g. the completion of a proposed run, which the runtime may send
-                        // instead of the ack.
-                        warn!("Dropping the completion {completion_id}, which no action waits for");
-                    }
-                }
+        match BuiltInSignal::try_from(msg.signal_id) {
+            // An attempt learns of the cancellation once: from the start, or from this.
+            Ok(BuiltInSignal::Cancel)
+                if context.expect_start_info().cancelled || context.cancel_received =>
+            {
+                return Err(protocol_violation(
+                    "A second cancel signal: this attempt already knew of the cancellation",
+                ));
             }
-            NotificationId::SignalId(CANCEL_SIGNAL_ID) => context.cancelled = true,
-            // Other signals are dropped.
-            id => trace!("Dropping the signal {id:?}"),
-        }
-        Ok(self)
-    }
-}
-
-struct NewCommandAckMessage(RawMessage);
-
-impl Transition<Context, NewCommandAckMessage> for State {
-    fn transition(
-        mut self,
-        _: &mut Context,
-        NewCommandAckMessage(msg): NewCommandAckMessage,
-    ) -> Result<Self, Error> {
-        match &mut self {
-            State::Processing { async_results, .. } => {
-                let ack = msg.decode_to::<CommandAckMessage>(0)?;
-                let notified = NonZero::new(ack.command_index).is_some_and(|command_index| {
-                    async_results.notify_result(
-                        async_results_state::NotificationId::CommandAck(command_index),
-                        Value::Void,
-                    )
-                });
-                if !notified {
-                    trace!("Ignoring the ack of command {}", ack.command_index);
-                }
+            // Handed out as a notification, so that it counts as processed only once the SDK
+            // took it.
+            Ok(BuiltInSignal::Cancel) => {
+                context.cancel_received = true;
+                attempt.async_results.notify_cancel()
             }
-            s => return Err(s.as_unexpected_state("NewCommandAckMessage")),
-        }
-        Ok(self)
-    }
-}
-
-struct NewProposeRunCompletionAckMessage;
-
-impl Transition<Context, NewProposeRunCompletionAckMessage> for State {
-    fn transition(
-        self,
-        _: &mut Context,
-        _: NewProposeRunCompletionAckMessage,
-    ) -> Result<Self, Error> {
-        match &self {
-            // The ack of a proposed run (a trace's end): nothing waits for it.
-            State::Processing { .. } => {
-                trace!("Ignoring the ack of a proposed run completion");
+            _ => {
+                return Err(protocol_violation(format!(
+                    "The built-in signal {} is not one of this version",
+                    msg.signal_id
+                )))
             }
-            s => return Err(s.as_unexpected_state("NewProposeRunCompletionAckMessage")),
-        }
-        Ok(self)
-    }
-}
-
-struct NewGetStateEphemeralNotificationMessage(RawMessage);
-
-impl Transition<Context, NewGetStateEphemeralNotificationMessage> for State {
-    fn transition(
-        mut self,
-        _: &mut Context,
-        NewGetStateEphemeralNotificationMessage(msg): NewGetStateEphemeralNotificationMessage,
-    ) -> Result<Self, Error> {
-        match &mut self {
-            State::Processing { async_results, .. } => {
-                let msg = msg.decode_to::<GetStateEphemeralNotificationMessage>(0)?;
-                let value = match msg.result.ok_or_else(empty_ephemeral_notification)? {
-                    get_state_ephemeral_notification_message::Result::Void(_) => Value::Void,
-                    get_state_ephemeral_notification_message::Result::Value(v) => {
-                        Value::Success(v.content)
-                    }
-                };
-                let notified =
-                    NonZero::new(msg.ephemeral_completion_id).is_some_and(|completion_id| {
-                        async_results.notify_result(
-                            async_results_state::NotificationId::EphemeralCompletionId(
-                                completion_id,
-                            ),
-                            value,
-                        )
-                    });
-                if !notified {
-                    warn!(
-                        "Ignoring the ephemeral notification {}, which no action waits for",
-                        msg.ephemeral_completion_id
-                    );
-                }
-            }
-            s => return Err(s.as_unexpected_state("NewGetStateEphemeralNotificationMessage")),
         }
         Ok(self)
     }
@@ -326,11 +198,9 @@ pub(crate) struct NotifyInputClosed;
 impl Transition<Context, NotifyInputClosed> for State {
     fn transition(self, context: &mut Context, _: NotifyInputClosed) -> Result<Self, Error> {
         match self {
-            State::WaitingStart | State::WaitingEarlierEntries { .. } => {
-                Err(input_closed_while_waiting_entries())
-            }
+            State::WaitingStart => Err(input_closed_before_start()),
             // The runtime shut the attempt down.
-            State::Processing { .. } => self.transition(context, HitShutdown),
+            State::Running(_) | State::InAtomicGroup(..) => self.transition(context, HitShutdown),
             State::Closed => Ok(self),
         }
     }
