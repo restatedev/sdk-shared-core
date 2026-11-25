@@ -44,7 +44,7 @@
 //! // once vm.should_close_output(): runtime.receive(vm.take_output())?; runtime.sdk_closed();
 //! ```
 
-use crate::explicit_recovery::ProtocolVersion;
+use crate::explicit_recovery::{user_input, ProtocolVersion};
 use crate::service_protocol::explicit_recovery::messages::{
     self, atomic_group_action_message::action::Action as Grouped,
     attach_invocation_action_message::Target as AttachTarget, end_message,
@@ -102,7 +102,7 @@ pub struct InvocationSpec {
 impl Default for InvocationSpec {
     fn default() -> Self {
         Self {
-            invocation_id: "inv_1fakeruntime0000000000000000".to_owned(),
+            invocation_id: invocation_id(0),
             service: "FakeObject".to_owned(),
             handler: "handle".to_owned(),
             key: Some("key".to_owned()),
@@ -1243,7 +1243,15 @@ impl FakeRuntime {
         match &a.target {
             None => Err("AttachInvocation with no target".to_owned()),
             Some(AttachTarget::InvocationId(id)) => check_invocation_id(id),
-            Some(_) => Ok(()),
+            Some(AttachTarget::WorkflowTarget(messages::WorkflowTarget { scope, .. }))
+            | Some(AttachTarget::IdempotentRequestTarget(messages::IdempotentRequestTarget {
+                scope,
+                ..
+            })) => match scope.as_deref() {
+                // The runtime reads an empty scope as none.
+                Some(scope) if !scope.is_empty() => user_input::check_scope(scope),
+                _ => Ok(()),
+            },
         }
     }
 
@@ -1463,7 +1471,7 @@ impl FakeRuntime {
                     }
                 };
                 self.calls.push(CallRecord {
-                    invocation_id: format!("inv_1fakecallee{:018}", self.calls.len() + 1),
+                    invocation_id: invocation_id(self.calls.len() as u64 + 1),
                     service: a.service_name.clone(),
                     handler: a.handler_name.clone(),
                     key: a.key.clone(),
@@ -1572,12 +1580,20 @@ fn is_last_message(ty: MessageType) -> bool {
     )
 }
 
+/// An invocation id in Restate's format, the `n`-th the fake mints: 0 is that of the default
+/// [`InvocationSpec`], the calls' are 1, 2, … in the order they were made. A test that needs the id
+/// of an invocation the fake does not run (a signal's target, say) can take one above those.
+pub fn invocation_id(n: u64) -> String {
+    // Restate's are random; the fake's are made of `n`, one for each.
+    user_input::invocation_id::format(
+        0xfa4e_0000_u64.wrapping_add(n),
+        0xfa4e_0000_0000_0000_0000_0000_u128 + n as u128,
+    )
+}
+
+/// As the runtime parses an invocation id: a malformed one is a violation (spec 12).
 fn check_invocation_id(id: &str) -> Result<(), String> {
-    if id.starts_with("inv_") && id.len() > 4 {
-        Ok(())
-    } else {
-        Err(format!("a malformed invocation id: {id:?}"))
-    }
+    user_input::invocation_id::check(id).map_err(|why| format!("a malformed invocation id: {why}"))
 }
 
 fn void() -> ResultVariant {

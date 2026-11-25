@@ -16,7 +16,10 @@ use crate::service_protocol::explicit_recovery::messages::{
 };
 use crate::service_protocol::explicit_recovery::{Decoder, MessageType};
 use crate::vm::errors::codes;
-use crate::{Error, NonEmptyValue, NotificationHandle, Target, Value, CANCEL_NOTIFICATION_HANDLE};
+use crate::{
+    AttachInvocationTarget, Error, NonEmptyValue, NotificationHandle, Target, Value,
+    CANCEL_NOTIFICATION_HANDLE,
+};
 use bytes::Bytes;
 use googletest::prelude::*;
 use prost::Message;
@@ -152,6 +155,13 @@ fn set(vm: &mut CoreExplicitRecoveryVM, scope: StateScope, key: &str, value: &'s
         .unwrap(),
         None
     );
+}
+
+/// An invocation id in Restate's format, of another invocation.
+const OTHER: &str = "inv_1aGuEfH1fC0F1tDaHYyy2FfUD7DhkVvjSl";
+
+fn is_invalid_input() -> impl Matcher<ActualT = Error> {
+    predicate(|e: &Error| e.is_invalid_input() && e.code() == 400)
 }
 
 fn is_shut_down() -> impl Matcher<ActualT = Error> {
@@ -959,20 +969,245 @@ fn what_the_vm_refuses_from_the_sdk() {
     vm.span_end(ended, None).unwrap();
     vm.cmd_flush(ActionOptions::default().inside(ended))
         .unwrap();
+}
 
-    // A limit key without a scope
+// --- Invalid input (D65): the action fails alone, the attempt goes on
+
+#[test]
+fn invalid_input_fails_the_action_alone_sends_nothing_and_takes_no_result_id() {
     let mut vm = running(start_message(1));
+    let options = ActionOptions::default;
+    for malformed in [
+        "",
+        "inv_garbage",
+        "inv_1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "dp_1x",
+    ] {
+        assert_that!(
+            vm.cmd_cancel_invocation(malformed.to_owned(), options(), true),
+            err(is_invalid_input())
+        );
+        assert_that!(
+            vm.cmd_signal_send(
+                malformed.to_owned(),
+                "go".to_owned(),
+                None,
+                options(),
+                false
+            ),
+            err(is_invalid_input())
+        );
+        assert_that!(
+            vm.cmd_attach_invocation(
+                AttachInvocationTarget::InvocationId(malformed.to_owned()),
+                options()
+            ),
+            err(is_invalid_input())
+        );
+    }
+    let error = vm
+        .cmd_cancel_invocation("inv_garbage".to_owned(), options(), false)
+        .unwrap_err();
     assert_that!(
-        vm.cmd_send(
-            Target {
-                limit_key: Some("l".to_owned()),
-                ..target()
-            },
-            Bytes::new(),
+        error.message(),
+        contains_substring("'inv_garbage' is not an invocation id")
+    );
+
+    // Scopes of an attach's target, and the target of a call or a send
+    for scope in ["", "a/b", &"s".repeat(37)] {
+        assert_that!(
+            vm.cmd_attach_invocation(
+                AttachInvocationTarget::WorkflowId {
+                    name: "Wf".to_owned(),
+                    key: "k".to_owned(),
+                    scope: Some(scope.to_owned())
+                },
+                options()
+            ),
+            err(is_invalid_input())
+        );
+        assert_that!(
+            vm.cmd_attach_invocation(
+                AttachInvocationTarget::IdempotencyId {
+                    service_name: "Svc".to_owned(),
+                    service_key: None,
+                    handler_name: "h".to_owned(),
+                    idempotency_key: "i".to_owned(),
+                    scope: Some(scope.to_owned())
+                },
+                options()
+            ),
+            err(is_invalid_input())
+        );
+        assert_that!(
+            vm.cmd_call(
+                Target {
+                    scope: Some(scope.to_owned()),
+                    ..target()
+                },
+                Bytes::new(),
+                None,
+                options()
+            ),
+            err(is_invalid_input())
+        );
+    }
+    for bad in [
+        (|| Target {
+            idempotency_key: Some(String::new()),
+            ..target()
+        }) as fn() -> Target,
+        || Target {
+            limit_key: Some(String::new()),
+            scope: Some("s".to_owned()),
+            ..target()
+        },
+        // A limit key without a scope
+        || Target {
+            limit_key: Some("l".to_owned()),
+            ..target()
+        },
+    ] {
+        assert_that!(
+            vm.cmd_send(bad(), Bytes::new(), None, options()),
+            err(is_invalid_input())
+        );
+        assert_that!(
+            vm.cmd_call(bad(), Bytes::new(), None, options()),
+            err(is_invalid_input())
+        );
+    }
+
+    // The attempt goes on: nothing was sent, and the next action takes result id 1
+    assert_eq!(vm.state(), AttemptState::Running);
+    assert!(vm.take_output().is_empty());
+    let cancelled = vm
+        .cmd_cancel_invocation(OTHER.to_owned(), options(), true)
+        .unwrap()
+        .unwrap();
+    let attached = vm
+        .cmd_attach_invocation(
+            AttachInvocationTarget::InvocationId(OTHER.to_owned()),
+            options(),
+        )
+        .unwrap();
+    vm.cmd_signal_send(OTHER.to_owned(), "go".to_owned(), None, options(), false)
+        .unwrap();
+    vm.cmd_send(
+        Target {
+            scope: Some("tenant-1".to_owned()),
+            limit_key: Some("l".to_owned()),
+            ..target()
+        },
+        Bytes::new(),
+        None,
+        options(),
+    )
+    .unwrap();
+    notify(&mut vm, result(1, void()));
+    notify(&mut vm, result(2, value("out")));
+    assert_eq!(
+        take_all(&mut vm),
+        vec![
+            notification(cancelled, Value::Void),
+            notification(attached, success("out"))
+        ]
+    );
+    let mut output = Output::of(&mut vm);
+    assert_that!(
+        output.next::<messages::CancelInvocationActionMessage>(),
+        pat!(messages::CancelInvocationActionMessage {
+            invocation_id: eq(OTHER),
+            result_id: eq(1)
+        })
+    );
+    assert_eq!(
+        output
+            .next::<messages::AttachInvocationActionMessage>()
+            .result_id,
+        2
+    );
+    assert_eq!(
+        output
+            .next::<messages::SendSignalActionMessage>()
+            .target_invocation_id,
+        OTHER
+    );
+    assert_eq!(
+        output.next::<CallActionMessage>().invocation_id_result_id,
+        3
+    );
+    assert!(output.is_over());
+}
+
+#[test]
+fn invalid_input_in_a_group_leaves_it_open_for_the_sdk_to_abort() {
+    let mut vm = running(start_message(1));
+    vm.atomic_group_start().unwrap();
+    set(&mut vm, StateScope::Object, "head", "h");
+    assert_that!(
+        vm.cmd_signal_send(
+            "inv_bogus".to_owned(),
+            "go".to_owned(),
             None,
+            Default::default(),
+            true
+        ),
+        err(is_invalid_input())
+    );
+    // Still in the group: more can go in, and the SDK aborts it, as on every error in it
+    set(&mut vm, StateScope::Object, "tail", "t");
+    assert_eq!(vm.atomic_group_abort().unwrap(), vec![]);
+    assert_eq!(vm.state(), AttemptState::Running);
+    // The group, retried with a valid id, goes out with result ids from 1
+    vm.atomic_group_start().unwrap();
+    set(&mut vm, StateScope::Object, "head", "h");
+    vm.cmd_signal_send(
+        OTHER.to_owned(),
+        "go".to_owned(),
+        None,
+        Default::default(),
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    vm.atomic_group_end(Default::default(), false).unwrap();
+    let mut output = Output::of(&mut vm);
+    let group = output.next::<AtomicGroupActionMessage>();
+    assert_eq!(group.actions.len(), 2);
+    match &group.actions[1].action {
+        Some(Grouped::SendSignal(a)) => assert_eq!(a.result_id, 1),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(output.is_over());
+
+    // An attach cannot be in a group at all: that misuse still fails the attempt
+    let mut vm = running(start_message(1));
+    vm.atomic_group_start().unwrap();
+    assert_that!(
+        vm.cmd_attach_invocation(
+            AttachInvocationTarget::InvocationId("inv_bogus".to_owned()),
             Default::default()
         ),
-        err(anything())
+        err(predicate(|e: &Error| !e.is_invalid_input()))
+    );
+    assert_eq!(vm.state(), AttemptState::Closed);
+}
+
+#[test]
+fn invalid_input_once_the_attempt_is_over_says_why_it_is_over() {
+    // Shut down: the shutdown, not the input
+    let mut vm = running(start_message(1));
+    vm.notify_input_closed();
+    assert_that!(
+        vm.cmd_cancel_invocation("inv_bogus".to_owned(), Default::default(), false),
+        err(is_shut_down())
+    );
+    // Before the start: the VM's misuse, which is no invalid input either
+    let mut vm = new_vm();
+    assert_that!(
+        vm.cmd_cancel_invocation("inv_bogus".to_owned(), Default::default(), false),
+        err(predicate(|e: &Error| !e.is_invalid_input()))
     );
 }
 
@@ -1020,11 +1255,11 @@ fn ids_follow_the_wire_order_in_a_group_and_a_call_in_it_may_want_its_result() {
         .unwrap();
     // 13: a cancel, 14: a signal sent; the group's own last, 15
     let cancelled = vm
-        .cmd_cancel_invocation("inv_other".to_owned(), Default::default(), true)
+        .cmd_cancel_invocation(OTHER.to_owned(), Default::default(), true)
         .unwrap()
         .unwrap();
     vm.cmd_signal_send(
-        "inv_other".to_owned(),
+        OTHER.to_owned(),
         "go".to_owned(),
         None,
         Default::default(),

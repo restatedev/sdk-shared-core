@@ -48,6 +48,18 @@
 //! After `EndMessage` or `ErrorMessage` the runtime closes its side first, and the SDK after it:
 //! that is what [`ExplicitRecoveryVM::should_close_output`] says.
 //!
+//! # Invalid input
+//!
+//! A value user code passes to an action that the runtime would refuse as malformed fails that
+//! action alone (D65): an invocation id to attach to, cancel or signal that is not one in
+//! Restate's format, a scope outside `[a-zA-Z0-9_.-]{1,36}`, an empty idempotency key or limit
+//! key, a limit key without a scope. The call returns an error with
+//! [`crate::Error::is_invalid_input`] (code 400), which the SDK raises to user code as a terminal
+//! error it can catch. The VM sends nothing and takes no result id for it, and the attempt goes
+//! on. In an atomic group the group stays open: the SDK aborts it, as on every error in it.
+//! Every other error of an action still ends the attempt. An action on the wire that the runtime
+//! finds malformed anyway stays a protocol violation: an SDK bug, not bad input.
+//!
 //! # Atomic groups
 //!
 //! [`ExplicitRecoveryVM::atomic_group_start`] opens a group: state changes, calls, sends,
@@ -60,6 +72,7 @@
 pub mod commit;
 #[cfg(any(test, feature = "__fake_runtime"))]
 pub mod fake_runtime;
+mod user_input;
 mod vm;
 
 pub use crate::service_protocol::explicit_recovery::ProtocolVersion;
@@ -280,7 +293,9 @@ pub trait ExplicitRecoveryVM: Sized {
 
     // --- Invocations
 
-    /// `invoke_at`: when to make the invocation, as time since the UNIX epoch.
+    /// `invoke_at`: when to make the invocation, as time since the UNIX epoch. An empty
+    /// idempotency key or limit key, a limit key without a scope, or a scope that is not one: an
+    /// invalid input error (see the module documentation), as for [`ExplicitRecoveryVM::cmd_send`].
     fn cmd_call(
         &mut self,
         target: Target,
@@ -298,12 +313,15 @@ pub trait ExplicitRecoveryVM: Sized {
         options: ActionOptions,
     ) -> VMResult<SendHandle>;
 
+    /// An invocation id that is not one, or a scope that is not one: an invalid input error (see
+    /// the module documentation).
     fn cmd_attach_invocation(
         &mut self,
         target: AttachInvocationTarget,
         options: ActionOptions,
     ) -> VMResult<NotificationHandle>;
 
+    /// An invocation id that is not one: an invalid input error (see the module documentation).
     fn cmd_cancel_invocation(
         &mut self,
         invocation_id: String,
@@ -321,7 +339,8 @@ pub trait ExplicitRecoveryVM: Sized {
         options: ActionOptions,
     ) -> VMResult<NotificationHandle>;
 
-    /// `value`: `None` for a signal that carries nothing.
+    /// `value`: `None` for a signal that carries nothing. An invocation id that is not one: an
+    /// invalid input error (see the module documentation).
     fn cmd_signal_send(
         &mut self,
         target_invocation_id: String,

@@ -87,6 +87,8 @@ pub struct ErrorInner {
     pub(crate) next_retry_delay: Option<Duration>,
     pub(crate) behavior: ErrorBehavior,
     pub(crate) metadata: Vec<(String, String)>,
+    /// See [`Error::is_invalid_input`].
+    pub(crate) invalid_input: bool,
 }
 
 impl std::ops::Deref for Error {
@@ -129,6 +131,7 @@ impl Error {
             next_retry_delay: None,
             behavior: ErrorBehavior::Retry,
             metadata: vec![],
+            invalid_input: false,
         }))
     }
 
@@ -191,6 +194,19 @@ impl Error {
 
     pub fn is_suspended_error(&self) -> bool {
         self.code == crate::vm::errors::codes::SUSPENDED.code()
+    }
+
+    /// Whether a value user code passed to an action is one the runtime would refuse (an
+    /// [`crate::explicit_recovery::ExplicitRecoveryVM`]'s actions only, code 400). The VM sent
+    /// nothing and the attempt goes on: the SDK fails that action alone, with a terminal error
+    /// user code can catch.
+    pub fn is_invalid_input(&self) -> bool {
+        self.invalid_input
+    }
+
+    pub(crate) fn into_invalid_input(mut self) -> Self {
+        self.invalid_input = true;
+        self
     }
 
     pub(crate) fn with_related_command_metadata(

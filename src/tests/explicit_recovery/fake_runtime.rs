@@ -4,7 +4,7 @@
 
 use crate::explicit_recovery::commit::{begin_commit, end_commit};
 use crate::explicit_recovery::fake_runtime::{
-    request_headers, AttemptOutcome, CalleeBehavior, FakeRuntime, FakeRuntimeError,
+    invocation_id, request_headers, AttemptOutcome, CalleeBehavior, FakeRuntime, FakeRuntimeError,
     FakeRuntimeOptions, InvocationSpec, InvocationStatus, Preload, ShutdownReason,
 };
 use crate::explicit_recovery::{
@@ -15,7 +15,7 @@ use crate::service_protocol::explicit_recovery::messages::{
     self, AtomicGroupActionMessage, EndMessage, FlushActionMessage, RestateMessage,
     SetStateActionMessage, ShutdownMessage, SpanEndActionMessage,
 };
-use crate::{Error, NonEmptyValue, Target, TerminalFailure, Value};
+use crate::{AttachInvocationTarget, Error, NonEmptyValue, Target, TerminalFailure, Value};
 use bytes::{Bytes, BytesMut};
 use std::time::Duration;
 use test_log::test;
@@ -843,6 +843,53 @@ fn the_fake_finds_what_an_sdk_must_not_send() {
         }),
         spec(),
     );
+    // A malformed invocation id, or scope: the runtime parses them out of the action. The VM
+    // refuses what user code passes before it sends it (D65), so this is an SDK bug.
+    for malformed in ["inv_garbage", "inv_1fakecallee000000000000000001", ""] {
+        assert_violation(
+            encode(&messages::CancelInvocationActionMessage {
+                invocation_id: malformed.to_owned(),
+                ..Default::default()
+            }),
+            spec(),
+        );
+        assert_violation(
+            encode(&messages::SendSignalActionMessage {
+                target_invocation_id: malformed.to_owned(),
+                signal_name: "go".to_owned(),
+                ..Default::default()
+            }),
+            spec(),
+        );
+        assert_violation(
+            encode(&messages::AttachInvocationActionMessage {
+                target: Some(
+                    messages::attach_invocation_action_message::Target::InvocationId(
+                        malformed.to_owned(),
+                    ),
+                ),
+                result_id: 1,
+                ..Default::default()
+            }),
+            spec(),
+        );
+    }
+    assert_violation(
+        encode(&messages::AttachInvocationActionMessage {
+            target: Some(
+                messages::attach_invocation_action_message::Target::WorkflowTarget(
+                    messages::WorkflowTarget {
+                        workflow_name: "Wf".to_owned(),
+                        workflow_key: "k".to_owned(),
+                        scope: Some("a/b".to_owned()),
+                    },
+                ),
+            ),
+            result_id: 1,
+            ..Default::default()
+        }),
+        spec(),
+    );
     // EndMessage without an output
     assert_violation(encode(&EndMessage::default()), spec());
     // More notifications processed than sent
@@ -859,6 +906,81 @@ fn the_fake_finds_what_an_sdk_must_not_send() {
         encode(&messages::ResultNotificationMessage::default()),
         spec(),
     );
+}
+
+#[test]
+fn the_fake_mints_invocation_ids_in_restates_format_and_the_vm_checks_user_input() {
+    let mut runtime = FakeRuntime::new(InvocationSpec::default());
+    let mut vm = start(&mut runtime);
+    assert_eq!(vm.get_input().unwrap().invocation_id, invocation_id(0));
+    let first = vm
+        .cmd_call(charge(), Bytes::new(), None, Default::default())
+        .unwrap();
+    let second = vm
+        .cmd_call(
+            target("Other", "run", None),
+            Bytes::new(),
+            None,
+            Default::default(),
+        )
+        .unwrap();
+    run(&mut runtime, &mut vm);
+    let ids: Vec<_> = runtime
+        .calls()
+        .iter()
+        .map(|c| c.invocation_id.clone())
+        .collect();
+    assert_eq!(ids, vec![invocation_id(1), invocation_id(2)]);
+    assert_eq!(ids[0].len(), 38);
+    assert_ne!(ids[0], ids[1]);
+
+    // User code passes a malformed id: that action fails, nothing reaches the runtime
+    for malformed in ["inv_garbage", "inv_1fakecallee000000000000000001"] {
+        let refused = vm
+            .cmd_cancel_invocation(malformed.to_owned(), Default::default(), false)
+            .unwrap_err();
+        assert!(refused.is_invalid_input(), "{refused}");
+        assert!(vm
+            .cmd_signal_send(
+                malformed.to_owned(),
+                "go".to_owned(),
+                None,
+                Default::default(),
+                false
+            )
+            .unwrap_err()
+            .is_invalid_input());
+        assert!(vm
+            .cmd_attach_invocation(
+                AttachInvocationTarget::InvocationId(malformed.to_owned()),
+                Default::default()
+            )
+            .unwrap_err()
+            .is_invalid_input());
+    }
+    assert!(vm.take_output().is_empty());
+
+    // The ids the fake minted are good: the attempt cancels one and signals the other
+    vm.cmd_cancel_invocation(ids[0].clone(), Default::default(), false)
+        .unwrap();
+    vm.cmd_signal_send(
+        invocation_id(9),
+        "go".to_owned(),
+        None,
+        Default::default(),
+        false,
+    )
+    .unwrap();
+    let flushed = vm.cmd_flush(Default::default()).unwrap();
+    let taken = run(&mut runtime, &mut vm);
+    assert!(taken.iter().any(|n| n.handle == flushed));
+    assert_eq!(runtime.cancels_sent(), &[ids[0].clone()]);
+    assert_eq!(
+        runtime.signals_sent()[0].target_invocation_id,
+        invocation_id(9)
+    );
+    assert_eq!(runtime.violations(), &[] as &[String]);
+    let _ = (first, second);
 }
 
 #[test]

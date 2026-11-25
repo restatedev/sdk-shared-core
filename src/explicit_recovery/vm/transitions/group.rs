@@ -102,12 +102,12 @@ impl State {
             options,
             ..
         } = context;
-        let start_info = start_info.as_ref().expect("state is not WaitingStart");
         let (attempt, group) = match self {
             State::Running(attempt) => (attempt, None),
             State::InAtomicGroup(attempt, group) => (attempt, Some(group)),
             s => return Err(s.as_unexpected_state(event)),
         };
+        let start_info = start_info.as_ref().expect("state is not WaitingStart");
         Ok(Writing {
             async_results: &mut attempt.async_results,
             ids,

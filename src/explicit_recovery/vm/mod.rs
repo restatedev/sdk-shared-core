@@ -15,11 +15,11 @@ use super::{
     ActionOptions, AttemptState, ExplicitRecoveryVM, Input, Notification, Options, ResponseHead,
     SpanId, StateScope,
 };
+use crate::explicit_recovery::user_input::{check_scope, invocation_id};
 use crate::service_protocol::explicit_recovery::messages::atomic_group_action_message;
 use crate::service_protocol::explicit_recovery::{Decoder, ProtocolVersion};
 use crate::vm::errors::{
-    codes, empty_idempotency_key, empty_limit_key, empty_scope, missing_content_type, ClosedError,
-    OutOfBoundsDuration, UnexpectedStateError,
+    codes, missing_content_type, ClosedError, OutOfBoundsDuration, UnexpectedStateError,
 };
 use crate::{
     AttachInvocationTarget, CallHandle, Error, Header, HeaderMap, NonEmptyValue,
@@ -111,21 +111,47 @@ impl fmt::Debug for CoreExplicitRecoveryVM {
     }
 }
 
+/// Whether an action can be made in the state `state`: one a group can hold (`groupable`), or
+/// any other.
+fn can_act(state: &Result<State, Error>, groupable: bool) -> bool {
+    match state {
+        Ok(State::Running(_)) => true,
+        Ok(State::InAtomicGroup(..)) => groupable,
+        _ => false,
+    }
+}
+
 impl CoreExplicitRecoveryVM {
-    fn verify_target(&mut self, target: &Target) -> VMResult<()> {
-        if target.idempotency_key.as_deref() == Some("") {
-            self.do_transition(HitError(empty_idempotency_key()))?;
+    /// D65: a value user code passed to an action, which the runtime would refuse as malformed
+    /// (`check` says why), fails that action alone: the call returns an error with
+    /// [`Error::is_invalid_input`] (code 400), the VM sends nothing, takes no result id, and the
+    /// attempt goes on. An open atomic group stays open: the SDK aborts it, as on every error in
+    /// it. Where the action could not be made anyway (the attempt is over, say), the transition
+    /// fails it as it would with a valid value.
+    fn check_input(&self, groupable: bool, check: Result<(), String>) -> VMResult<()> {
+        match check {
+            Err(why) if can_act(&self.last_transition, groupable) => {
+                tracing::debug!("Invalid input to an action: {why}");
+                Err(errors::invalid_input(why))
+            }
+            _ => Ok(()),
         }
-        if target.scope.as_deref() == Some("") {
-            self.do_transition(HitError(empty_scope()))?;
-        }
-        if target.limit_key.as_deref() == Some("") {
-            self.do_transition(HitError(empty_limit_key()))?;
-        }
-        if target.limit_key.is_some() && target.scope.is_none() {
-            self.do_transition(HitError(errors::limit_key_without_scope()))?;
-        }
-        Ok(())
+    }
+
+    /// A call's or a send's target, as user code gives it (D65).
+    fn verify_target(&self, target: &Target) -> VMResult<()> {
+        let check = if target.idempotency_key.as_deref() == Some("") {
+            Err("the idempotency key is empty".to_owned())
+        } else if target.limit_key.as_deref() == Some("") {
+            Err("the limit key is empty".to_owned())
+        } else if target.limit_key.is_some() && target.scope.is_none() {
+            Err("a limit key needs a scope".to_owned())
+        } else if let Some(scope) = &target.scope {
+            check_scope(scope)
+        } else {
+            Ok(())
+        };
+        self.check_input(true, check)
     }
 
     fn invoke_time(&mut self, invoke_at: Option<Duration>) -> VMResult<u64> {
@@ -326,17 +352,17 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
         target: AttachInvocationTarget,
         options: ActionOptions,
     ) -> VMResult<NotificationHandle> {
-        if let AttachInvocationTarget::WorkflowId {
-            scope: Some(scope), ..
-        }
-        | AttachInvocationTarget::IdempotencyId {
-            scope: Some(scope), ..
-        } = &target
-        {
-            if scope.is_empty() {
-                self.do_transition(HitError(empty_scope()))?;
+        let check = match &target {
+            AttachInvocationTarget::InvocationId(id) => invocation_id::check(id),
+            AttachInvocationTarget::WorkflowId {
+                scope: Some(scope), ..
             }
-        }
+            | AttachInvocationTarget::IdempotencyId {
+                scope: Some(scope), ..
+            } => check_scope(scope),
+            _ => Ok(()),
+        };
+        self.check_input(false, check)?;
         self.do_transition(CmdAttachInvocation(target, options))
     }
 
@@ -346,6 +372,7 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
         options: ActionOptions,
         want_result: bool,
     ) -> VMResult<Option<NotificationHandle>> {
+        self.check_input(true, invocation_id::check(&invocation_id))?;
         self.do_transition(CmdCancelInvocation(invocation_id, options, want_result))
     }
 
@@ -366,6 +393,7 @@ impl ExplicitRecoveryVM for CoreExplicitRecoveryVM {
         options: ActionOptions,
         want_result: bool,
     ) -> VMResult<Option<NotificationHandle>> {
+        self.check_input(true, invocation_id::check(&target_invocation_id))?;
         self.do_transition(CmdSignalSend(
             target_invocation_id,
             name,

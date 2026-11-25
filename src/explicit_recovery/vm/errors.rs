@@ -40,6 +40,13 @@ pub(crate) fn input_closed_before_start() -> Error {
     protocol_violation("The input was closed before the start message")
 }
 
+// --- User code passed a value the runtime would refuse: that action fails, the attempt goes on
+
+/// See [`crate::Error::is_invalid_input`].
+pub(crate) fn invalid_input(why: String) -> Error {
+    Error::new(codes::BAD_REQUEST, why).into_invalid_input()
+}
+
 // --- The SDK misused the VM: the attempt fails
 
 pub(crate) fn not_allowed_in_atomic_group(event: String) -> Error {
@@ -70,13 +77,6 @@ pub(crate) fn object_state_without_key() -> Error {
     Error::new(
         codes::INTERNAL,
         "The target of this invocation has no key: there is no object state to read or write",
-    )
-}
-
-pub(crate) fn limit_key_without_scope() -> Error {
-    Error::new(
-        codes::INTERNAL,
-        "Trying to execute a request with a limit key and no scope",
     )
 }
 
